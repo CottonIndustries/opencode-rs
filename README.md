@@ -1,0 +1,109 @@
+# opencode (Rust)
+
+A Rust rewrite of the OpenCode terminal client, ported from the bundled v2
+sources extracted from `opencode.exe` (`../extracted`, `../readable`). It is a
+single self-contained binary (~20 MB release) — no Bun runtime or background
+server needed.
+
+```
+cargo build --release
+./target/release/opencode            # interactive TUI in the current directory
+./target/release/opencode run "fix the failing test"
+```
+
+BoringSSL is built from source, which needs CMake, NASM and libclang. `.cargo/config.toml`
+points at Visual Studio's CMake and at `.tools/nasm` and `.tools/libclang` (not committed);
+change those paths if yours live elsewhere.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `opencode [dir]` / `opencode mini` | Interactive TUI (`-m provider/model`, `--agent`, `-c`, `-s <id>`, `--fork`, `--prompt`) |
+| `opencode run [message..]` | Non-interactive run. `-m provider/model#variant`, `--agent`, `-c`, `-s`, `--fork`, `-f file`, `--title`, `--thinking`, `--format json`, `--auto-approve`. Piped stdin is appended to the message. A leading `/command` expands that command. |
+| `opencode acp [--login]` | Agent Client Protocol server on stdio for editors such as Zed (`--login` runs `auth login`) |
+| `opencode models [provider] [--verbose] [--refresh]` | List models from providers with credentials |
+| `opencode auth list\|login\|logout` | Manage API keys (`<data>/auth.json`) |
+| `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
+| `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
+| `opencode mcp list` | MCP server status |
+| `opencode debug paths\|config\|agents\|skills\|prompt` | Troubleshooting |
+
+## What is ported
+
+- **Providers** via the models.dev catalog (snapshot embedded, refreshed into
+  `~/.cache/opencode/models.json`) with four native streaming protocols:
+  Anthropic Messages (adaptive thinking + effort, signatures round-tripped,
+  prompt caching, eager tool-input streaming on first-party), OpenAI Responses
+  (encrypted reasoning round-trip), OpenAI-compatible Chat Completions (OpenRouter,
+  Groq, DeepSeek, xAI, local servers, `interleaved` reasoning fields) and Gemini
+  (thought signatures). Retries with backoff on 429/5xx (not on quota errors).
+  `#variant` selects reasoning effort/budget.
+- **OpenCode Zen free tier**: with no OpenCode key, the `opencode` provider uses the
+  anonymous `public` key and lists only free models. Model requests match the TypeScript
+  client: `User-Agent: opencode/latest/2.1.4/cli`, `x-opencode-client: cli` (or
+  `OPENCODE_CLIENT`), its session/affinity/project headers and ID formats, trace headers,
+  `max_completion_tokens`, and its title request. Set `OPENCODE_API_KEY` to unlock paid Zen models.
+- **Network fingerprint** (`src/http.rs`): all HTTP goes through BoringSSL configured like
+  Bun 1.4.4, so the ClientHello (ciphers, groups, key shares, signature algorithms, extension
+  order, ALPN `http/1.1`) is the TypeScript client's, and headers are written as Bun's `fetch`
+  writes them: sorted, Bun's casing, joined repeats, then `Connection`, `Accept`, `Host`,
+  `Accept-Encoding`, `Content-Length`. `NODE_TLS_REJECT_UNAUTHORIZED=0` disables certificate
+  checks, as in Bun.
+- **Credentials**: env vars from the catalog, `provider.<id>.options.apiKey`,
+  `auth.json`, and API keys saved by the TypeScript client in `opencode.db`
+  (read-only).
+- **Config**: `opencode.json`/`.jsonc` (global, `OPENCODE_CONFIG`, project chain,
+  `.opencode/`, `OPENCODE_CONFIG_CONTENT`), `{env:}`/`{file:}` substitution,
+  custom providers/models, `agent`, `command`, `permission`, `mcp`, `tools`,
+  `instructions`, `skills`, `compaction`, `experimental.todo`.
+- **Agents**: `build`, `general`, `explore` (+ hidden `title`, `summary`,
+  `compaction`) and custom agents from config or `agent/*.md`.
+- **Tools** with the original descriptions and schemas: `shell` (Git Bash /
+  PowerShell on Windows, timeouts, background jobs with completion
+  notifications, command-prefix "always allow" patterns), `read` (text/images/PDF,
+  directories, nested `AGENTS.md`), `write`, `edit` (quote/dash/whitespace-
+  tolerant matching, CRLF and BOM preservation), `patch` (used instead of
+  edit/write for GPT models), `glob`, `grep` (gitignore-aware; omitted for
+  Claude/GPT as upstream does), `webfetch`, `websearch` (Exa/Tavily/Parallel/Firecrawl
+  keys), `todowrite`, `subagent` (foreground/background child sessions),
+  `skill`, and MCP tools (stdio and streamable HTTP).
+- **Permissions**: last-match-wins rules (`allow`/`ask`/`deny`), external
+  directory checks, `.env` protection, per-session "always" approvals.
+- **Engine**: streaming agent loop, parallel tool execution, steering (messages
+  typed while busy are folded into the next step), max steps, output-length
+  recovery, automatic and manual compaction with the upstream checkpoint
+  template, title generation, cost tracking.
+- **System prompt**: upstream model-specific prompts (`assets/prompts`), tool
+  guidance, environment block, date, AGENTS.md / `instructions`, skills list.
+- **ACP** (`opencode acp`): the upstream agent for Zed and other ACP editors — sessions
+  (new, load with history replay, resume, fork, list, delete, close), model / effort / mode
+  selectors, streamed text, thinking and tool calls with locations and before/after diffs,
+  permission prompts on the tool call, cancel, `/compact` and custom slash commands,
+  embedded context and images, client MCP servers (stdio and HTTP), usage updates.
+  Requests identify as `acp`, as upstream does in this mode. Zed setup:
+  `"agent_servers": { "OpenCode (Rust)": { "type": "custom", "command": "C:/path/to/opencode.exe", "args": ["acp"] } }`
+- **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
+  permission dialog, model/session/agent pickers, command palette, slash
+  commands (`/new /sessions /models /agents /compact /variant /thinking /details
+  /export /init /review /help /quit` + custom), `@file` attachments, prompt
+  history, queued messages.
+
+Sessions are stored as JSON in `~/.local/share/opencode/storage/session/<project>/`.
+
+## Not ported
+
+Things in the original that depend on its JS/TS runtime or hosted services:
+the `serve` HTTP/web server, `pair`, `service`, JS plugins, `github`,
+`upgrade`, OAuth logins (Claude Pro/Max, ChatGPT, Copilot device flow), LSP
+diagnostics, post-edit formatters, snapshots/undo, the browser and worktree
+tools, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need an
+OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
+splitter instead of tree-sitter.
+
+## Tests
+
+`cargo test` covers wildcard/permission evaluation, JSONC and frontmatter
+parsing, edit matching (CRLF, typographic, trailing whitespace), patch parsing,
+shell command splitting, DB credential import, upstream ID formats, ACP prompt
+conversion and diff reconstruction, input editing and TUI rendering.
