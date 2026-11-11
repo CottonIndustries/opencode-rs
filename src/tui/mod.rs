@@ -213,6 +213,8 @@ struct Ui {
     closed_tabs: Vec<(String, usize)>,
     /// sessions in visit order, most recent last
     tab_history: Vec<String>,
+    /// terminal title and default background as last sent (OSC 0 / OSC 11)
+    chrome: (String, String),
     redo: Vec<(String, Vec<Message>)>,
     shells: Vec<String>,
     hits: Hits,
@@ -357,6 +359,7 @@ impl Ui {
             saved_tabs: vec![],
             closed_tabs: vec![],
             tab_history: vec![],
+            chrome: Default::default(),
             redo: vec![],
             shells: vec![],
             hits: Hits::default(),
@@ -404,6 +407,46 @@ impl Ui {
             .collect();
         tabs::save(&self.app.directory, &list);
         self.saved_tabs = self.tabs.clone();
+    }
+
+    /// Window title like upstream's `app.tsx` ("OpenCode", or "OC | <title>" in a titled session),
+    /// and the theme background as the terminal's default colour so window padding blends in.
+    fn chrome(&self) -> (String, String) {
+        let title = match self.route {
+            Route::Session => {
+                let t = self.handle.with(|s| s.title.clone());
+                let fallback = t.is_empty() || t.starts_with(crate::session::DEFAULT_TITLE_PREFIX) || t.starts_with("Child session - ");
+                if fallback {
+                    "OpenCode".to_string()
+                } else if t.chars().count() > 40 {
+                    format!("OC | {}…", t.chars().take(37).collect::<String>())
+                } else {
+                    format!("OC | {t}")
+                }
+            }
+            _ => "OpenCode".to_string(),
+        };
+        let title = title.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let bg = if self.theme.bg.a > 0.0 { self.theme.bg.hex() } else { String::new() };
+        (title, bg)
+    }
+
+    fn sync_chrome(&mut self) {
+        let next = self.chrome();
+        if next == self.chrome {
+            return;
+        }
+        let mut out = String::new();
+        if next.0 != self.chrome.0 {
+            out += &format!("\x1b]0;{}\x07", next.0);
+        }
+        if next.1 != self.chrome.1 {
+            out += &if next.1.is_empty() { "\x1b]111\x1b\\".to_string() } else { format!("\x1b]11;{}\x1b\\", next.1) };
+        }
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes()).and_then(|_| stdout.flush());
+        self.chrome = next;
     }
 
     /// Most recently visited session that still has a tab.
@@ -2991,6 +3034,7 @@ impl Ui {
                 dirty = true;
             }
             self.persist_tabs();
+            self.sync_chrome();
             if dirty {
                 terminal.draw(|f| self.draw(f))?;
                 dirty = false;
@@ -3107,7 +3151,8 @@ pub async fn start(dir: std::path::PathBuf, opts: StartOptions) -> Result<()> {
     }
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let res = ui.event_loop(&mut terminal, opts.prompt.clone()).await;
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+    // clear the title and give the terminal its own background back
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, ratatui::crossterm::style::Print("\x1b]0;\x07\x1b]111\x1b\\"));
     ratatui::restore();
     res
 }
