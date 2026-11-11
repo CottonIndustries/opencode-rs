@@ -110,6 +110,16 @@ fn builtins() -> Vec<Agent> {
     build.description = Some("The default agent. Executes tools based on configured permissions.".into());
     build.permissions.push(rule("question", "*", Effect::Allow));
 
+    // Upstream's `opencode.plan` plugin: read-only except for plan files under ~/.opencode/plan.
+    let mut plan = Agent::builtin("plan", "Plan", Mode::Primary);
+    plan.description = Some("Read-only agent for exploring the codebase and planning work before implementation.".into());
+    plan.permissions.extend([
+        rule("question", "*", Effect::Allow),
+        rule("edit", "*", Effect::Deny),
+        rule("edit", "*.opencode/plan/*", Effect::Allow),
+        rule("edit", "*.opencode\\plan\\*", Effect::Allow),
+    ]);
+
     let mut general = Agent::builtin("general", "General", Mode::Subagent);
     general.description = Some(
         "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel."
@@ -149,7 +159,7 @@ fn builtins() -> Vec<Agent> {
     summary.system = Some(SUMMARY_PROMPT.into());
     summary.permissions.push(rule("*", "*", Effect::Deny));
 
-    vec![build, general, explore, compaction, title, summary]
+    vec![build, plan, general, explore, compaction, title, summary]
 }
 
 fn apply(agent: &mut Agent, cfg: &AgentConfig) {

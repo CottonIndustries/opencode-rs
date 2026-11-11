@@ -242,6 +242,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
             usage.cache_read = cached;
             usage.output = u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
             usage.reasoning = u.pointer("/completion_tokens_details/reasoning_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+            usage.cost = crate::session::reported_cost(u);
         }
         let Some(choice) = v.pointer("/choices/0") else { continue };
         let delta = choice.get("delta").cloned().unwrap_or(Value::Null);

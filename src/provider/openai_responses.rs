@@ -195,6 +195,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
                     usage.cache_read = cached;
                     usage.output = u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
                     usage.reasoning = u.pointer("/output_tokens_details/reasoning_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                    usage.cost = crate::session::reported_cost(u);
                 }
                 finish = if ty == "response.incomplete" {
                     match r.pointer("/incomplete_details/reason").and_then(|x| x.as_str()) {

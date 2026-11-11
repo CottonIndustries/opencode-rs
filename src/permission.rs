@@ -83,6 +83,15 @@ pub fn from_config(v: &Value) -> Vec<Rule> {
                 }
             }
         }
+        // v2 `permissions`: ordered `[{ action, resource, effect }]`
+        Value::Array(items) => {
+            for item in items {
+                let field = |k: &str| item.get(k).and_then(Value::as_str);
+                if let (Some(action), Some(resource), Some(e)) = (field("action"), field("resource"), field("effect").and_then(Effect::parse)) {
+                    out.push(rule(canonical_action(action), resource, e));
+                }
+            }
+        }
         _ => {}
     }
     out
@@ -144,5 +153,14 @@ mod tests {
         assert_eq!(evaluate(&r, "read", "/x/.env.example"), Effect::Allow);
         assert!(disabled(&r, "edit"));
         assert!(!disabled(&r, "shell"));
+    }
+    #[test]
+    fn v2_rule_list() {
+        let r = from_config(&serde_json::json!([
+            { "action": "shell", "resource": "*", "effect": "ask" },
+            { "action": "shell", "resource": "git *", "effect": "allow" },
+        ]));
+        assert_eq!(evaluate(&r, "shell", "git status"), Effect::Allow);
+        assert_eq!(evaluate(&r, "shell", "ls"), Effect::Ask);
     }
 }

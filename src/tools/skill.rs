@@ -63,6 +63,18 @@ fn scan(dir: &Path, out: &mut Vec<Skill>) {
 
 pub fn discover(config: &Config, dirs: &[PathBuf], directory: &Path) -> Vec<Skill> {
     let mut out = builtins();
+    // Like upstream: global `~/.claude` and `~/.agents`, then the same folders up the project tree.
+    let home = &crate::paths::get().home;
+    let mut shared = vec![home.join(".claude"), home.join(".agents")];
+    let mut ancestors: Vec<&Path> = directory.ancestors().take_while(|a| *a != home.as_path()).collect();
+    ancestors.reverse();
+    for a in ancestors {
+        shared.push(a.join(".claude"));
+        shared.push(a.join(".agents"));
+    }
+    for d in &shared {
+        scan(&d.join("skills"), &mut out);
+    }
     for d in dirs {
         scan(&d.join("skill"), &mut out);
         scan(&d.join("skills"), &mut out);

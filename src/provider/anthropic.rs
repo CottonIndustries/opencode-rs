@@ -340,6 +340,9 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
                     if let Some(i) = u.get("cache_creation_input_tokens").and_then(|x| x.as_u64()) {
                         usage.cache_write = i;
                     }
+                    if let Some(c) = crate::session::reported_cost(u) {
+                        usage.cost = Some(c);
+                    }
                 }
             }
             "message_stop" => break,

@@ -104,6 +104,10 @@ pub fn select_model(app: &App, agent: &Agent, opts: &PromptOptions, session_mode
 }
 
 pub fn cost(model: &Model, u: &Usage) -> f64 {
+    // catalog pricing is only the fallback for endpoints that don't report what they charged
+    if let Some(c) = u.cost {
+        return c;
+    }
     (u.input as f64 * model.cost_input + u.output as f64 * model.cost_output + u.cache_read as f64 * model.cost_cache_read + u.cache_write as f64 * model.cost_cache_write) / 1_000_000.0
 }
 
@@ -148,6 +152,33 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     result
 }
 
+const PLAN_LEAVE: &str = "<system-reminder>\nYou are NO LONGER in Plan mode. The previous Plan restrictions no longer apply. Any Plan mode instructions from earlier in this conversation are no longer active.\n</system-reminder>";
+
+fn plan_enter() -> String {
+    let dir = crate::paths::get().home.join(".opencode").join("plan");
+    format!(
+        "<system-reminder>\nYou are in Plan mode. Discuss the plan with the user directly in the conversation. Do not create or update plan files unless the user explicitly asks you to; when they do, write them only in:\n{}\n\nDo not modify any other files or ask a subagent to do so.\n\nYou remain in Plan mode until the user switches agents. If the user asks you to implement changes, do not do so. Tell them they need to switch agents.\n</system-reminder>",
+        dir.display()
+    )
+}
+
+/// Upstream's Plan plugin: remind the model when it enters or leaves Plan mode.
+fn plan_reminder(agent: &str, history: &[Message]) -> Option<String> {
+    let enter = plan_enter();
+    let last = history.iter().flat_map(|m| m.parts.iter()).rev().find_map(|p| match p {
+        Part::Text { text, synthetic: true } if *text == enter || text == PLAN_LEAVE => Some(text.clone()),
+        _ => None,
+    });
+    let active = last.as_deref() == Some(enter.as_str());
+    if agent == "plan" && !active {
+        return Some(enter);
+    }
+    if agent != "plan" && active {
+        return Some(PLAN_LEAVE.into());
+    }
+    None
+}
+
 /// Deliver a background notification (finished shell/subagent) to a session.
 pub async fn notify(app: Arc<App>, session_id: String, text: String) {
     let mut msg = Message::new(Role::User);
@@ -172,6 +203,9 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     };
     msg.agent = Some(agent.id.clone());
     msg.model = Some(model_ref.clone());
+    if let Some(text) = plan_reminder(&agent.id, &handle.with(|s| s.messages.clone())) {
+        msg.parts.insert(0, Part::Text { text, synthetic: true });
+    }
     let first = handle.with(|s| {
         s.agent = Some(agent.id.clone());
         s.model = Some(full.clone());
@@ -194,7 +228,17 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     run_loop(app, handle, agent, sel).await
 }
 
+/// Stamp the end time of the open thought when other output starts.
+fn close_reasoning(msg: &mut Message) {
+    if let Some(Part::Reasoning { started: Some(_), ended: ended @ None, .. }) = msg.parts.iter_mut().rev().find(|p| matches!(p, Part::Reasoning { .. })) {
+        *ended = Some(crate::util::now_ms());
+    }
+}
+
 fn apply_event(msg: &mut Message, ev: &Event, reasoning_open: &mut bool) {
+    if matches!(ev, Event::TextDelta(_) | Event::ToolInputStart { .. } | Event::ToolCall { .. } | Event::Finish(_)) {
+        close_reasoning(msg);
+    }
     match ev {
         Event::TextDelta(t) => match msg.parts.last_mut() {
             Some(Part::Text { text, synthetic: false }) => text.push_str(t),
@@ -208,18 +252,20 @@ fn apply_event(msg: &mut Message, ev: &Event, reasoning_open: &mut bool) {
                 }
             }
             *reasoning_open = true;
-            msg.parts.push(Part::Reasoning { text: t.clone(), signature: None, redacted: None, item_id: None });
+            let now = crate::util::now_ms();
+            msg.parts.push(Part::Reasoning { text: t.clone(), signature: None, redacted: None, item_id: None, started: Some(now), ended: None });
         }
         Event::ReasoningEnd { signature: sig, redacted: red, item_id: iid } => {
             if *reasoning_open {
                 *reasoning_open = false;
-                if let Some(Part::Reasoning { signature, redacted, item_id, .. }) = msg.parts.iter_mut().rev().find(|p| matches!(p, Part::Reasoning { .. })) {
+                if let Some(Part::Reasoning { signature, redacted, item_id, ended, .. }) = msg.parts.iter_mut().rev().find(|p| matches!(p, Part::Reasoning { .. })) {
                     *signature = sig.clone();
                     *redacted = red.clone();
                     *item_id = iid.clone();
+                    ended.get_or_insert_with(crate::util::now_ms);
                 }
             } else if sig.is_some() || red.is_some() {
-                msg.parts.push(Part::Reasoning { text: String::new(), signature: sig.clone(), redacted: red.clone(), item_id: iid.clone() });
+                msg.parts.push(Part::Reasoning { text: String::new(), signature: sig.clone(), redacted: red.clone(), item_id: iid.clone(), started: None, ended: None });
             }
         }
         Event::ToolInputStart { id, name } => {
@@ -412,8 +458,9 @@ async fn step_once(
     };
 
     let model = sel.model.clone();
-    let (usage, finish) = handle.with(|s| {
-        let m = s.messages.iter_mut().rev().find(|m| m.id == msg_id).unwrap();
+    let done = handle.with(|s| {
+        // undo can remove the message while the step is still winding down
+        let m = s.messages.iter_mut().rev().find(|m| m.id == msg_id)?;
         m.cost = cost(&model, &m.usage);
         m.completed = Some(crate::util::now_ms());
         if aborted {
@@ -424,8 +471,11 @@ async fn step_once(
             m.error = Some(e.clone());
             m.finish = Some("error".into());
         }
-        (m.usage.clone(), m.finish.clone().unwrap_or_else(|| "unknown".into()))
+        Some((m.usage.clone(), m.finish.clone().unwrap_or_else(|| "unknown".into())))
     });
+    let Some((usage, finish)) = done else {
+        return Ok(StepResult { finish: "aborted".into(), usage: Usage::default(), tool_calls: 0, rejected: false, aborted: true });
+    };
     if let Some(e) = &error {
         app.emit(AppEvent::Error { session: sid.clone(), message: e.clone() });
     }

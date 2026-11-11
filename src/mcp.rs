@@ -303,4 +303,10 @@ impl Manager {
     pub fn configured(&self) -> usize {
         self.configs.len()
     }
+
+    /// Configured servers with their status so far (`None` while still connecting).
+    pub fn snapshot(&self) -> Vec<(String, Option<Status>)> {
+        let st = self.status.lock().unwrap();
+        self.configs.keys().map(|n| (n.clone(), st.get(n).cloned())).collect()
+    }
 }

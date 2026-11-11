@@ -161,7 +161,8 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
     };
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(cmd);
-        if candidate.is_file() {
+        // npm puts an extensionless sh shim next to `name.cmd`; Windows cannot run the shim
+        if candidate.is_file() && (!cfg!(windows) || candidate.extension().is_some()) {
             return Some(candidate);
         }
         for ext in &exts {

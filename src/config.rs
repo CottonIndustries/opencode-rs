@@ -24,6 +24,7 @@ pub struct Config {
     pub agent: BTreeMap<String, AgentConfig>,
     pub command: BTreeMap<String, CommandConfig>,
     pub instructions: Vec<String>,
+    #[serde(alias = "permissions")]
     pub permission: Option<Value>,
     pub mcp: BTreeMap<String, McpConfig>,
     pub tools: BTreeMap<String, bool>,
@@ -96,6 +97,7 @@ pub struct AgentConfig {
     #[serde(alias = "maxSteps")]
     pub max_steps: Option<usize>,
     pub tools: BTreeMap<String, bool>,
+    #[serde(alias = "permissions")]
     pub permission: Option<Value>,
     pub disable: bool,
     pub hidden: bool,
@@ -302,6 +304,19 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
 
     // normalize legacy fields
     if let Value::Object(m) = &mut raw {
+        // v2 nests servers: `"mcp": { "servers": { name: { ..., "disabled": bool } } }`
+        if let Some(Value::Object(mcp)) = m.get_mut("mcp") {
+            if let Some(Value::Object(servers)) = mcp.remove("servers") {
+                for (name, mut server) in servers {
+                    if let Value::Object(s) = &mut server {
+                        if let Some(Value::Bool(disabled)) = s.remove("disabled") {
+                            s.entry("enabled").or_insert(Value::Bool(!disabled));
+                        }
+                    }
+                    mcp.insert(name, server);
+                }
+            }
+        }
         if let Some(mode) = m.remove("mode") {
             let agents = m.entry("agent").or_insert_with(|| Value::Object(Map::new()));
             let mut mode = mode;

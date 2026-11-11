@@ -21,6 +21,14 @@ pub struct Usage {
     pub reasoning: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// USD the endpoint reported charging (`usage.cost`); `0` is authoritative (free or covered by a plan)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+}
+
+/// `usage.cost` as OpenRouter, LiteLLM and OpenCode Zen/Go report it; malformed or negative is absent.
+pub fn reported_cost(u: &serde_json::Value) -> Option<f64> {
+    u.get("cost").and_then(|x| x.as_f64()).filter(|c| c.is_finite() && *c >= 0.0)
 }
 
 impl Usage {
@@ -33,6 +41,9 @@ impl Usage {
         self.reasoning += o.reasoning;
         self.cache_read += o.cache_read;
         self.cache_write += o.cache_write;
+        if let Some(c) = o.cost {
+            self.cost = Some(self.cost.unwrap_or(0.0) + c);
+        }
     }
 }
 
@@ -81,6 +92,11 @@ pub enum Part {
         redacted: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         item_id: Option<String>,
+        /// When the thought started and finished streaming (ms), for "Thought: 1.5s".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended: Option<i64>,
     },
     Tool {
         id: String,
@@ -198,7 +214,7 @@ impl Session {
             id: crate::util::id_desc("ses"),
             project: project.to_string(),
             directory: directory.to_path_buf(),
-            title: format!("{prefix}{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")),
+            title: format!("{prefix}{}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ")),
             parent_id: parent,
             time_created: now,
             time_updated: now,
