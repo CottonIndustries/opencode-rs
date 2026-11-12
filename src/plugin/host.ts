@@ -2070,8 +2070,11 @@ function makeDomains(plugin: PluginRecord): Json {
     lazy(async (input: Json) => {
       const definition = vcsDefinition()
       const handler = definition?.[method]
-      if (typeof handler !== "function") throw new Error(`no vcs provider registered for ${method}`)
-      const result = await settle(handler(input, { signal: new AbortController().signal }))
+      const scoped = { directory, worktree, canonical: worktree, ...(input ?? {}) }
+      const result =
+        typeof handler === "function"
+          ? await settle(handler(scoped, { signal: new AbortController().signal }))
+          : await callRPC(`vcs.${method}`, scoped)
       return envelope ? apiResponse(result) : result
     })
   const vcs: Json = {
@@ -2137,18 +2140,45 @@ function makeDomains(plugin: PluginRecord): Json {
     ...worktreeBase,
     list: lazy(async (input: Json) => {
       const definition = worktreeDefinition()
-      if (typeof definition?.list !== "function") return []
-      return settle(definition.list(input?.sourceDirectory ?? input?.directory ?? directory, { signal: new AbortController().signal }))
+      const sourceDirectory = input?.sourceDirectory ?? input?.directory ?? directory
+      const result =
+        typeof definition?.list === "function"
+          ? await settle(definition.list(sourceDirectory, { signal: new AbortController().signal }))
+          : await callRPC("worktree.list", { ...(input ?? {}), sourceDirectory })
+      return apiResponse(result)
     }),
     create: lazy(async (input: Json) => {
       const definition = worktreeDefinition()
-      if (typeof definition?.create !== "function") throw new Error("no worktree provider registered")
-      return settle(definition.create(input, { signal: new AbortController().signal }))
+      const from = input?.from ?? directory
+      const result =
+        typeof definition?.create === "function"
+          ? await settle(
+              definition.create(
+                { sourceDirectory: from, directory: input?.directory ?? "", branch: input?.branch },
+                { signal: new AbortController().signal },
+              ),
+            )
+          : await callRPC("worktree.create", { ...(input ?? {}), sourceDirectory: from })
+      return apiResponse(result)
     }),
     remove: lazy(async (input: Json) => {
       const definition = worktreeDefinition()
-      if (typeof definition?.remove !== "function") throw new Error("no worktree provider registered")
-      await settle(definition.remove(input, { signal: new AbortController().signal }))
+      if (typeof definition?.remove === "function") {
+        await settle(
+          definition.remove(
+            { directory: input?.directory, force: input?.force ?? false },
+            { signal: new AbortController().signal },
+          ),
+        )
+      } else {
+        await callRPC("worktree.remove", input)
+      }
+      return undefined
+    }),
+    refresh: lazy(async (input: Json) => {
+      if (typeof worktreeDefinition()?.list !== "function") {
+        await callRPC("worktree.refresh", input)
+      }
       return undefined
     }),
   }

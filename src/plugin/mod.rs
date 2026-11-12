@@ -3233,6 +3233,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("experimental.terminal.read requires sessionID"))?;
             Ok(pty::manager().read(&id).unwrap_or(Value::Null))
         }
+        path if path.starts_with("vcs.") || path.starts_with("worktree.") => {
+            crate::vcs::dispatch(path, &first)
+        }
         _ => Err(anyhow!("plugin client: unsupported method {path}")),
     }
 }

@@ -23,6 +23,7 @@ mod state;
 mod tools;
 mod tui;
 mod util;
+mod vcs;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
