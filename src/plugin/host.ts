@@ -1095,8 +1095,70 @@ type Subscriber = {
   done: boolean
 }
 const subscribers = new Set<Subscriber>()
+const KNOWN_SESSION_EVENTS = new Set([
+  "session.created",
+  "session.agent.selected",
+  "session.model.selected",
+  "session.moved",
+  "session.renamed",
+  "session.metadata.updated",
+  "session.permissions",
+  "session.viewed",
+  "session.archived",
+  "session.unarchived",
+  "session.message.content.updated",
+  "session.usage.recorded",
+  "session.usage.updated",
+  "session.deleted",
+  "session.forked",
+  "session.inbox.delivered",
+  "session.inbox.enqueued",
+  "session.inbox.cancelled",
+  "session.inbox.delivery.changed",
+  "session.execution.started",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+  "session.instructions.updated",
+  "session.synthetic",
+  "session.skill.activated",
+  "session.shell.started",
+  "session.shell.ended",
+  "session.step.started",
+  "session.step.streamed",
+  "session.step.ended",
+  "session.step.failed",
+  "session.text.started",
+  "session.text.delta",
+  "session.text.ended",
+  "session.reasoning.started",
+  "session.reasoning.delta",
+  "session.reasoning.ended",
+  "session.tool.input.started",
+  "session.tool.input.delta",
+  "session.tool.input.ended",
+  "session.tool.called",
+  "session.tool.progress",
+  "session.tool.success",
+  "session.tool.failed",
+  "session.retry.scheduled",
+  "session.compaction.started",
+  "session.compaction.delta",
+  "session.compaction.ended",
+  "session.compaction.failed",
+  "session.revert.staged",
+  "session.revert.cleared",
+  "session.revert.committed",
+  "session.status",
+  "session.idle",
+])
 
 function subscribeEvents(options?: { types?: string[]; signal?: AbortSignal }): AsyncIterable<Json> {
+  for (const type of options?.types ?? []) {
+    if (type.startsWith("session.") && !KNOWN_SESSION_EVENTS.has(type)) {
+      log("warn", `unknown event type: ${type}`)
+    }
+  }
   const subscriber: Subscriber = {
     types: options?.types?.length ? new Set(options.types) : undefined,
     queue: [],
