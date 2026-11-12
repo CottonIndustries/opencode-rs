@@ -1286,6 +1286,33 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let text = if let Some(result) = title_event.get("result").and_then(Value::as_str) {
         result.to_string()
     } else {
+        if let Some(list) = title_event.get("system").and_then(Value::as_array) {
+            req.system = list
+                .iter()
+                .filter_map(|item| item.as_str().map(String::from).or_else(|| item.get("text").and_then(Value::as_str).map(String::from)))
+                .collect();
+        }
+        if let Some(list) = title_event.get("messages") {
+            crate::plugin::apply_messages_hook(&mut req.messages, list);
+        }
+        if let Some(options) = title_event.get("options") {
+            if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
+                req.temperature = Some(temperature);
+            }
+            if let Some(top_p) = options.get("topP").and_then(Value::as_f64) {
+                req.top_p = Some(top_p);
+            }
+            if let Some(max) = options
+                .get("maxTokens")
+                .and_then(Value::as_u64)
+                .or_else(|| options.get("maxOutputTokens").and_then(Value::as_u64))
+            {
+                req.max_tokens = max;
+            }
+            if let Some(extra) = options.get("options").filter(|value| value.is_object()) {
+                req.options = extra.clone();
+            }
+        }
         complete_request(req, None).await?.0
     };
     let title = text
