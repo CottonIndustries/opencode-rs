@@ -2034,8 +2034,11 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let message_id = crate::util::id("msg");
             let session_id = id.clone();
             let payload_text = text.clone();
+            let notification_id = message_id.clone();
             let app = app.clone();
-            tokio::spawn(async move { crate::engine::notify(app, session_id, payload_text).await });
+            tokio::spawn(async move {
+                crate::engine::notify_with_id(app, session_id, payload_text, Some(notification_id)).await
+            });
             Ok(json!({
                 "id": message_id,
                 "sessionID": id,

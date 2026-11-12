@@ -115,6 +115,15 @@ pub fn cost(model: &Model, u: &Usage) -> f64 {
 /// picked up at the next step (steering).
 pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptOptions) -> Result<()> {
     let handle = app.session(session_id)?;
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.inbox.enqueued",
+        "properties": {
+            "sessionID": session_id,
+            "inboxID": msg.id.clone(),
+            "item": inbox_item(&msg),
+        },
+    }));
     if handle.busy.swap(true, Ordering::SeqCst) {
         handle.queue.lock().unwrap().push_back((msg, opts));
         app.emit(AppEvent::Updated { session: session_id.to_string() });
@@ -125,6 +134,11 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     let mut pending = Some((msg, opts));
     loop {
         if let Some((msg, opts)) = pending.take() {
+            app.plugins.emit(serde_json::json!({
+                "id": crate::util::id("evt"),
+                "type": "session.inbox.delivered",
+                "properties": { "sessionID": session_id, "inboxID": msg.id },
+            }));
             result = turn(app.clone(), handle.clone(), msg, opts).await;
             if let Err(e) = &result {
                 app.emit(AppEvent::Error { session: session_id.to_string(), message: e.to_string() });
@@ -205,14 +219,47 @@ fn plan_reminder(agent: &str, history: &[Message]) -> Option<String> {
     None
 }
 
+fn inbox_item(msg: &Message) -> Value {
+    let files: Vec<Value> = msg
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::File(file) => Some(serde_json::json!({
+                "data": file.data,
+                "mime": file.mime,
+                "source": { "type": "inline" },
+                "name": file.name,
+            })),
+            _ => None,
+        })
+        .collect();
+    let synthetic = msg.parts.iter().all(|part| matches!(part, Part::Text { synthetic: true, .. }));
+    let mut payload = serde_json::json!({ "text": msg.text() });
+    if !files.is_empty() {
+        payload["files"] = Value::Array(files);
+    }
+    serde_json::json!({
+        "type": if synthetic { "synthetic" } else { "user" },
+        "payload": payload,
+        "delivery": "steer",
+    })
+}
+
 /// Deliver a background notification (finished shell/subagent) to a session.
 pub async fn notify(app: Arc<App>, session_id: String, text: String) {
+    notify_with_id(app, session_id, text, None).await
+}
+
+pub async fn notify_with_id(app: Arc<App>, session_id: String, text: String, id: Option<String>) {
     app.plugins.emit(serde_json::json!({
         "id": crate::util::id("evt"),
         "type": "session.synthetic",
         "properties": { "sessionID": session_id.clone(), "text": text.clone() },
     }));
     let mut msg = Message::new(Role::User);
+    if let Some(id) = id {
+        msg.id = id;
+    }
     msg.parts.push(Part::Text { text, synthetic: true });
     let opts = app
         .session(&session_id)
@@ -461,6 +508,13 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
         // steering: fold queued user messages into the conversation
         let queued: Vec<(Message, PromptOptions)> = handle.queue.lock().unwrap().drain(..).collect();
         if !queued.is_empty() {
+            for (message, _) in &queued {
+                app.plugins.emit(serde_json::json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.delivered",
+                    "properties": { "sessionID": sid, "inboxID": message.id },
+                }));
+            }
             handle.with(|s| s.messages.extend(queued.into_iter().map(|(m, _)| m)));
             handle.save();
         }
