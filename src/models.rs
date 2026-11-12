@@ -18,10 +18,28 @@ pub enum Protocol {
     Google,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelKind {
+    Chat,
+    Image,
+    Decision,
+}
+
+impl ModelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelKind::Chat => "chat",
+            ModelKind::Image => "image",
+            ModelKind::Decision => "decision",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
     pub provider_id: String,
+    pub kind: ModelKind,
     pub name: String,
     pub family: String,
     pub reasoning: bool,
@@ -36,6 +54,7 @@ pub struct Model {
     pub cost_cache_read: f64,
     pub cost_cache_write: f64,
     pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
     pub interleaved_field: Option<String>,
     pub release_date: String,
     pub status: Option<String>,
@@ -102,6 +121,7 @@ pub struct Provider {
     pub key: Option<String>,
     pub options: ProviderOptions,
     pub models: BTreeMap<String, Model>,
+    pub media_models: BTreeMap<String, Model>,
 }
 
 impl Provider {
@@ -210,9 +230,24 @@ fn parse_model(provider_id: &str, id: &str, v: &Value) -> Model {
     let cost = v.get("cost").cloned().unwrap_or(Value::Null);
     let num = |o: &Value, k: &str| o.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
     let provider = v.get("provider").cloned().unwrap_or(Value::Null);
+    let output_modalities: Vec<String> = v
+        .pointer("/modalities/output")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+        .unwrap_or_else(|| vec!["text".into()]);
+    let kind = match v.get("type").and_then(Value::as_str) {
+        Some("image") => ModelKind::Image,
+        Some("decision") => ModelKind::Decision,
+        Some(_) => ModelKind::Chat,
+        None if output_modalities.iter().any(|m| m == "image") && !output_modalities.iter().any(|m| m == "text") => {
+            ModelKind::Image
+        }
+        None => ModelKind::Chat,
+    };
     Model {
         id: s("id").unwrap_or_else(|| id.to_string()),
         provider_id: provider_id.to_string(),
+        kind,
         name: s("name").unwrap_or_else(|| id.to_string()),
         family: s("family").unwrap_or_default(),
         reasoning: b("reasoning", false),
@@ -231,6 +266,7 @@ fn parse_model(provider_id: &str, id: &str, v: &Value) -> Model {
             .and_then(|x| x.as_array())
             .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
             .unwrap_or_else(|| vec!["text".into()]),
+        output_modalities,
         interleaved_field: v.pointer("/interleaved/field").and_then(|x| x.as_str()).map(String::from),
         release_date: s("release_date").unwrap_or_default(),
         status: s("status"),
@@ -254,6 +290,13 @@ fn is_chat_model(v: &Value) -> bool {
         Some(arr) => arr.iter().any(|m| m.as_str() == Some("text")),
         None => true,
     }
+}
+
+fn is_media_model(v: &Value) -> bool {
+    matches!(v.get("type").and_then(Value::as_str), Some("image") | Some("decision"))
+        || v.pointer("/modalities/output")
+            .and_then(Value::as_array)
+            .is_some_and(|out| out.iter().any(|m| m.as_str() == Some("image")) && !out.iter().any(|m| m.as_str() == Some("text")))
 }
 
 /// Build the provider registry from the catalog, credentials and config.
@@ -285,12 +328,14 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
         }
         let cs = |k: &str| cat.and_then(|c| c.get(k)).and_then(|x| x.as_str()).map(String::from);
         let mut models = BTreeMap::new();
+        let mut media_models = BTreeMap::new();
         if let Some(Value::Object(ms)) = cat.and_then(|c| c.get("models")) {
             for (mid, mv) in ms {
-                if !is_chat_model(mv) {
-                    continue;
+                if is_chat_model(mv) {
+                    models.insert(mid.clone(), parse_model(&id, mid, mv));
+                } else if is_media_model(mv) {
+                    media_models.insert(mid.clone(), parse_model(&id, mid, mv));
                 }
-                models.insert(mid.clone(), parse_model(&id, mid, mv));
             }
         }
         let mut env: Vec<String> = cat
@@ -307,6 +352,7 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
             key: None,
             options: ProviderOptions::default(),
             models,
+            media_models,
         };
         if let Some(cfg) = cfg {
             if let Some(n) = &cfg.name {
@@ -321,24 +367,39 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
             env.extend(cfg.env.iter().cloned());
             provider.options = cfg.options.clone();
             for (mid, mv) in &cfg.models {
-                let base = provider
-                    .models
-                    .get(mid)
-                    .map(|m| model_to_value(m))
-                    .unwrap_or_else(|| serde_json::json!({ "id": mid, "name": mid, "tool_call": true, "attachment": false }));
+                let media = provider.media_models.contains_key(mid) || is_media_model(mv);
+                let base = if media {
+                    provider
+                        .media_models
+                        .get(mid)
+                        .map(model_to_value)
+                        .unwrap_or_else(|| serde_json::json!({ "id": mid, "name": mid, "type": "image" }))
+                } else {
+                    provider
+                        .models
+                        .get(mid)
+                        .map(model_to_value)
+                        .unwrap_or_else(|| serde_json::json!({ "id": mid, "name": mid, "tool_call": true, "attachment": false }))
+                };
                 let mut merged = base;
                 crate::config::merge(&mut merged, mv.clone());
                 let mut m = parse_model(&id, mid, &merged);
                 if let Some(api_id) = mv.get("id").and_then(|x| x.as_str()) {
                     m.id = api_id.to_string();
                 }
-                provider.models.insert(mid.clone(), m);
+                if media {
+                    provider.media_models.insert(mid.clone(), m);
+                } else {
+                    provider.models.insert(mid.clone(), m);
+                }
             }
             if let Some(wl) = &cfg.whitelist {
                 provider.models.retain(|k, _| wl.contains(k));
+                provider.media_models.retain(|k, _| wl.contains(k));
             }
             if let Some(bl) = &cfg.blacklist {
                 provider.models.retain(|k, _| !bl.contains(k));
+                provider.media_models.retain(|k, _| !bl.contains(k));
             }
         }
         provider.env = env;
@@ -349,12 +410,13 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
             .or_else(|| creds.get(&id).map(|c| c.secret().to_string()))
             .or_else(|| provider.env.iter().find_map(|e| std::env::var(e).ok().filter(|v| !v.is_empty())));
         provider.models.retain(|_, m| m.status.as_deref() != Some("deprecated"));
+        provider.media_models.retain(|_, m| m.status.as_deref() != Some("deprecated"));
         // OpenCode Zen without an account: anonymous access to the free models only
         if id == "opencode" && provider.key.is_none() {
             provider.key = Some("public".into());
             provider.models.retain(|_, m| m.cost_input == 0.0);
         }
-        if provider.models.is_empty() {
+        if provider.models.is_empty() && provider.media_models.is_empty() {
             continue;
         }
         out.insert(id, provider);
@@ -364,12 +426,12 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
 
 fn model_to_value(m: &Model) -> Value {
     serde_json::json!({
-        "id": m.id, "name": m.name, "family": m.family, "reasoning": m.reasoning,
+        "id": m.id, "type": m.kind.as_str(), "name": m.name, "family": m.family, "reasoning": m.reasoning,
         "reasoning_options": m.reasoning_options, "tool_call": m.tool_call, "attachment": m.attachment,
         "temperature": m.temperature, "release_date": m.release_date,
         "limit": { "context": m.context, "output": m.output },
         "cost": { "input": m.cost_input, "output": m.cost_output, "cache_read": m.cost_cache_read, "cache_write": m.cost_cache_write },
-        "modalities": { "input": m.input_modalities },
+        "modalities": { "input": m.input_modalities, "output": m.output_modalities },
         "provider": { "npm": m.npm, "api": m.api, "shape": m.shape },
         "options": m.options, "headers": m.headers,
     })
@@ -381,6 +443,20 @@ pub fn available(config: &Config, all: &BTreeMap<String, Provider>) -> Vec<Strin
         .filter(|p| p.key.is_some() || config.provider.contains_key(&p.id) || p.id == "opencode")
         .map(|p| p.id.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_models_live_in_the_media_registry() {
+        let providers = providers(&Config::default());
+        let openai = providers.get("openai").expect("openai catalog provider");
+        assert!(openai.media_models.contains_key("gpt-image-2"));
+        assert!(!openai.models.contains_key("gpt-image-2"));
+        assert_eq!(openai.media_models["gpt-image-2"].kind, ModelKind::Image);
+    }
 }
 
 /// `provider/model#variant` → (provider, model, variant)
@@ -415,6 +491,30 @@ pub fn resolve(all: &BTreeMap<String, Provider>, reference: &str) -> Result<Reso
                 anyhow!("model not found: {pid}/{mid}. Did you mean: {}", suggestions.join(", "))
             }
         })?;
+    Ok(Resolved { provider: provider.clone(), model, variant })
+}
+
+pub fn resolve_media(
+    all: &BTreeMap<String, Provider>,
+    reference: &str,
+    kind: ModelKind,
+) -> Result<Resolved> {
+    let (pid, mid, variant) = parse_ref(reference)
+        .ok_or_else(|| anyhow!("model must be in the form provider/model, got {reference}"))?;
+    let provider = all.get(&pid).ok_or_else(|| anyhow!("provider not found: {pid}"))?;
+    let model = provider
+        .media_models
+        .get(&mid)
+        .cloned()
+        .or_else(|| provider.media_models.values().find(|m| m.id == mid).cloned())
+        .ok_or_else(|| anyhow!("{} model not found: {pid}/{mid}", kind.as_str()))?;
+    if model.kind != kind {
+        return Err(anyhow!(
+            "{pid}/{mid} is a {} model, not a {} model",
+            model.kind.as_str(),
+            kind.as_str()
+        ));
+    }
     Ok(Resolved { provider: provider.clone(), model, variant })
 }
 
