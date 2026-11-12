@@ -98,6 +98,13 @@ impl Handle {
     }
 }
 
+#[derive(Clone)]
+struct PluginBase {
+    providers: BTreeMap<String, Provider>,
+    agents: BTreeMap<String, Agent>,
+    commands: BTreeMap<String, crate::command::Command>,
+}
+
 pub struct App {
     pub directory: PathBuf,
     pub worktree: PathBuf,
@@ -114,6 +121,7 @@ pub struct App {
     pub plugin_commands: RwLock<std::collections::BTreeSet<String>>,
     plugin_default_agent: RwLock<Option<String>>,
     plugin_default_model: RwLock<Option<String>>,
+    plugin_base: Mutex<Option<PluginBase>>,
     pub events: broadcast::Sender<AppEvent>,
     pub ask_mode: Mutex<AskMode>,
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
@@ -159,6 +167,7 @@ impl App {
             plugin_commands: RwLock::new(plugin_commands),
             plugin_default_agent: RwLock::new(None),
             plugin_default_model: RwLock::new(None),
+            plugin_base: Mutex::new(None),
             events,
             ask_mode: Mutex::new(AskMode::Interactive),
             pending: Mutex::new(HashMap::new()),
@@ -181,6 +190,11 @@ impl App {
         let mut agents = crate::agent::load(&config, &directories);
         let mut skills = crate::tools::skill::discover(&config, &directories, &directory);
         let mut commands = crate::command::load(&config, &directories);
+        let base = PluginBase {
+            providers: providers.clone(),
+            agents: agents.clone(),
+            commands: commands.clone(),
+        };
 
         // Plugins can transform the registries before the application starts.
         // The host receives a JSON snapshot and returns the transformed state.
@@ -244,6 +258,7 @@ impl App {
                 plugin_manager,
                 applied.plugin_commands,
             );
+            *app.plugin_base.lock().unwrap() = Some(base);
             app.plugins.attach(&app);
             return Ok(app);
         }
@@ -262,15 +277,18 @@ impl App {
             plugin_manager,
             Default::default(),
         );
+        *app.plugin_base.lock().unwrap() = Some(base);
         app.plugins.attach(&app);
         Ok(app)
     }
 
     /// Apply a transformed plugin state after startup (transform `reload()`).
     pub fn apply_plugin_state(&self, state: &serde_json::Value) {
-        let base_agents = self.agents();
-        let base_commands = self.commands();
-        let base_providers = self.providers();
+        let base = self.plugin_base.lock().unwrap().clone();
+        let (base_providers, base_agents, base_commands) = match base {
+            Some(base) => (base.providers, base.agents, base.commands),
+            None => (self.providers(), self.agents(), self.commands()),
+        };
         let applied = crate::plugin::apply_state(state, &self.config, &base_providers, &base_agents, &base_commands);
         *self.providers.write().unwrap() = applied.providers;
         *self.agents.write().unwrap() = applied.agents;
