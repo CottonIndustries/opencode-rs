@@ -214,7 +214,7 @@ pub async fn session_export(id: Option<String>, sanitize: bool) -> Result<()> {
                         }
                     }
                     crate::session::Part::File(f) => f.data.clear(),
-                    crate::session::Part::Compaction { summary } => *summary = "[redacted]".into(),
+                    crate::session::Part::Compaction { summary, .. } => *summary = "[redacted]".into(),
                 }
             }
         }

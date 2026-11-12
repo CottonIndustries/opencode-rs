@@ -31,7 +31,7 @@ fn convert(req: &Request) -> Vec<Value> {
                         Part::File(f) if f.mime == "application/pdf" => parts.push(json!({
                             "type": "file", "file": { "filename": f.name, "file_data": data_url(f) }
                         })),
-                        Part::Compaction { summary } => parts.push(json!({ "type": "text", "text": super::compaction_text(summary) })),
+                        Part::Compaction { summary, .. } => parts.push(json!({ "type": "text", "text": super::compaction_text(summary) })),
                         _ => {}
                     }
                 }

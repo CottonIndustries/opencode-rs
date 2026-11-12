@@ -35,7 +35,7 @@ fn convert(req: &Request) -> Vec<Value> {
                         Part::File(f) if f.mime.starts_with("image/") || f.mime == "application/pdf" => {
                             parts.push(json!({ "inlineData": { "mimeType": f.mime, "data": f.data } }))
                         }
-                        Part::Compaction { summary } => parts.push(json!({ "text": super::compaction_text(summary) })),
+                        Part::Compaction { summary, .. } => parts.push(json!({ "text": super::compaction_text(summary) })),
                         _ => {}
                     }
                 }

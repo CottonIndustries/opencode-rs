@@ -751,6 +751,7 @@ pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &S
     if let Some(options) = sdk.get("options").filter(|value| value.is_object()) {
         req.options = options.clone();
     }
+    let sdk_value = sdk.get("sdk").cloned().unwrap_or(Value::Null);
     let language = app
         .plugins
         .trigger(
@@ -758,7 +759,7 @@ pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &S
             "language",
             serde_json::json!({
                 "model": model,
-                "sdk": Value::Null,
+                "sdk": sdk_value,
                 "options": req.options,
             }),
         )
@@ -1606,6 +1607,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         .pointer("/result/summary")
         .and_then(Value::as_str)
         .map(String::from);
+    let result_metadata = compaction_event.pointer("/result/metadata").cloned().filter(|value| !value.is_null());
     if let Some(list) = compaction_event.get("system").and_then(Value::as_array) {
         system = list
             .iter()
@@ -1720,7 +1722,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         },
     }));
     let mut m = Message::new(Role::User);
-    m.parts.push(Part::Compaction { summary: summary.trim().to_string() });
+    m.parts.push(Part::Compaction { summary: summary.trim().to_string(), metadata: result_metadata });
     if continuing {
         let autocontinue = app
             .plugins

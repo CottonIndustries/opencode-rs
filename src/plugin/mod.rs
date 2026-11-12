@@ -818,7 +818,7 @@ mod tests {
     #[test]
     fn compaction_messages_use_v2_shapes() {
         let mut message = crate::session::Message::new(crate::session::Role::User);
-        message.parts.push(crate::session::Part::Compaction { summary: "summary".into() });
+        message.parts.push(crate::session::Part::Compaction { summary: "summary".into(), metadata: None });
         message.usage.input = 10;
         let value = session_messages_json(&[message]);
         assert_eq!(value[0]["type"], "compaction");
@@ -3409,10 +3409,14 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
         .map(|message| match message.role {
             Role::User => {
                 if let Some(summary) = message.parts.iter().find_map(|part| match part {
-                    Part::Compaction { summary } => Some(summary),
+                    Part::Compaction { summary, .. } => Some(summary),
                     _ => None,
                 }) {
-                    return json!({
+                    let metadata = message.parts.iter().find_map(|part| match part {
+                        Part::Compaction { metadata, .. } => metadata.clone(),
+                        _ => None,
+                    });
+                    let mut value = json!({
                         "id": message.id,
                         "time": { "created": message.time },
                         "type": "compaction",
@@ -3427,6 +3431,10 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                             "cache": { "read": message.usage.cache_read, "write": message.usage.cache_write },
                         },
                     });
+                    if let Some(metadata) = metadata {
+                        value["metadata"] = metadata;
+                    }
+                    return value;
                 }
                 let text = message
                     .parts
@@ -3509,7 +3517,7 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                             },
                             "time": { "created": message.time },
                         })),
-                        Part::Compaction { summary } => Some(json!({ "type": "text", "text": summary })),
+                        Part::Compaction { summary, .. } => Some(json!({ "type": "text", "text": summary })),
                         Part::File(_) => None,
                     })
                     .collect();
@@ -4101,7 +4109,9 @@ pub fn messages_for_hook(session_id: &str, messages: &[crate::session::Message])
                     "type": "file", "mime": file.mime, "filename": file.name,
                     "url": format!("data:{};base64,{}", file.mime, file.data),
                 }),
-                Part::Compaction { summary } => json!({ "type": "compaction", "summary": summary }),
+                Part::Compaction { summary, metadata } => json!({
+                    "type": "compaction", "summary": summary, "metadata": metadata,
+                }),
             })
             .collect()
     };
@@ -4242,6 +4252,7 @@ pub fn apply_messages_hook(messages: &mut Vec<crate::session::Message>, value: &
                 }
                 Some("compaction") => next.push(Part::Compaction {
                     summary: part.get("summary").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    metadata: part.get("metadata").cloned().filter(|value| !value.is_null()),
                 }),
                 _ => {}
             }

@@ -77,7 +77,7 @@ fn convert(req: &Request) -> Vec<Value> {
                                 content.push(b);
                             }
                         }
-                        Part::Compaction { summary } => content.push(json!({ "type": "text", "text": super::compaction_text(summary) })),
+                        Part::Compaction { summary, .. } => content.push(json!({ "type": "text", "text": super::compaction_text(summary) })),
                         _ => {}
                     }
                 }

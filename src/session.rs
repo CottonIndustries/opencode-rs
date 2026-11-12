@@ -110,6 +110,8 @@ pub enum Part {
     /// Marks a compaction point: everything before is replaced by `summary`.
     Compaction {
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
 }
 

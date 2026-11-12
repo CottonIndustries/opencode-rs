@@ -523,7 +523,7 @@ fn user_box(text: &str, files: &[(String, String)], color: Rgba, ctx: &Ctx) -> R
 fn compaction(m: &Message, ctx: &Ctx) -> Vec<Line<'static>> {
     let t = ctx.t;
     let bg = t.bg;
-    let summary = m.parts.iter().find_map(|p| if let Part::Compaction { summary } = p { Some(summary.as_str()) } else { None }).unwrap_or("");
+    let summary = m.parts.iter().find_map(|p| if let Part::Compaction { summary, .. } = p { Some(summary.as_str()) } else { None }).unwrap_or("");
     let u = &m.usage;
     let input = u.input + u.cache_read + u.cache_write;
     let output = u.output + u.reasoning;
