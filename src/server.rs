@@ -969,6 +969,9 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(Value::Null)
         }
         ("GET", ["api", "plugin"]) => Ok(json!({ "data": app.plugins.list() })),
+        ("GET", ["api", "plugin", "gui"]) => Ok(json!({ "data": Value::Null })),
+        ("POST", ["api", "plugin", "check"]) => Ok(json!({ "data": app.plugins.list() })),
+        ("POST", ["api", "plugin", "update"]) => Ok(Value::Null),
         ("GET", ["api", "reference"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "agent", agent_id]) => {
             let agent = app.agents().get(*agent_id).cloned().ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
@@ -1018,6 +1021,30 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("POST", ["api", "experimental", "generate", "decisions"]) => {
             let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
             Ok(json!({ "data": result }))
+        }
+        ("GET", ["api", "project"]) => Ok(json!({
+            "data": [{
+                "id": app.project,
+                "canonical": app.worktree.to_string_lossy(),
+                "vcs": if app.is_git { json!("git") } else { Value::Null },
+                "time": { "created": 0, "updated": crate::util::now_ms(), "active": crate::util::now_ms() },
+                "sandboxes": [],
+            }]
+        })),
+        ("PATCH", ["api", "project", project_id]) => {
+            if *project_id != app.project.as_str() {
+                return Err(anyhow!("project not found: {project_id}"));
+            }
+            Ok(json!({
+                "data": {
+                    "id": app.project,
+                    "canonical": request.body.get("canonical").and_then(Value::as_str).unwrap_or_else(|| app.worktree.to_str().unwrap_or_default()),
+                    "name": request.body.get("name").cloned().unwrap_or(Value::Null),
+                    "vcs": if app.is_git { json!("git") } else { Value::Null },
+                    "time": { "created": 0, "updated": crate::util::now_ms(), "active": crate::util::now_ms() },
+                    "sandboxes": [],
+                }
+            }))
         }
         ("GET", ["api", "shell"]) => {
             let shells = shells();
