@@ -650,6 +650,7 @@ pub struct Manager {
     websearch: RwLock<Vec<(String, String)>>,
     websearch_default: RwLock<Option<Value>>,
     errors: Vec<String>,
+    events: tokio::sync::broadcast::Sender<Value>,
 }
 
 struct Inner {
@@ -846,6 +847,7 @@ impl Manager {
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
             errors: Vec::new(),
+            events: tokio::sync::broadcast::channel(4096).0,
         }
     }
 
@@ -857,7 +859,12 @@ impl Manager {
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
             errors,
+            events: tokio::sync::broadcast::channel(4096).0,
         }
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        self.events.subscribe()
     }
 
     pub fn enabled(&self) -> bool {
@@ -884,6 +891,7 @@ impl Manager {
 
     pub fn emit(&self, mut event: Value) {
         crate::event_store::append(&mut event);
+        let _ = self.events.send(event.clone());
         let Some(inner) = &self.inner else { return };
         let _ = inner.tx.send(json!({ "type": "notification", "method": "event", "params": event }));
     }
@@ -1229,6 +1237,7 @@ async fn start(
         websearch: RwLock::new(Vec::new()),
         websearch_default: RwLock::new(None),
         errors: Vec::new(),
+        events: tokio::sync::broadcast::channel(4096).0,
     };
 
     if let Some(stderr) = stderr {

@@ -359,21 +359,27 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
 
 async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
     let mut events = app.subscribe();
+    let mut plugin_events = app.plugins.subscribe();
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: keep-alive\r\naccess-control-allow-origin: *\r\n\r\n";
     stream.write_all(head.as_bytes()).await?;
     let connected = json!({ "id": crate::util::id("evt"), "type": "server.connected", "properties": {} });
     stream.write_all(format!("data: {connected}\n\n").as_bytes()).await?;
     loop {
-        match events.recv().await {
-            Ok(event) => {
-                let value = crate::app::plugin_event(&event);
-                let payload = format!("data: {value}\n\n");
-                if stream.write_all(payload.as_bytes()).await.is_err() {
-                    break;
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(_) => break,
+        let value = tokio::select! {
+            event = events.recv() => match event {
+                Ok(event) => crate::app::plugin_event(&event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+            event = plugin_events.recv() => match event {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+        };
+        let payload = format!("data: {value}\n\n");
+        if stream.write_all(payload.as_bytes()).await.is_err() {
+            break;
         }
     }
     Ok(())
