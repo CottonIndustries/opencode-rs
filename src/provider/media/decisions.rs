@@ -43,13 +43,19 @@ async fn openai(provider: &Provider, model: &Model, input: &Value) -> Result<Val
                     Some(json!({ "type": "input_text", "text": value.to_string() }))
                 }
             }
-            Some("file") => Some(json!({
-                "type": "input_image",
-                "image_url": data_url(
-                    part.get("data").and_then(Value::as_str).unwrap_or_default(),
-                    part.get("mime").and_then(Value::as_str).unwrap_or("image/png")
-                ),
-            })),
+            Some("file") => {
+                let mime = part.get("mime").and_then(Value::as_str).unwrap_or("image/png");
+                if !mime.starts_with("image/") {
+                    return None;
+                }
+                Some(json!({
+                    "type": "input_image",
+                    "image_url": data_url(
+                        part.get("data").and_then(Value::as_str).unwrap_or_default(),
+                        mime
+                    ),
+                }))
+            }
             _ => None,
         })
         .collect();
@@ -70,6 +76,9 @@ async fn openai(provider: &Provider, model: &Model, input: &Value) -> Result<Val
             }
             if !meanings.is_empty() {
                 next["instructions"] = json!(format!("{instructions}\n\n{}", meanings.join("\n")));
+            }
+            if let Some(object) = next.as_object_mut() {
+                object.remove("criteria");
             }
             next
         })

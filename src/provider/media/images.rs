@@ -825,6 +825,9 @@ async fn cloudflare(provider: &Provider, model: &Model, request: &ImageRequest) 
         }
         crate::http::send(builder).await?
     } else {
+        if request.images.len() > 1 {
+            bail!("{} takes one input image as image_b64", model.id);
+        }
         let mut body = json!({ "prompt": request.prompt });
         if let Some(size) = size {
             body["width"] = json!(size.width);
