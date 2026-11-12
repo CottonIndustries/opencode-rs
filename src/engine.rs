@@ -121,7 +121,7 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
         "properties": {
             "sessionID": session_id,
             "inboxID": msg.id.clone(),
-            "item": inbox_item(&msg),
+            "item": inbox_item(&msg, opts.delivery.as_deref().unwrap_or("steer")),
         },
     }));
     if handle.busy.swap(true, Ordering::SeqCst) {
@@ -244,7 +244,7 @@ fn plan_reminder(agent: &str, history: &[Message]) -> Option<String> {
     None
 }
 
-fn inbox_item(msg: &Message) -> Value {
+pub(crate) fn inbox_item(msg: &Message, delivery: &str) -> Value {
     let files: Vec<Value> = msg
         .parts
         .iter()
@@ -263,19 +263,28 @@ fn inbox_item(msg: &Message) -> Value {
     if !files.is_empty() {
         payload["files"] = Value::Array(files);
     }
+    if let Some(metadata) = &msg.metadata {
+        payload["metadata"] = metadata.clone();
+    }
     serde_json::json!({
         "type": if synthetic { "synthetic" } else { "user" },
         "payload": payload,
-        "delivery": "steer",
+        "delivery": delivery,
     })
 }
 
 /// Deliver a background notification (finished shell/subagent) to a session.
 pub async fn notify(app: Arc<App>, session_id: String, text: String) {
-    notify_with_id(app, session_id, text, None).await
+    notify_with_id(app, session_id, text, None, None).await
 }
 
-pub async fn notify_with_id(app: Arc<App>, session_id: String, text: String, id: Option<String>) {
+pub async fn notify_with_id(
+    app: Arc<App>,
+    session_id: String,
+    text: String,
+    id: Option<String>,
+    metadata: Option<Value>,
+) {
     app.plugins.emit(serde_json::json!({
         "id": crate::util::id("evt"),
         "type": "session.synthetic",
@@ -285,11 +294,12 @@ pub async fn notify_with_id(app: Arc<App>, session_id: String, text: String, id:
     if let Some(id) = id {
         msg.id = id;
     }
+    msg.metadata = metadata;
     msg.parts.push(Part::Text { text, synthetic: true });
     let opts = app
         .session(&session_id)
         .ok()
-        .map(|h| h.with(|s| PromptOptions { agent: s.agent.clone(), model: s.model.clone(), variant: None }))
+        .map(|h| h.with(|s| PromptOptions { agent: s.agent.clone(), model: s.model.clone(), variant: None, delivery: None }))
         .unwrap_or_default();
     let _ = prompt(app, &session_id, msg, opts).await;
 }
@@ -532,8 +542,24 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     let mut length_retries = 0;
     let mut interrupted = false;
     loop {
-        // steering: fold queued user messages into the conversation
-        let queued: Vec<(Message, PromptOptions)> = handle.queue.lock().unwrap().drain(..).collect();
+        // steering: fold queued user messages into the conversation, leaving
+        // `queue` deliveries for the next turn
+        let drained: Vec<(Message, PromptOptions)> = handle.queue.lock().unwrap().drain(..).collect();
+        let mut queued = Vec::new();
+        let mut deferred = Vec::new();
+        for item in drained {
+            if item.1.delivery.as_deref() == Some("queue") {
+                deferred.push(item);
+            } else {
+                queued.push(item);
+            }
+        }
+        if !deferred.is_empty() {
+            let mut queue = handle.queue.lock().unwrap();
+            for item in deferred.into_iter().rev() {
+                queue.push_front(item);
+            }
+        }
         if !queued.is_empty() {
             for (message, _) in &queued {
                 app.plugins.emit(serde_json::json!({
@@ -606,7 +632,12 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
             }
             continue;
         }
-        let has_queue = !handle.queue.lock().unwrap().is_empty();
+        let has_queue = handle
+            .queue
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, options)| options.delivery.as_deref() != Some("queue"));
         match res.finish.as_str() {
             "tool-calls" if res.tool_calls > 0 && !last => continue,
             "pause" => continue,

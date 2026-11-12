@@ -133,6 +133,8 @@ pub struct Message {
     pub finish: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl Message {
@@ -149,6 +151,7 @@ impl Message {
             cost: 0.0,
             finish: None,
             error: None,
+            metadata: None,
         }
     }
     pub fn user_text(text: impl Into<String>) -> Self {
@@ -206,6 +209,14 @@ pub struct Session {
     pub metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revert: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -238,6 +249,10 @@ impl Session {
             approved: vec![],
             loaded_instructions: vec![],
             metadata: None,
+            revert: None,
+            environment: Default::default(),
+            viewed_at: None,
+            idle_ms: None,
             archived: false,
             instruction_entries: Default::default(),
             cost_total: 0.0,
@@ -404,6 +419,9 @@ pub struct Summary {
     pub directory: PathBuf,
     pub metadata: Option<serde_json::Value>,
     pub permissions: Option<serde_json::Value>,
+    pub revert: Option<serde_json::Value>,
+    pub viewed_at: Option<i64>,
+    pub idle_ms: Option<i64>,
     pub archived: bool,
     pub cost: f64,
     pub tokens: Usage,
@@ -424,6 +442,12 @@ pub fn list(project: &str) -> Vec<Summary> {
         metadata: Option<serde_json::Value>,
         #[serde(default)]
         permissions: Option<serde_json::Value>,
+        #[serde(default)]
+        revert: Option<serde_json::Value>,
+        #[serde(default)]
+        viewed_at: Option<i64>,
+        #[serde(default)]
+        idle_ms: Option<i64>,
         #[serde(default)]
         archived: bool,
         #[serde(default)]
@@ -449,6 +473,9 @@ pub fn list(project: &str) -> Vec<Summary> {
                         directory: h.directory,
                         metadata: h.metadata,
                         permissions: h.permissions,
+                        revert: h.revert,
+                        viewed_at: h.viewed_at,
+                        idle_ms: h.idle_ms,
                         archived: h.archived,
                         cost: h.cost_total,
                         tokens: h.tokens_total,

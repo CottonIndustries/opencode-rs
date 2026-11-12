@@ -35,6 +35,8 @@ pub struct Form {
     pub fields: Value,
     pub status: Status,
     pub replies: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     pub time_created: i64,
     pub time_updated: i64,
 }
@@ -61,10 +63,31 @@ impl FormStore {
             fields,
             status: Status::Pending,
             replies: json!({}),
+            message: None,
             time_created: now,
             time_updated: now,
         };
         self.inner.lock().unwrap().insert(form.id.clone(), Entry { form: form.clone(), waiters: Vec::new() });
+        form
+    }
+
+    /// Create a form using a caller-provided id when one is supplied.
+    pub fn create_with_id(
+        &self,
+        id: Option<&str>,
+        session_id: &str,
+        title: &str,
+        metadata: Value,
+        fields: Value,
+    ) -> Form {
+        let mut form = self.create(session_id, title, metadata, fields);
+        let Some(id) = id else { return form };
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(mut entry) = inner.remove(&form.id) {
+            form.id = id.to_string();
+            entry.form.id = form.id.clone();
+            inner.insert(form.id.clone(), entry);
+        }
         form
     }
 
@@ -115,6 +138,10 @@ impl FormStore {
 
     /// Mark a form cancelled and wake waiters.
     pub fn cancel(&self, id: &str) -> Result<Form> {
+        self.cancel_with_message(id, None)
+    }
+
+    pub fn cancel_with_message(&self, id: &str, message: Option<String>) -> Result<Form> {
         let mut inner = self.inner.lock().unwrap();
         let entry = inner.get_mut(id).ok_or_else(|| anyhow!("form not found: {id}"))?;
         match entry.form.status {
@@ -123,6 +150,7 @@ impl FormStore {
             Status::Cancelled => return Err(anyhow!("form already cancelled: {id}")),
         }
         entry.form.status = Status::Cancelled;
+        entry.form.message = message;
         entry.form.time_updated = crate::util::now_ms();
         let form = entry.form.clone();
         let waiters = std::mem::take(&mut entry.waiters);

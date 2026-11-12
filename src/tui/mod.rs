@@ -1102,6 +1102,7 @@ impl Ui {
             agent: cmd.and_then(|c| c.agent.clone()).or_else(|| Some(self.agent.clone())),
             model: cmd.and_then(|c| c.model.clone()).or_else(|| self.model.clone()),
             variant: self.variant.clone(),
+            delivery: None,
         };
         if let Some(m) = self.model.clone() {
             self.prefs.use_model(&m);

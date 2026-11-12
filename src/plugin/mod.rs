@@ -9,6 +9,8 @@
 //! cache. When it is missing, a pinned official release is downloaded on first
 //! use.
 
+mod pty;
+
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -733,6 +735,34 @@ mod tests {
         assert!(applied.providers.is_empty());
         assert!(applied.mcp.is_empty());
         assert!(applied.skills.is_empty());
+    }
+
+    #[test]
+    fn file_diffs_collect_tool_metadata() {
+        let mut message = crate::session::Message::new(crate::session::Role::Assistant);
+        message.parts.push(crate::session::Part::Tool {
+            id: "call".into(),
+            name: "edit".into(),
+            input: json!({}),
+            state: crate::session::ToolState::Completed {
+                output: String::new(),
+                title: String::new(),
+                metadata: json!({
+                    "files": [{
+                        "file": "src/main.rs",
+                        "diff": "--- a/src/main.rs\n+++ b/src/main.rs\n",
+                        "additions": 2,
+                        "deletions": 1,
+                    }]
+                }),
+                attachments: vec![],
+            },
+            provider_meta: None,
+        });
+        let diffs = file_diffs(&[message]);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["file"], "src/main.rs");
+        assert_eq!(diffs[0]["status"], "modified");
     }
 
     #[test]
@@ -1488,6 +1518,30 @@ async fn plugin_generate(
     }))
 }
 
+fn prompt_files(body: &Value) -> Vec<crate::session::FilePart> {
+    let mut files = Vec::new();
+    for attachment in body.get("files").and_then(Value::as_array).into_iter().flatten() {
+        let name = attachment.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        if let Some(data) = attachment.get("data").and_then(Value::as_str) {
+            let mime = attachment
+                .get("mime")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            files.push(crate::session::FilePart { mime: mime.to_string(), data: data.to_string(), name });
+            continue;
+        }
+        let uri = attachment.get("uri").and_then(Value::as_str).unwrap_or_default();
+        if let Some((meta, data)) = uri.split_once(";base64,") {
+            files.push(crate::session::FilePart {
+                mime: meta.trim_start_matches("data:").to_string(),
+                data: data.to_string(),
+                name,
+            });
+        }
+    }
+    files
+}
+
 fn prompt_attachments(skills: &[crate::tools::skill::Skill], body: &Value) -> String {
     let mut parts = Vec::new();
     for agent in body.get("agents").and_then(Value::as_array).into_iter().flatten() {
@@ -1509,6 +1563,85 @@ fn prompt_attachments(skills: &[crate::tools::skill::Skill], body: &Value) -> St
         }
     }
     parts.join("\n\n")
+}
+
+fn instruction_hash(value: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn form_info_json(form: &crate::forms::Form) -> Value {
+    let mut value = json!({
+        "id": form.id,
+        "sessionID": form.session_id,
+        "title": form.title,
+        "fields": form.fields,
+    });
+    if !form.metadata.is_null() {
+        value["metadata"] = form.metadata.clone();
+    }
+    value
+}
+
+fn form_detail_json(form: &crate::forms::Form) -> Value {
+    let mut value = form_info_json(form);
+    value["state"] = match form.status {
+        crate::forms::Status::Pending => json!({ "status": "pending" }),
+        crate::forms::Status::Answered => json!({ "status": "answered", "answer": form.replies }),
+        crate::forms::Status::Cancelled => {
+            let mut state = json!({ "status": "cancelled" });
+            if let Some(message) = &form.message {
+                state["message"] = json!(message);
+            }
+            state
+        }
+    };
+    value
+}
+
+fn file_diffs(messages: &[crate::session::Message]) -> Vec<Value> {
+    let mut files: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for message in messages {
+        for part in &message.parts {
+            let crate::session::Part::Tool {
+                state: crate::session::ToolState::Completed { metadata, .. },
+                ..
+            } = part
+            else {
+                continue;
+            };
+            let Some(entries) = metadata.get("files").and_then(Value::as_array) else {
+                continue;
+            };
+            for entry in entries {
+                let Some(file) = entry.get("file").and_then(Value::as_str) else {
+                    continue;
+                };
+                let diff = entry.get("diff").and_then(Value::as_str).unwrap_or("");
+                let status = entry.get("status").and_then(Value::as_str).unwrap_or_else(|| {
+                    if diff.contains("--- /dev/null") {
+                        "added"
+                    } else if diff.contains("+++ /dev/null") {
+                        "deleted"
+                    } else {
+                        "modified"
+                    }
+                });
+                files.insert(
+                    file.to_string(),
+                    json!({
+                        "file": file,
+                        "patch": diff,
+                        "additions": entry.get("additions").and_then(Value::as_u64).unwrap_or(0),
+                        "deletions": entry.get("deletions").and_then(Value::as_u64).unwrap_or(0),
+                        "status": status,
+                    }),
+                );
+            }
+        }
+    }
+    files.into_values().collect()
 }
 
 async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
@@ -1563,10 +1696,10 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(project) = filter.get("project").and_then(Value::as_str) {
                 list.retain(|s| crate::session::project_id(&s.directory) == project);
             }
-            if filter.get("archived").and_then(Value::as_bool) == Some(true) {
-                list.retain(|s| s.archived);
-            } else {
-                list.retain(|s| !s.archived);
+            match filter.get("archived").and_then(Value::as_bool) {
+                Some(true) => list.retain(|s| s.archived),
+                Some(false) => list.retain(|s| !s.archived),
+                None => {}
             }
             if filter.get("order").and_then(Value::as_str) == Some("asc") {
                 list.reverse();
@@ -1626,12 +1759,22 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "properties": {
                     "sessionID": session.id,
                     "parentID": id,
-                    "boundary": boundary,
+                    "boundary": boundary.clone(),
                 }
             }));
-            Ok(session_json(&session))
+            let mut value = session_json(&session);
+            value["fork"] = json!({ "sessionID": id, "boundary": boundary });
+            Ok(value)
         }
         "session.background" => Ok(Value::Null),
+        "session.shell" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.shell requires sessionID"))?;
+            let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+            let handle = app.session(&id)?;
+            let (cwd, environment) = handle.with(|session| (session.directory.clone(), session.environment.clone()));
+            pty::manager().shell(&id, command, &cwd, &environment)?;
+            Ok(Value::Null)
+        }
         "session.skill" => {
             let session_id = session_id().ok_or_else(|| anyhow!("session.skill requires sessionID"))?;
             let skill_id = body
@@ -1651,6 +1794,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     .insert(format!("skill.{}", skill.id), json!({ "name": skill.name, "text": text.clone() }));
             });
             handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.instructions.updated",
+                "properties": {
+                    "sessionID": session_id.clone(),
+                    "delta": { (format!("api/skill.{}", skill.id)): instruction_hash(&json!(text.clone())) }
+                }
+            }));
             app.plugins.emit(json!({
                 "id": crate::util::id("evt"),
                 "type": "session.skill.activated",
@@ -1757,6 +1908,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.remove" | "session.delete" => {
             let id = session_id().ok_or_else(|| anyhow!("session.remove requires sessionID"))?;
             app.session(&id)?;
+            pty::manager().kill(&id);
             crate::session::delete(&app.project, &id)?;
             app.forget_session(&id);
             app.plugins.emit(json!({
@@ -1852,13 +2004,295 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             Ok(json!({ "type": if handle.is_busy() { "busy" } else { "idle" } }))
         }
-        "session.wait" => {
+        "session.active" => {
+            let mut active = Map::new();
+            for id in app.active_session_ids() {
+                active.insert(id, json!({ "type": "running" }));
+            }
+            Ok(Value::Object(active))
+        }
+        "session.wait" | "experimental.session.wait" => {
             let id = session_id().ok_or_else(|| anyhow!("session.wait requires sessionID"))?;
             let handle = app.session(&id)?;
             while handle.is_busy() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            Ok(json!({ "done": true }))
+            Ok(Value::Null)
+        }
+        "session.diff" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.diff requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let from = arg("from");
+            let to = arg("to");
+            let messages = handle.with(|session| {
+                let mut start = session
+                    .messages
+                    .iter()
+                    .rposition(|message| message.role == crate::session::Role::User)
+                    .unwrap_or(0);
+                let mut end = session.messages.len();
+                if let Some(from) = from.as_deref() {
+                    if let Some(index) = session.messages.iter().position(|message| message.id == from) {
+                        start = index + 1;
+                    }
+                }
+                if let Some(to) = to.as_deref() {
+                    if let Some(index) = session.messages.iter().position(|message| message.id == to) {
+                        end = index + 1;
+                    }
+                }
+                if start >= end {
+                    Vec::new()
+                } else {
+                    session.messages[start..end].to_vec()
+                }
+            });
+            Ok(json!(file_diffs(&messages)))
+        }
+        "session.environment" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.environment requires sessionID"))?;
+            let handle = app.session(&id)?;
+            if let Some(variables) = body.get("variables").and_then(Value::as_object) {
+                handle.with(|session| {
+                    session.environment = variables
+                        .iter()
+                        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                        .collect();
+                });
+                pty::manager().kill(&id);
+                handle.save();
+            }
+            Ok(Value::Null)
+        }
+        "session.view" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.view requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let Some(idle) = first.get("idle").and_then(Value::as_i64) else {
+                return Ok(Value::Null);
+            };
+            let mut changed = false;
+            handle.with(|session| {
+                if session.idle_ms.is_none_or(|current| idle >= current) {
+                    session.viewed_at = Some(crate::util::now_ms());
+                    session.idle_ms = Some(idle);
+                    changed = true;
+                }
+            });
+            if changed {
+                handle.save();
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.viewed",
+                    "properties": { "sessionID": id, "idle": idle }
+                }));
+            }
+            Ok(Value::Null)
+        }
+        "session.form.list" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.form.list requires sessionID"))?;
+            app.session(&id)?;
+            Ok(json!(app.forms.list(&id).iter().map(form_info_json).collect::<Vec<_>>()))
+        }
+        "session.form.create" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.form.create requires sessionID"))?;
+            app.session(&id)?;
+            let title = body.get("title").and_then(Value::as_str).unwrap_or("Form");
+            let metadata = body.get("metadata").cloned().unwrap_or(Value::Null);
+            let fields = body.get("fields").cloned().unwrap_or_else(|| json!([]));
+            if fields.as_array().is_none_or(|fields| fields.is_empty()) {
+                return Err(anyhow!("session.form.create requires at least one field"));
+            }
+            let requested_id = body.get("id").and_then(Value::as_str);
+            if let Some(requested_id) = requested_id {
+                if app.forms.get(requested_id).is_ok() {
+                    return Err(anyhow!("form already exists: {requested_id}"));
+                }
+            }
+            let form = app.forms.create_with_id(requested_id, &id, title, metadata, fields);
+            let info = form_info_json(&form);
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "form.created",
+                "properties": { "form": info.clone() }
+            }));
+            Ok(info)
+        }
+        "session.form.get" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.form.get requires sessionID"))?;
+            app.session(&id)?;
+            let form_id = arg("formID").ok_or_else(|| anyhow!("session.form.get requires formID"))?;
+            let form = app.forms.get(&form_id)?;
+            if form.session_id != id {
+                return Err(anyhow!("form not found: {form_id}"));
+            }
+            Ok(form_detail_json(&form))
+        }
+        "session.form.reply" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.form.reply requires sessionID"))?;
+            app.session(&id)?;
+            let form_id = arg("formID").ok_or_else(|| anyhow!("session.form.reply requires formID"))?;
+            let existing = app.forms.get(&form_id)?;
+            if existing.session_id != id {
+                return Err(anyhow!("form not found: {form_id}"));
+            }
+            let answer = body.get("answer").cloned().unwrap_or_else(|| json!({}));
+            let form = app.forms.reply(&form_id, answer.clone())?;
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "form.replied",
+                "properties": { "id": form_id, "sessionID": form.session_id, "answer": answer }
+            }));
+            Ok(Value::Null)
+        }
+        "session.form.cancel" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.form.cancel requires sessionID"))?;
+            app.session(&id)?;
+            let form_id = arg("formID").ok_or_else(|| anyhow!("session.form.cancel requires formID"))?;
+            let existing = app.forms.get(&form_id)?;
+            if existing.session_id != id {
+                return Err(anyhow!("form not found: {form_id}"));
+            }
+            let message = body.get("message").and_then(Value::as_str).map(String::from);
+            let form = app.forms.cancel_with_message(&form_id, message)?;
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "form.cancelled",
+                "properties": { "id": form_id, "sessionID": form.session_id }
+            }));
+            Ok(Value::Null)
+        }
+        "session.revert.stage" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.revert.stage requires sessionID"))?;
+            let message_id = arg("messageID").ok_or_else(|| anyhow!("session.revert.stage requires messageID"))?;
+            let handle = app.session(&id)?;
+            handle.with(|session| {
+                if !session.messages.iter().any(|message| message.id == message_id) {
+                    return Err(anyhow!("message not found: {message_id}"));
+                }
+                Ok(())
+            })?;
+            let files = if first.get("files").and_then(Value::as_bool).unwrap_or(true) {
+                let messages = handle.with(|session| {
+                    session
+                        .messages
+                        .iter()
+                        .position(|message| message.id == message_id)
+                        .map(|index| session.messages[index + 1..].to_vec())
+                        .unwrap_or_default()
+                });
+                Some(json!(file_diffs(&messages)))
+            } else {
+                None
+            };
+            let mut revert = json!({ "messageID": message_id });
+            if let Some(files) = files {
+                revert["files"] = files;
+            }
+            handle.with(|session| session.revert = Some(revert.clone()));
+            handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.revert.staged",
+                "properties": { "sessionID": id, "revert": revert }
+            }));
+            Ok(revert)
+        }
+        "session.revert.clear" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.revert.clear requires sessionID"))?;
+            let handle = app.session(&id)?;
+            handle.with(|session| session.revert = None);
+            handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.revert.cleared",
+                "properties": { "sessionID": id }
+            }));
+            Ok(Value::Null)
+        }
+        "session.revert.commit" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.revert.commit requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let Some(revert) = handle.with(|session| session.revert.clone()) else {
+                return Ok(Value::Null);
+            };
+            let Some(message_id) = revert.get("messageID").and_then(Value::as_str).map(String::from) else {
+                return Ok(Value::Null);
+            };
+            handle.with(|session| {
+                if let Some(index) = session.messages.iter().position(|message| message.id == message_id) {
+                    session.messages.truncate(index + 1);
+                }
+                session.revert = None;
+            });
+            handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.revert.committed",
+                "properties": { "sessionID": id, "to": message_id }
+            }));
+            Ok(Value::Null)
+        }
+        "session.inbox.list" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.inbox.list requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let items: Vec<Value> = handle
+                .queue
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(message, options)| {
+                    let mut item =
+                        crate::engine::inbox_item(message, options.delivery.as_deref().unwrap_or("steer"));
+                    if let Some(map) = item.as_object_mut() {
+                        map.insert("id".into(), json!(message.id.clone()));
+                        map.insert("sessionID".into(), json!(id.clone()));
+                        map.insert("time".into(), json!({ "created": message.time }));
+                    }
+                    item
+                })
+                .collect();
+            Ok(json!(items))
+        }
+        "session.inbox.cancel" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.inbox.cancel requires sessionID"))?;
+            let inbox_id = arg("inboxID").ok_or_else(|| anyhow!("session.inbox.cancel requires inboxID"))?;
+            let handle = app.session(&id)?;
+            let mut queue = handle.queue.lock().unwrap();
+            let before = queue.len();
+            queue.retain(|(message, _)| message.id != inbox_id);
+            let removed = queue.len() != before;
+            drop(queue);
+            if removed {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.cancelled",
+                    "properties": { "sessionID": id, "inboxID": inbox_id }
+                }));
+            }
+            Ok(Value::Null)
+        }
+        "session.inbox.update" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.inbox.update requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let delivery = body.get("delivery").and_then(Value::as_str).unwrap_or("steer");
+            let inbox_id = arg("inboxID").ok_or_else(|| anyhow!("session.inbox.update requires inboxID"))?;
+            let mut queue = handle.queue.lock().unwrap();
+            let mut updated = false;
+            for (message, options) in queue.iter_mut() {
+                if message.id == inbox_id {
+                    options.delivery = Some(delivery.to_string());
+                    updated = true;
+                }
+            }
+            drop(queue);
+            if updated {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.delivery.changed",
+                    "properties": { "sessionID": id, "inboxID": inbox_id, "delivery": delivery }
+                }));
+            }
+            Ok(Value::Null)
         }
         "session.message.list" => {
             let id = session_id().ok_or_else(|| anyhow!("session.message.list requires sessionID"))?;
@@ -1913,7 +2347,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.context" => {
             let id = session_id().ok_or_else(|| anyhow!("session.context requires sessionID"))?;
             let handle = app.session(&id)?;
-            Ok(handle.with(|s| session_messages_json(&s.messages)))
+            Ok(handle.with(|s| session_messages_json(&s.active_messages())))
         }
         "session.instructions" => {
             let id = session_id().ok_or_else(|| anyhow!("session.instructions requires sessionID"))?;
@@ -1942,8 +2376,15 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             let key = body.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
             let value = body.get("value").cloned().unwrap_or(Value::Null);
-            handle.with(|session| session.instruction_entries.insert(key, value));
+            let hash = instruction_hash(&value);
+            handle.with(|session| session.instruction_entries.insert(key.clone(), value));
             handle.save();
+            let event_key = if key.contains('/') { key } else { format!("api/{key}") };
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.instructions.updated",
+                "properties": { "sessionID": id, "delta": { (event_key): hash } }
+            }));
             Ok(Value::Null)
         }
         "session.instructions.entry.remove" => {
@@ -1952,6 +2393,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let key = body.get("key").and_then(Value::as_str).unwrap_or_default();
             handle.with(|session| session.instruction_entries.remove(key));
             handle.save();
+            let event_key = if key.contains('/') { key.to_string() } else { format!("api/{key}") };
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.instructions.updated",
+                "properties": { "sessionID": id, "delta": { (event_key): "removed" } }
+            }));
             Ok(Value::Null)
         }
         "session.switchAgent" => {
@@ -2020,6 +2467,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("session.move requires directory"))?;
             let handle = app.session(&id)?;
+            pty::manager().kill(&id);
             let directory = std::path::PathBuf::from(directory);
             handle.with(|session| {
                 session.directory = directory.clone();
@@ -2037,7 +2485,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }));
             Ok(Value::Null)
         }
-        "session.abort" | "session.interrupt" => {
+        "session.abort" => {
             let id = session_id().ok_or_else(|| anyhow!("session.abort requires sessionID"))?;
             let handle = app.session(&id)?;
             for inbox_id in handle.abort() {
@@ -2048,6 +2496,29 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 }));
             }
             Ok(json!(true))
+        }
+        "session.interrupt" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.interrupt requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let resume = first
+                .get("resume")
+                .or_else(|| first.pointer("/query/resume"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let interrupted = handle.is_busy();
+            if let Some(cancel) = handle.cancel.lock().unwrap().as_ref() {
+                cancel.cancel();
+            }
+            if !resume {
+                for inbox_id in handle.abort() {
+                    app.plugins.emit(json!({
+                        "id": crate::util::id("evt"),
+                        "type": "session.inbox.cancelled",
+                        "properties": { "sessionID": id.clone(), "inboxID": inbox_id }
+                    }));
+                }
+            }
+            Ok(json!({ "interrupted": interrupted }))
         }
         "session.prompt" => {
             let id = session_id().ok_or_else(|| {
@@ -2132,6 +2603,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(id) = body.get("id").or_else(|| first.get("id")).and_then(Value::as_str) {
                 message.id = id.to_string();
             }
+            if let Some(metadata) = body.get("metadata") {
+                message.metadata = Some(metadata.clone());
+            }
             for file in files {
                 message.parts.push(crate::session::Part::File(file));
             }
@@ -2163,13 +2637,24 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 }
                 opts.variant = model.get("variant").and_then(Value::as_str).map(String::from);
             }
+            opts.delivery = body.get("delivery").and_then(Value::as_str).map(String::from);
+            let mut payload = json!({ "text": payload_text, "files": files });
+            if let Some(metadata) = body.get("metadata") {
+                payload["metadata"] = metadata.clone();
+            }
+            if let Some(agents) = body.get("agents") {
+                payload["agents"] = agents.clone();
+            }
+            if let Some(skills) = body.get("skills") {
+                payload["skills"] = skills.clone();
+            }
             app.spawn_prompt(&id, message, opts)?;
             Ok(json!({
                 "id": message_id,
                 "sessionID": id,
                 "time": { "created": crate::util::now_ms() },
                 "type": "user",
-                "payload": { "text": payload_text, "files": files },
+                "payload": payload,
                 "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
             }))
         }
@@ -2186,16 +2671,24 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let session_id = id.clone();
             let payload_text = text.clone();
             let notification_id = message_id.clone();
+            let metadata = body.get("metadata").cloned();
             let app = app.clone();
             tokio::spawn(async move {
-                crate::engine::notify_with_id(app, session_id, payload_text, Some(notification_id)).await
+                crate::engine::notify_with_id(app, session_id, payload_text, Some(notification_id), metadata).await
             });
+            let mut payload = json!({ "text": text });
+            if let Some(description) = body.get("description") {
+                payload["description"] = description.clone();
+            }
+            if let Some(metadata) = body.get("metadata") {
+                payload["metadata"] = metadata.clone();
+            }
             Ok(json!({
                 "id": message_id,
                 "sessionID": id,
                 "time": { "created": crate::util::now_ms() },
                 "type": "synthetic",
-                "payload": { "text": text },
+                "payload": payload,
                 "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
             }))
         }
@@ -2241,7 +2734,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 let mut opts = crate::app::PromptOptions::default();
                 opts.agent = cmd.agent.clone();
                 opts.model = cmd.model.clone();
-                app.spawn_prompt(&id, crate::session::Message::user_text(text), opts)?;
+                opts.delivery = body.get("delivery").and_then(Value::as_str).map(String::from);
+                let mut message = crate::session::Message::user_text(text);
+                for file in prompt_files(&body) {
+                    message.parts.push(crate::session::Part::File(file));
+                }
+                app.spawn_prompt(&id, message, opts)?;
                 Ok(json!(true))
             } else {
                 Err(anyhow!("command not found: {name}"))
@@ -2250,7 +2748,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.compact" => {
             let id = session_id().ok_or_else(|| anyhow!("session.compact requires sessionID"))?;
             app.session(&id)?;
-            let message_id = crate::util::id("msg");
+            let message_id = body
+                .get("id")
+                .or_else(|| first.get("id"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| crate::util::id("msg"));
             let app = app.clone();
             let session = id.clone();
             tokio::spawn(async move {
@@ -2276,10 +2779,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "permission.get" => {
             let id = arg("requestID").or_else(|| arg("id")).unwrap_or_default();
+            let session = arg("sessionID");
             Ok(app
                 .pending_permissions()
                 .iter()
-                .find(|request| request.id == id)
+                .find(|request| {
+                    request.id == id
+                        && session.as_deref().is_none_or(|session| request.session_id == session)
+                })
                 .map(permission_json)
                 .unwrap_or(Value::Null))
         }
@@ -2383,9 +2890,10 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         // multi-credential integration store. Activation is therefore already
         // implied by the provider credential selected through `auth`.
         "credential.activate" => Ok(Value::Null),
-        // There is no persistent PTY store in the Rust client; report no
-        // output instead of failing a plugin that probes it.
-        "experimental.terminal.read" => Ok(Value::Null),
+        "experimental.terminal.read" => {
+            let id = session_id().ok_or_else(|| anyhow!("experimental.terminal.read requires sessionID"))?;
+            Ok(pty::manager().read(&id).unwrap_or(Value::Null))
+        }
         _ => Err(anyhow!("plugin client: unsupported method {path}")),
     }
 }
@@ -2470,6 +2978,9 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                     "type": "user",
                     "text": text,
                 });
+                if let Some(metadata) = &message.metadata {
+                    value["metadata"] = metadata.clone();
+                }
                 if !files.is_empty() {
                     value["files"] = json!(files);
                 }
@@ -2515,9 +3026,13 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                         Part::File(_) => None,
                     })
                     .collect();
-                json!({
+                let mut time = json!({ "created": message.time });
+                if let Some(completed) = message.completed {
+                    time["completed"] = json!(completed);
+                }
+                let mut value = json!({
                     "id": message.id,
-                    "time": { "created": message.time, "completed": message.completed },
+                    "time": time,
                     "type": "assistant",
                     "agent": message.agent.clone().unwrap_or_default(),
                     "model": model_ref_json(message.model.as_deref()),
@@ -2529,20 +3044,21 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                         "reasoning": message.usage.reasoning,
                         "cache": { "read": message.usage.cache_read, "write": message.usage.cache_write },
                     },
-                })
+                });
+                if let Some(metadata) = &message.metadata {
+                    value["metadata"] = metadata.clone();
+                }
+                value
             }
         })
         .collect::<Vec<_>>())
 }
 
 fn session_json_summary(session: &crate::session::Summary) -> Value {
-    json!({
+    let mut value = json!({
         "id": session.id,
-        "parentID": session.parent_id,
         "projectID": crate::session::project_id(&session.directory),
         "title": session.title,
-        "metadata": session.metadata,
-        "permissions": session.permissions,
         "cost": session.cost,
         "tokens": {
             "input": session.tokens.input,
@@ -2553,25 +3069,39 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
         "time": {
             "created": session.time_created,
             "updated": session.time_updated,
-            "archived": if session.archived { Some(session.time_updated) } else { None },
         },
         "location": { "directory": session.directory.to_string_lossy() },
-    })
+    });
+    if let Some(parent) = &session.parent_id {
+        value["parentID"] = json!(parent);
+    }
+    if let Some(metadata) = &session.metadata {
+        value["metadata"] = metadata.clone();
+    }
+    if let Some(permissions) = &session.permissions {
+        value["permissions"] = permissions.clone();
+    }
+    if let Some(revert) = &session.revert {
+        value["revert"] = revert.clone();
+    }
+    if let Some(viewed) = session.viewed_at {
+        value["time"]["viewed"] = json!(viewed);
+    }
+    if let Some(idle) = session.idle_ms {
+        value["time"]["idle"] = json!(idle);
+    }
+    if session.archived {
+        value["time"]["archived"] = json!(session.time_updated);
+    }
+    value
 }
 
 pub(crate) fn session_json(session: &crate::session::Session) -> Value {
     let (usage, cost) = session.usage_total();
-    json!({
+    let mut value = json!({
         "id": session.id,
-        "parentID": session.parent_id,
         "projectID": session.project,
-        "agent": session.agent,
-        "model": session.model.as_deref().and_then(crate::models::parse_ref).map(|(provider_id, id, variant)| json!({
-            "providerID": provider_id, "id": id, "variant": variant
-        })),
         "title": session.title,
-        "metadata": session.metadata,
-        "permissions": session.permissions,
         "cost": cost,
         "tokens": {
             "input": usage.input,
@@ -2582,10 +3112,37 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
         "time": {
             "created": session.time_created,
             "updated": session.time_updated,
-            "archived": if session.archived { Some(session.time_updated) } else { None },
         },
         "location": { "directory": session.directory.to_string_lossy() },
-    })
+    });
+    if let Some(parent) = &session.parent_id {
+        value["parentID"] = json!(parent);
+    }
+    if let Some(agent) = &session.agent {
+        value["agent"] = json!(agent);
+    }
+    if let Some((provider_id, id, variant)) = session.model.as_deref().and_then(crate::models::parse_ref) {
+        value["model"] = json!({ "providerID": provider_id, "id": id, "variant": variant });
+    }
+    if let Some(metadata) = &session.metadata {
+        value["metadata"] = metadata.clone();
+    }
+    if let Some(permissions) = &session.permissions {
+        value["permissions"] = permissions.clone();
+    }
+    if let Some(revert) = &session.revert {
+        value["revert"] = revert.clone();
+    }
+    if let Some(viewed) = session.viewed_at {
+        value["time"]["viewed"] = json!(viewed);
+    }
+    if let Some(idle) = session.idle_ms {
+        value["time"]["idle"] = json!(idle);
+    }
+    if session.archived {
+        value["time"]["archived"] = json!(session.time_updated);
+    }
+    value
 }
 
 // ---------------------------------------------------------------- state conversion

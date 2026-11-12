@@ -63,6 +63,7 @@ pub struct PromptOptions {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    pub delivery: Option<String>,
 }
 
 pub struct Handle {
@@ -344,6 +345,16 @@ impl App {
 
     pub fn providers(&self) -> BTreeMap<String, Provider> {
         self.providers.read().unwrap().clone()
+    }
+
+    pub fn active_session_ids(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|handle| handle.is_busy())
+            .map(|handle| handle.id())
+            .collect()
     }
 
     pub fn agent(&self, id: &str) -> Result<Agent> {

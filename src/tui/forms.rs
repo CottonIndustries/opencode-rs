@@ -379,6 +379,7 @@ mod tests {
             ]),
             status: Status::Pending,
             replies: json!({}),
+            message: None,
             time_created: 0,
             time_updated: 0,
         }

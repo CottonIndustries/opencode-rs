@@ -219,7 +219,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
 
     let json_mode = args.format == "json";
     let mut rx = app.subscribe();
-    let opts = PromptOptions { agent: args.agent.clone(), model: args.model.clone(), variant: None };
+    let opts = PromptOptions { agent: args.agent.clone(), model: args.model.clone(), variant: None, delivery: None };
     let app2 = app.clone();
     let sid2 = sid.clone();
     let mut task = tokio::spawn(async move { crate::engine::prompt(app2, &sid2, msg, opts).await });

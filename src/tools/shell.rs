@@ -371,11 +371,19 @@ impl Tool for Shell {
         if let Some(next) = shell_event.get("timeout").and_then(Value::as_u64) {
             timeout = next;
         }
-        let env: Vec<(String, String)> = shell_event
-            .get("env")
-            .and_then(Value::as_object)
-            .map(|map| map.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+        let mut env: std::collections::BTreeMap<String, String> = ctx
+            .app
+            .session(&ctx.session_id)
+            .map(|handle| handle.with(|session| session.environment.clone()))
             .unwrap_or_default();
+        if let Some(map) = shell_event.get("env").and_then(Value::as_object) {
+            for (key, value) in map {
+                if let Some(value) = value.as_str() {
+                    env.insert(key.clone(), value.to_string());
+                }
+            }
+        }
+        let env: Vec<(String, String)> = env.into_iter().collect();
         if !cwd.exists() || !cwd.is_dir() {
             return Err(anyhow!("Working directory does not exist or is not a directory: {}", cwd.display()));
         }

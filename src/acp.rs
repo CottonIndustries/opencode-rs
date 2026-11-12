@@ -338,7 +338,7 @@ impl Server {
         let app = a.app.clone();
         let blocks = prompt.as_array().cloned().unwrap_or_default();
         let input = convert_prompt(&blocks, &a.cwd)?;
-        let mut opts = PromptOptions { agent: None, model: None, variant: a.variant.lock().unwrap().clone() };
+        let mut opts = PromptOptions { agent: None, model: None, variant: a.variant.lock().unwrap().clone(), delivery: None };
         let mut text = input.text.clone();
 
         // slash commands: built-in /compact, then custom commands

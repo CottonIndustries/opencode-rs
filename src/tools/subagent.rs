@@ -101,7 +101,7 @@ impl Tool for Subagent {
         };
         let child_id = child.id();
         let model = arg_str(&input, "model").map(String::from).or_else(|| app.agent(&agent_id).ok().and_then(|a| a.model.clone())).or_else(|| Some(ctx.model.full_id()));
-        let opts = PromptOptions { agent: Some(agent_id.clone()), model, variant: None };
+        let opts = PromptOptions { agent: Some(agent_id.clone()), model, variant: None, delivery: None };
         let msg = Message::user_text(prompt);
         let title = format!("{description} (@{agent_id})");
 
