@@ -265,7 +265,17 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     let mut prompt_event = serde_json::json!({
         "sessionID": sid,
         "messageID": msg.id,
-        "prompt": { "text": msg.text() },
+        "prompt": {
+            "text": msg.text(),
+            "files": msg.parts.iter().filter_map(|part| match part {
+                Part::File(file) => Some(serde_json::json!({
+                    "uri": format!("data:{};base64,{}", file.mime, file.data),
+                    "name": file.name,
+                    "source": { "type": "inline" },
+                })),
+                _ => None,
+            }).collect::<Vec<_>>(),
+        },
         "metadata": {},
         "delivery": "steer",
         "agent": agent.id,
@@ -290,6 +300,20 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
             parts.extend(files);
             parts
         };
+    }
+    if let Some(files) = prompt_event.pointer("/prompt/files").and_then(Value::as_array) {
+        let mut parts: Vec<Part> = msg.parts.iter().filter(|p| !matches!(p, Part::File(_))).cloned().collect();
+        for file in files {
+            let uri = file.get("uri").and_then(Value::as_str).unwrap_or_default();
+            if let Some((meta, data)) = uri.split_once(";base64,") {
+                parts.push(Part::File(crate::session::FilePart {
+                    mime: meta.trim_start_matches("data:").to_string(),
+                    data: data.to_string(),
+                    name: file.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                }));
+            }
+        }
+        msg.parts = parts;
     }
     if let (Some(info), Some(parts)) = (prompt_event.get("message"), prompt_event.get("parts")) {
         let mut list = vec![msg.clone()];
