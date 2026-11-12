@@ -110,9 +110,12 @@ pub struct App {
     pub skills: Vec<crate::tools::skill::Skill>,
     pub commands: BTreeMap<String, crate::command::Command>,
     pub mcp: crate::mcp::Manager,
+    pub plugins: crate::plugin::Manager,
+    pub plugin_commands: std::collections::BTreeSet<String>,
     pub events: broadcast::Sender<AppEvent>,
     pub ask_mode: Mutex<AskMode>,
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
+    pending_requests: Mutex<HashMap<String, permission::Request>>,
     sessions: Mutex<HashMap<String, Arc<Handle>>>,
 }
 
@@ -128,16 +131,45 @@ impl App {
         let found = crate::config::find_worktree(&directory);
         let is_git = found.is_some();
         let worktree = found.unwrap_or_else(|| directory.clone());
-        let Loaded { mut config, files, directories } = crate::config::load(&directory, &worktree)?;
+        let Loaded { mut config, files, directories, plugins: specs } = crate::config::load(&directory, &worktree)?;
         config.mcp.extend(extra_mcp);
-        let providers = crate::models::providers(&config);
-        let agents = crate::agent::load(&config, &directories);
-        let skills = crate::tools::skill::discover(&config, &directories, &directory);
-        let commands = crate::command::load(&config, &directories);
+        let project = session::project_id(&worktree);
+        let mut providers = crate::models::providers(&config);
+        let mut agents = crate::agent::load(&config, &directories);
+        let mut skills = crate::tools::skill::discover(&config, &directories, &directory);
+        let mut commands = crate::command::load(&config, &directories);
+
+        // Plugins can transform the registries before the application starts.
+        // The host receives a JSON snapshot and returns the transformed state.
+        let snapshot = crate::plugin::snapshot(&config, &providers, &agents, &skills, &commands, &directory, &worktree, &project);
+        let (plugin_manager, state, errors) = crate::plugin::init(&directory, &worktree, &project, specs, snapshot).await;
+        for error in errors {
+            eprintln!("warning: {error}");
+        }
+        let plugin_commands = if plugin_manager.enabled() {
+            let applied = crate::plugin::apply_state(&state, &config, &providers, &agents, &commands);
+            providers = applied.providers;
+            agents = applied.agents;
+            skills = applied.skills;
+            commands = applied.commands;
+            config.mcp = applied.mcp;
+            if let Some(agent) = applied.default_agent {
+                if agents.contains_key(&agent) {
+                    config.default_agent = Some(agent);
+                }
+            }
+            if let Some(model) = applied.default_model {
+                config.model = Some(model);
+            }
+            applied.plugin_commands
+        } else {
+            Default::default()
+        };
+
         let mcp = crate::mcp::Manager::new(config.mcp.clone(), directory.clone());
         let (events, _) = broadcast::channel(4096);
         let app = Arc::new(App {
-            project: session::project_id(&worktree),
+            project,
             directory,
             worktree,
             is_git,
@@ -148,15 +180,43 @@ impl App {
             skills,
             commands,
             mcp,
+            plugins: plugin_manager,
+            plugin_commands,
             events,
             ask_mode: Mutex::new(AskMode::Interactive),
             pending: Mutex::new(HashMap::new()),
+            pending_requests: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
         });
+        app.plugins.attach(&app);
         Ok(app)
     }
 
+    /// Start a turn in the background (plugin/client requests are admitted,
+    /// not waited for).
+    pub fn spawn_prompt(self: &Arc<Self>, session_id: &str, msg: Message, opts: PromptOptions) -> Result<()> {
+        let app = self.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let _ = crate::engine::prompt(app, &session_id, msg, opts).await;
+        });
+        Ok(())
+    }
+
     pub fn emit(&self, ev: AppEvent) {
+        let mut plugin_event = plugin_event(&ev);
+        if let Some(session_id) = plugin_event.pointer("/properties/sessionID").and_then(serde_json::Value::as_str) {
+            let kind = plugin_event.get("type").and_then(serde_json::Value::as_str).unwrap_or_default();
+            if matches!(kind, "session.updated" | "session.idle" | "session.status" | "session.created") {
+                let session = self.sessions.lock().unwrap().get(session_id).map(|h| h.with(|s| s.clone()));
+                if let Some(session) = session {
+                    if let Some(properties) = plugin_event.get_mut("properties").and_then(serde_json::Value::as_object_mut) {
+                        properties.insert("info".into(), crate::plugin::session_json(&session));
+                    }
+                }
+            }
+        }
+        self.plugins.emit(plugin_event);
         let _ = self.events.send(ev);
     }
 
@@ -201,6 +261,12 @@ impl App {
     pub fn create_session(&self, parent: Option<String>) -> Arc<Handle> {
         let h = self.new_session(parent);
         h.save();
+        let session = h.with(|s| s.clone());
+        self.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.created",
+            "properties": { "info": crate::plugin::session_json(&session) }
+        }));
         h
     }
 
@@ -243,7 +309,40 @@ impl App {
 
         let mut needs_ask = Vec::new();
         for r in resources {
-            match permission::evaluate(&rules, action, r) {
+            let configured = permission::evaluate(&rules, action, r);
+            let event = self
+                .plugins
+                .trigger(
+                    "permission",
+                    "evaluate",
+                    serde_json::json!({
+                        "sessionID": handle.id(),
+                        "agent": agent.id,
+                        "action": action,
+                        "resources": [r],
+                        "metadata": metadata.clone(),
+                        "effect": match configured {
+                            Effect::Allow => "allow",
+                            Effect::Deny => "deny",
+                            Effect::Ask => "ask",
+                        },
+                        "request": {
+                            "id": crate::util::id("per"),
+                            "sessionID": handle.id(),
+                            "permission": action,
+                            "patterns": [r],
+                            "always": save,
+                            "metadata": metadata.clone(),
+                        },
+                    }),
+                )
+                .await;
+            let effect = event
+                .get("effect")
+                .and_then(serde_json::Value::as_str)
+                .and_then(Effect::parse)
+                .unwrap_or(configured);
+            match effect {
                 Effect::Allow => {}
                 Effect::Deny => {
                     return Err(anyhow!(
@@ -280,10 +379,12 @@ impl App {
         };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(req.id.clone(), tx);
+        self.pending_requests.lock().unwrap().insert(req.id.clone(), req.clone());
         let save = req.save.clone();
         let id = req.id.clone();
         self.emit(AppEvent::Permission(req));
         let reply = rx.await.unwrap_or(Reply::Reject);
+        self.pending_requests.lock().unwrap().remove(&id);
         self.emit(AppEvent::PermissionResolved { id });
         match reply {
             Reply::Once => Ok(()),
@@ -301,17 +402,95 @@ impl App {
     }
 
     pub fn reply_permission(&self, id: &str, reply: Reply) {
+        self.pending_requests.lock().unwrap().remove(id);
         if let Some(tx) = self.pending.lock().unwrap().remove(id) {
             let _ = tx.send(reply);
         }
     }
 
+    pub fn pending_permissions(&self) -> Vec<permission::Request> {
+        self.pending_requests.lock().unwrap().values().cloned().collect()
+    }
+
     pub fn reject_all_pending(&self, session_id: &str) {
         let _ = session_id;
+        self.pending_requests.lock().unwrap().clear();
         let pending: Vec<_> = self.pending.lock().unwrap().drain().collect();
         for (_, tx) in pending {
             let _ = tx.send(Reply::Reject);
         }
+    }
+}
+
+fn plugin_event(ev: &AppEvent) -> serde_json::Value {
+    use serde_json::json;
+    let id = || crate::util::id("evt");
+    match ev {
+        AppEvent::Updated { session } => json!({
+            "id": id(), "type": "session.updated", "properties": { "sessionID": session }
+        }),
+        AppEvent::TextDelta { session, delta } => json!({
+            "id": id(), "type": "message.part.updated", "properties": {
+                "sessionID": session, "delta": delta, "part": { "type": "text", "text": delta }
+            }
+        }),
+        AppEvent::ReasoningDelta { session, delta } => json!({
+            "id": id(), "type": "message.part.updated", "properties": {
+                "sessionID": session, "delta": delta, "part": { "type": "reasoning", "text": delta }
+            }
+        }),
+        AppEvent::ToolStarted { session, id: call, name, input } => json!({
+            "id": id(), "type": "message.part.updated", "properties": {
+                "sessionID": session, "callID": call,
+                "part": { "type": "tool", "tool": name, "callID": call, "state": { "status": "running", "input": input } }
+            }
+        }),
+        AppEvent::ToolFinished { session, id: call, name, title, output, error, metadata } => json!({
+            "id": id(), "type": "message.part.updated", "properties": {
+                "sessionID": session, "callID": call,
+                "part": { "type": "tool", "tool": name, "callID": call, "state": if let Some(error) = error {
+                    json!({ "status": "error", "error": error })
+                } else {
+                    json!({ "status": "completed", "title": title, "output": output, "metadata": metadata })
+                }}
+            }
+        }),
+        AppEvent::Busy { session, busy } => {
+            if *busy {
+                json!({ "id": id(), "type": "session.status", "properties": { "sessionID": session, "status": { "type": "busy" } } })
+            } else {
+                json!({ "id": id(), "type": "session.idle", "properties": { "sessionID": session } })
+            }
+        }
+        AppEvent::Error { session, message } => json!({
+            "id": id(), "type": "session.error", "properties": { "sessionID": session, "error": { "message": message } }
+        }),
+        AppEvent::Retry { session, message } => json!({
+            "id": id(), "type": "session.retry", "properties": { "sessionID": session, "message": message }
+        }),
+        AppEvent::Permission(request) => json!({
+            "id": id(), "type": "permission.asked", "properties": {
+                "id": request.id,
+                "sessionID": request.session_id,
+                "action": request.action,
+                "resources": request.resources,
+                "save": request.save,
+                "metadata": request.metadata,
+                "message": request.title,
+            }
+        }),
+        AppEvent::PermissionResolved { id: request } => json!({
+            "id": id(), "type": "permission.replied", "properties": { "requestID": request }
+        }),
+        AppEvent::Title { session } => json!({
+            "id": id(), "type": "session.updated", "properties": { "sessionID": session }
+        }),
+        AppEvent::StepFinished { session } => json!({
+            "id": id(), "type": "session.step", "properties": { "sessionID": session }
+        }),
+        AppEvent::Notice { message } => json!({
+            "id": id(), "type": "server.notice", "properties": { "message": message }
+        }),
     }
 }
 

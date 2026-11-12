@@ -134,6 +134,8 @@ pub struct Loaded {
     pub config: Config,
     pub files: Vec<PathBuf>,
     pub directories: Vec<PathBuf>,
+    /// Configured and auto-discovered plugins, in load order.
+    pub plugins: Vec<crate::plugin::PluginSpec>,
 }
 
 /// Strip `//` and `/* */` comments and trailing commas from JSONC text.
@@ -204,7 +206,7 @@ fn substitute(text: &str, dir: &Path) -> String {
 pub fn parse_file(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    let text = substitute(&text, dir);
+    let text = substitute(crate::util::strip_bom(&text).0, dir);
     let v: Value = serde_json::from_str(&strip_jsonc(&text)).with_context(|| format!("parsing {}", path.display()))?;
     Ok(v)
 }
@@ -214,7 +216,7 @@ pub fn merge(a: &mut Value, b: Value) {
     match (a, b) {
         (Value::Object(am), Value::Object(bm)) => {
             for (k, v) in bm {
-                if k == "instructions" {
+                if matches!(k.as_str(), "instructions" | "plugins" | "plugin") {
                     if let (Some(Value::Array(existing)), Value::Array(new)) = (am.get_mut(&k), &v) {
                         for item in new {
                             if !existing.contains(item) {
@@ -256,7 +258,10 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
 
     let add = |raw: &mut Value, files: &mut Vec<PathBuf>, p: PathBuf| -> Result<()> {
         if p.is_file() {
-            let v = parse_file(&p)?;
+            let mut v = parse_file(&p)?;
+            if let Some(parent) = p.parent() {
+                crate::plugin::absolutize_config(&mut v, parent);
+            }
             merge(raw, v);
             files.push(p);
         }
@@ -294,8 +299,9 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         }
     }
     if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT") {
-        let v: Value = serde_json::from_str(&strip_jsonc(&substitute(&content, directory)))
+        let mut v: Value = serde_json::from_str(&strip_jsonc(&substitute(&content, directory)))
             .context("parsing OPENCODE_CONFIG_CONTENT")?;
+        crate::plugin::absolutize_config(&mut v, directory);
         merge(&mut raw, v);
     }
     if let Ok(dir) = std::env::var("OPENCODE_CONFIG_DIR") {
@@ -331,8 +337,9 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         }
     }
 
+    let plugins = crate::plugin::collect_specs(&raw, &directories);
     let config: Config = serde_json::from_value(raw.clone()).context("invalid configuration")?;
-    Ok(Loaded { config, files, directories })
+    Ok(Loaded { config, files, directories, plugins })
 }
 
 /// Parse `---` YAML-ish frontmatter (flat `key: value` pairs, with simple
@@ -417,6 +424,14 @@ mod tests {
         assert_eq!(v["a"], "http://x");
         assert_eq!(v["b"][1], 2);
     }
+    #[test]
+    fn merges_plugin_lists() {
+        let mut a = serde_json::json!({ "plugins": ["global"], "plugin": ["old"] });
+        merge(&mut a, serde_json::json!({ "plugins": ["project"], "plugin": ["new"] }));
+        assert_eq!(a["plugins"], serde_json::json!(["global", "project"]));
+        assert_eq!(a["plugin"], serde_json::json!(["old", "new"]));
+    }
+
     #[test]
     fn fm() {
         let (m, body) = frontmatter("---\nname: x\ndescription: \"hello: world\"\ntools:\n  write: false\n---\nBody");

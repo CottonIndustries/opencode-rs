@@ -27,7 +27,8 @@ change those paths if yours live elsewhere.
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
 | `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
 | `opencode mcp list` | MCP server status |
-| `opencode debug paths\|config\|agents\|skills\|prompt` | Troubleshooting |
+| `opencode debug paths\|config\|agents\|skills\|prompt\|plugins` | Troubleshooting (`plugins` also lists plugin tools) |
+| `opencode debug plugin-tool <name> [json]` | Execute a plugin tool with the given input |
 
 ## What is ported
 
@@ -83,6 +84,37 @@ change those paths if yours live elsewhere.
   embedded context and images, client MCP servers (stdio and HTTP), usage updates.
   Requests identify as `acp`, as upstream does in this mode. Zed setup:
   `"agent_servers": { "OpenCode (Rust)": { "type": "custom", "command": "C:/path/to/opencode.exe", "args": ["acp"] } }`
+- **Plugins** (V2 and legacy V1): a Deno sidecar loads TypeScript/JavaScript
+  plugins, exposes the `@opencode/plugin` V2 Promise and Effect APIs, and
+  bridges them to the Rust engine. Configured with `plugins` (V2:
+  `{ "package": "...", "options": {} }`) or `plugin` (V1 string / `[string,
+  options]`) and auto-discovered from `plugin/`/`plugins/` in each config
+  directory. Supports:
+  ```json
+  {
+    "plugins": ["./.opencode/plugin/local.ts", { "package": "some-plugin", "options": {} }]
+  }
+  ```
+  - V2 `{ id, setup }` and `{ id, effect }` default exports, plus V1 plugin
+    exports, `ctx.options`, and V1 `$`/`client` inputs.
+  - Transform hooks for agents, commands, skills, tools, providers, models,
+    MCP servers, websearch/VCS/worktree/reference/integration/artifact
+    registries.
+  - Runtime hooks: `session.prompt`, `session.context`, `session.headers`,
+    `session.compaction`, `session.compacting` (V1), `session.autocontinue`
+    (V1), `session.title`, `session.text.complete`, `session.model.resolve`,
+    `session.model.request`, `session.experimental.idle`, `tool.execute.before`,
+    `tool.execute.after`, `tool.definition` (V1), `shell.create.before`,
+    `permission.evaluate`, and event subscriptions.
+  - Custom tools (Zod, Effect Schema, Standard Schema or JSON Schema inputs)
+    with `ctx.ask`, `ctx.metadata`/`ctx.progress`, abort signals, and plugin
+    commands.
+  - A file-backed `ctx.storage`, `ctx.event.subscribe`, permission
+    list/get/reply/assert, session operations, and the common client API.
+  - `OPENCODE_DENO` selects a Deno binary; otherwise the pinned release is
+    downloaded once into the opencode cache. Local plugin dependencies are
+    resolved from their `package.json` without writing `node_modules` into the
+    project. `OPENCODE_DISABLE_PLUGINS=1` skips loading plugins.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /sessions /models /agents /compact /variant /thinking /details
@@ -93,13 +125,18 @@ Sessions are stored as JSON in `~/.local/share/opencode/storage/session/<project
 
 ## Not ported
 
-Things in the original that depend on its JS/TS runtime or hosted services:
-the `serve` HTTP/web server, `pair`, `service`, JS plugins, `github`,
-`upgrade`, OAuth logins (Claude Pro/Max, ChatGPT, Copilot device flow), LSP
-diagnostics, post-edit formatters, snapshots/undo, the browser and worktree
-tools, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need an
-OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
+Things in the original that depend on its hosted services or on domains this
+port does not implement: the `serve` HTTP/web server, `pair`, `service`,
+`github`, `upgrade`, OAuth logins (Claude Pro/Max, ChatGPT, Copilot device
+flow), LSP diagnostics, post-edit formatters, snapshots/undo, the browser and
+worktree tools, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need
+an OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
 splitter instead of tree-sitter.
+
+Plugin domains with no corresponding Rust feature stay in the plugin host as
+in-memory registries: integrations/credentials, artifacts, external VCS and
+worktree strategies, RPC endpoints, and `aisdk` SDK/language hooks. They load
+and transform, but this port does not consume them.
 
 ## Tests
 

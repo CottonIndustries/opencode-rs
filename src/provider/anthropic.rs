@@ -203,6 +203,11 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
             body[k] = v.clone();
         }
     }
+    if let Value::Object(extra) = &req.options {
+        for (k, v) in extra {
+            body[k] = v.clone();
+        }
+    }
 
     let mut headers: Vec<(String, String)> = vec![
         ("anthropic-version".into(), "2023-06-01".into()),
@@ -230,6 +235,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
         betas.dedup();
         headers.push(("anthropic-beta".into(), betas.join(",")));
     }
+    headers.extend(req.headers.iter().cloned());
 
     let resp = super::post(&tx, &url, &headers, &body).await?;
     let mut sse = Sse::new(resp);

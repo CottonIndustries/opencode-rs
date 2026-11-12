@@ -148,7 +148,22 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
             }
         }
     }
-    app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
+    // V2 experimental.idle runs before the session settles. It may admit
+    // synthetic input through ctx.session.synthetic(), which starts a new turn.
+    let _ = app
+        .plugins
+        .trigger(
+            "session",
+            "experimental.idle",
+            serde_json::json!({ "sessionID": session_id, "background": [] }),
+        )
+        .await;
+    // An idle hook may admit synthetic input, which starts another turn.
+    tokio::task::yield_now().await;
+    let busy = app.session(session_id).map(|handle| handle.is_busy()).unwrap_or(false);
+    if !busy {
+        app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
+    }
     result
 }
 
@@ -195,7 +210,40 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     let agent_id = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).unwrap_or_else(|| app.default_agent());
     let agent = app.agent(&agent_id)?.clone();
     let session_model = handle.with(|s| s.model.clone());
-    let sel = select_model(&app, &agent, &opts, session_model.as_deref())?;
+    let mut sel = select_model(&app, &agent, &opts, session_model.as_deref())?;
+    // V2 `experimental.model.resolve`: a router plugin can serve this request
+    // with a different model without changing the session's selection.
+    let resolved = app
+        .plugins
+        .trigger(
+            "session",
+            "experimental.model.resolve",
+            serde_json::json!({
+                "sessionID": handle.id(),
+                "agent": agent.id,
+                "kind": "primary",
+                "model": {
+                    "providerID": sel.provider.id,
+                    "id": sel.model.id,
+                    "variant": sel.variant,
+                },
+            }),
+        )
+        .await;
+    if let Some(model) = resolved.get("model") {
+        if let (Some(provider_id), Some(model_id)) = (model.get("providerID").and_then(Value::as_str), model.get("id").and_then(Value::as_str)) {
+            if provider_id != sel.provider.id || model_id != sel.model.id {
+                let mut reference = format!("{provider_id}/{model_id}");
+                if let Some(variant) = model.get("variant").and_then(Value::as_str) {
+                    reference.push('#');
+                    reference.push_str(variant);
+                }
+                if let Ok(next) = select_model(&app, &agent, &PromptOptions { model: Some(reference), ..opts.clone() }, session_model.as_deref()) {
+                    sel = next;
+                }
+            }
+        }
+    }
     let full = sel.model.full_id();
     let model_ref = match &sel.variant {
         Some(v) => format!("{full}#{v}"),
@@ -205,6 +253,44 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     msg.model = Some(model_ref.clone());
     if let Some(text) = plan_reminder(&agent.id, &handle.with(|s| s.messages.clone())) {
         msg.parts.insert(0, Part::Text { text, synthetic: true });
+    }
+    let user_message_id = msg.id.clone();
+    // V2 `session.prompt` / V1 `chat.message` run before the message is saved.
+    let sid = handle.id();
+    let hooked = crate::plugin::messages_for_hook(&sid, std::slice::from_ref(&msg));
+    let mut prompt_event = serde_json::json!({
+        "sessionID": sid,
+        "messageID": msg.id,
+        "prompt": { "text": msg.text() },
+        "metadata": {},
+        "delivery": "steer",
+        "agent": agent.id,
+        "model": { "providerID": sel.provider.id, "modelID": sel.model.id, "variant": sel.variant },
+    });
+    if let Some(first) = hooked.as_array().and_then(|a| a.first()) {
+        prompt_event["message"] = first.get("info").cloned().unwrap_or(Value::Null);
+        prompt_event["parts"] = first.get("parts").cloned().unwrap_or(Value::Null);
+    }
+    let prompt_event = app.plugins.trigger("session", "prompt", prompt_event).await;
+    let prompt_text = prompt_event
+        .pointer("/prompt/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if prompt_event.pointer("/prompt/text").is_some() && prompt_text != msg.text() {
+        let files: Vec<Part> = msg.parts.iter().filter(|p| matches!(p, Part::File(_))).cloned().collect();
+        msg.parts = if prompt_text.is_empty() {
+            files
+        } else {
+            let mut parts = vec![Part::Text { text: prompt_text, synthetic: false }];
+            parts.extend(files);
+            parts
+        };
+    }
+    if let (Some(info), Some(parts)) = (prompt_event.get("message"), prompt_event.get("parts")) {
+        let mut list = vec![msg.clone()];
+        crate::plugin::apply_messages_hook(&mut list, &serde_json::json!([{ "info": info, "parts": parts }]));
+        msg = list.remove(0);
     }
     let first = handle.with(|s| {
         s.agent = Some(agent.id.clone());
@@ -216,6 +302,7 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     if handle.with(|s| s.parent_id.is_none()) {
         crate::state::push_recent_model(&model_ref);
     }
+    emit_message(&app, &handle, &handle.id(), &user_message_id);
     app.emit(AppEvent::Updated { session: handle.id() });
     if first {
         let (a, h) = (app.clone(), handle.clone());
@@ -226,6 +313,25 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         });
     }
     run_loop(app, handle, agent, sel).await
+}
+
+/// Publish a `message.updated` event for plugin subscribers.
+fn emit_message(app: &App, handle: &Handle, session_id: &str, message_id: &str) {
+    let message = handle.with(|s| s.messages.iter().find(|m| m.id == message_id).cloned());
+    if let Some(message) = message {
+        if let Some(info) = crate::plugin::messages_for_hook(session_id, &[message])
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("info"))
+            .cloned()
+        {
+            app.plugins.emit(serde_json::json!({
+                "id": crate::util::id("evt"),
+                "type": "message.updated",
+                "properties": { "sessionID": session_id, "info": info }
+            }));
+        }
+    }
 }
 
 /// Stamp the end time of the open thought when other output starts.
@@ -360,6 +466,31 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     Ok(())
 }
 
+fn model_hook_json(sel: &Selection) -> Value {
+    serde_json::json!({
+        "id": sel.model.id,
+        "modelID": sel.model.id,
+        "providerID": sel.provider.id,
+        "name": sel.model.name,
+        "family": sel.model.family,
+        "capabilities": {
+            "tools": sel.model.tool_call,
+            "input": sel.model.input_modalities,
+            "output": ["text"],
+            "temperature": sel.model.temperature,
+        },
+        "cost": [{
+            "input": sel.model.cost_input,
+            "output": sel.model.cost_output,
+            "cache": { "read": sel.model.cost_cache_read, "write": sel.model.cost_cache_write },
+        }],
+        "limit": { "context": sel.model.context, "output": sel.model.output },
+        "variants": [],
+        "status": sel.model.status.clone().unwrap_or_else(|| "active".into()),
+        "enabled": true,
+    })
+}
+
 fn build_request(
     sel: &Selection,
     agent: &Agent,
@@ -378,6 +509,8 @@ fn build_request(
         temperature: agent.temperature,
         top_p: agent.top_p,
         max_tokens: provider::max_output(&sel.model),
+        options: Value::Null,
+        headers: Vec::new(),
         session: session.clone(),
     }
 }
@@ -394,26 +527,194 @@ async fn step_once(
 ) -> Result<StepResult> {
     let sid = handle.id();
     let names: Vec<String> = active.iter().map(|t| t.name().to_string()).collect();
-    let system = crate::prompt::system(app, agent, &sel.model, &names).await;
+    let mut system = crate::prompt::system(app, agent, &sel.model, &names).await;
     let mut messages: Vec<Message> = handle.with(|s| s.active_messages().to_vec());
     if last_step {
         let mut m = Message::new(Role::User);
         m.parts.push(Part::Text { text: crate::prompt::MAX_STEPS.into(), synthetic: true });
         messages.push(m);
     }
+    let model_json = model_hook_json(sel);
+
+    // V1 system transform. V2 plugins get the same data through session.context.
+    let transformed = app
+        .plugins
+        .trigger(
+            "session",
+            "system.transform",
+            serde_json::json!({ "sessionID": sid, "model": model_json, "system": system }),
+        )
+        .await;
+    if let Some(list) = transformed.get("system").and_then(Value::as_array) {
+        system = list.iter().filter_map(Value::as_str).map(String::from).collect();
+    }
+
+    // V1 experimental.chat.messages.transform.
+    let transformed = app
+        .plugins
+        .trigger(
+            "session",
+            "messages.transform",
+            serde_json::json!({ "messages": crate::plugin::messages_for_hook(&sid, &messages) }),
+        )
+        .await;
+    if let Some(list) = transformed.get("messages") {
+        crate::plugin::apply_messages_hook(&mut messages, list);
+    }
+
     // tools must stay declared when history contains tool calls (provider requirement)
-    let specs: Vec<ToolSpec> = if active.is_empty() && messages.iter().any(|m| m.tool_calls().next().is_some()) && !last_step {
+    let mut specs: Vec<ToolSpec> = if active.is_empty() && messages.iter().any(|m| m.tool_calls().next().is_some()) && !last_step {
         registry.iter().map(|t| tools::spec(t.as_ref())).collect()
     } else {
         active.iter().map(|t| tools::spec(t.as_ref())).collect()
     };
-    let req = build_request(sel, agent, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
+    for spec in specs.iter_mut() {
+        let transformed = app
+            .plugins
+            .trigger(
+                "tool",
+                "definition",
+                serde_json::json!({
+                    "toolID": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.schema,
+                }),
+            )
+            .await;
+        if let Some(description) = transformed.get("description").and_then(Value::as_str) {
+            spec.description = description.to_string();
+        }
+        if let Some(parameters) = transformed.get("parameters").filter(|v| v.is_object()) {
+            spec.schema = parameters.clone();
+        }
+    }
+
+    // V2 session.context + V1 chat.params/chat.headers.
+    let tool_map: serde_json::Map<String, Value> = specs
+        .iter()
+        .map(|spec| (spec.name.clone(), serde_json::json!({ "description": spec.description, "input": spec.schema })))
+        .collect();
+    let last_user = crate::plugin::messages_for_hook(&sid, &messages)
+        .as_array()
+        .and_then(|a| a.iter().rev().find(|m| m.pointer("/info/role").and_then(Value::as_str) == Some("user")).cloned())
+        .unwrap_or(Value::Null);
+    let context_event = app
+        .plugins
+        .trigger(
+            "session",
+            "context",
+            serde_json::json!({
+                "sessionID": sid,
+                "agent": agent.id,
+                "model": model_json,
+                "provider": {
+                    "source": "config",
+                    "info": { "id": sel.provider.id, "name": sel.provider.name },
+                    "options": sel.provider.options,
+                },
+                "message": last_user,
+                "system": system,
+                "messages": crate::plugin::messages_for_hook(&sid, &messages),
+                "options": {
+                    "temperature": agent.temperature,
+                    "topP": agent.top_p,
+                    "topK": Value::Null,
+                    "maxOutputTokens": provider::max_output(&sel.model),
+                    "options": {},
+                },
+                "tools": tool_map,
+                "headers": {},
+            }),
+        )
+        .await;
+    if let Some(list) = context_event.get("system").and_then(Value::as_array) {
+        system = list.iter().filter_map(Value::as_str).map(String::from).collect();
+    }
+    if let Some(list) = context_event.get("messages") {
+        crate::plugin::apply_messages_hook(&mut messages, list);
+    }
+    if let Some(tools) = context_event.get("tools").and_then(Value::as_object) {
+        specs.retain(|spec| tools.contains_key(&spec.name));
+        for spec in specs.iter_mut() {
+            if let Some(tool) = tools.get(&spec.name) {
+                if let Some(description) = tool.get("description").and_then(Value::as_str) {
+                    spec.description = description.to_string();
+                }
+                if let Some(input) = tool.get("input").filter(|v| v.is_object()) {
+                    spec.schema = input.clone();
+                }
+            }
+        }
+    }
+    let options = context_event.get("options").cloned().unwrap_or(Value::Null);
+    let headers_event = app
+        .plugins
+        .trigger(
+            "session",
+            "headers",
+            serde_json::json!({
+                "sessionID": sid,
+                "agent": agent.id,
+                "model": model_json,
+                "provider": {
+                    "source": "config",
+                    "info": { "id": sel.provider.id, "name": sel.provider.name },
+                    "options": sel.provider.options,
+                },
+                "message": last_user,
+                "headers": context_event.get("headers").cloned().unwrap_or_else(|| serde_json::json!({})),
+            }),
+        )
+        .await;
+    let headers: Vec<(String, String)> = headers_event
+        .get("headers")
+        .and_then(Value::as_object)
+        .map(|map| map.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+        .unwrap_or_default();
+    let mut req = build_request(sel, agent, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
+    if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
+        req.temperature = Some(temperature);
+    }
+    if let Some(top_p) = options.get("topP").and_then(Value::as_f64) {
+        req.top_p = Some(top_p);
+    }
+    if let Some(max) = options.get("maxOutputTokens").and_then(Value::as_u64) {
+        req.max_tokens = max;
+    }
+    if let Some(extra) = options.get("options").filter(|v| v.is_object()) {
+        req.options = extra.clone();
+    }
+    req.headers = headers;
+    let model_request = app
+        .plugins
+        .trigger(
+            "session",
+            "model.request",
+            serde_json::json!({
+                "sessionID": sid,
+                "agent": agent.id,
+                "model": model_json,
+                "kind": "primary",
+                "baseURL": sel.provider.base_url(&sel.model),
+                "headers": req.headers.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<serde_json::Map<String, Value>>(),
+            }),
+        )
+        .await;
+    if let Some(headers) = model_request.get("headers").and_then(Value::as_object) {
+        req.headers = headers.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect();
+    }
+    if let Some(base) = model_request.get("baseURL").and_then(Value::as_str) {
+        if base != sel.provider.base_url(&sel.model).unwrap_or_default() {
+            req.provider.options.base_url = Some(base.to_string());
+        }
+    }
 
     let mut assistant = Message::new(Role::Assistant);
     assistant.agent = Some(agent.id.clone());
     assistant.model = Some(sel.model.full_id());
     let msg_id = assistant.id.clone();
     handle.with(|s| s.messages.push(assistant));
+    emit_message(app, handle, &sid, &msg_id);
     app.emit(AppEvent::Updated { session: sid.clone() });
 
     let cancel = CancellationToken::new();
@@ -476,11 +777,55 @@ async fn step_once(
     let Some((usage, finish)) = done else {
         return Ok(StepResult { finish: "aborted".into(), usage: Usage::default(), tool_calls: 0, rejected: false, aborted: true });
     };
+    emit_message(app, handle, &sid, &msg_id);
     if let Some(e) = &error {
         app.emit(AppEvent::Error { session: sid.clone(), message: e.clone() });
     }
     if finish == "refusal" {
         app.emit(AppEvent::Error { session: sid.clone(), message: "The model declined to continue (refusal). Try rephrasing or switching models.".into() });
+    }
+    // V1 experimental.text.complete / V2 text end: let plugins rewrite text.
+    let text_updates = handle.with(|s| {
+        s.messages
+            .iter()
+            .rev()
+            .find(|m| m.id == msg_id)
+            .map(|message| {
+                message
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, part)| match part {
+                        Part::Text { text, .. } => Some((index, text.clone())),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    for (index, text) in text_updates {
+        let event = app
+            .plugins
+            .trigger(
+                "session",
+                "text.complete",
+                serde_json::json!({
+                    "sessionID": sid,
+                    "messageID": msg_id,
+                    "partID": format!("{msg_id}:{index}"),
+                    "text": text,
+                }),
+            )
+            .await;
+        if let Some(next) = event.get("text").and_then(Value::as_str) {
+            handle.with(|s| {
+                if let Some(message) = s.messages.iter_mut().rev().find(|m| m.id == msg_id) {
+                    if let Some(Part::Text { text, .. }) = message.parts.get_mut(index) {
+                        *text = next.to_string();
+                    }
+                }
+            });
+        }
     }
 
     // execute tool calls
@@ -534,9 +879,43 @@ async fn step_once(
         let tool = registry.iter().find(|t| t.name() == name).cloned();
         let available: Vec<String> = active.iter().map(|t| t.name().to_string()).collect();
         let set_state = &set_state;
+        let message_id = msg_id.clone();
         async move {
+            let mut input = input;
             set_state(&call_id, ToolState::Running);
             app.emit(AppEvent::ToolStarted { session: sid.clone(), id: call_id.clone(), name: name.clone(), input: input.clone() });
+            let before = app
+                .plugins
+                .trigger(
+                    "tool",
+                    "execute.before",
+                    serde_json::json!({
+                        "tool": name,
+                        "sessionID": sid,
+                        "agent": agent.id,
+                        "messageID": message_id,
+                        "id": call_id,
+                        "input": input,
+                    }),
+                )
+                .await;
+            if let Some(error) = before.get("__error").and_then(Value::as_str) {
+                let state = ToolState::Error { error: error.to_string() };
+                app.emit(AppEvent::ToolFinished {
+                    session: sid.clone(),
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    title: String::new(),
+                    output: String::new(),
+                    error: Some(error.to_string()),
+                    metadata: serde_json::Value::Null,
+                });
+                set_state(&call_id, state);
+                return;
+            }
+            if let Some(next) = before.get("input") {
+                input = next.clone();
+            }
             let result: Result<tools::Output> = match tool {
                 _ if input.get("__invalid_json").is_some() => Err(anyhow!(
                     "Invalid JSON in tool arguments ({}). Retry the call with valid JSON arguments.",
@@ -545,15 +924,61 @@ async fn step_once(
                 None => Err(anyhow!("Unknown tool: {name}. Available tools: {}", available.join(", "))),
                 Some(_) if !available.contains(&name) => Err(anyhow!("Tool {name} is not available right now.")),
                 Some(t) => {
-                    let ctx = tools::Context { app: app.clone(), handle: handle.clone(), agent, model, session_id: sid.clone(), call_id: call_id.clone(), cancel: cancel.clone() };
+                    let ctx = tools::Context {
+                        app: app.clone(),
+                        handle: handle.clone(),
+                        agent: agent.clone(),
+                        model: model.clone(),
+                        session_id: sid.clone(),
+                        message_id: message_id.clone(),
+                        call_id: call_id.clone(),
+                        cancel: cancel.clone(),
+                    };
                     tokio::select! {
-                        r = t.execute(input, &ctx) => r,
+                        r = t.execute(input.clone(), &ctx) => r,
                         _ = cancel.cancelled() => Err(anyhow!("Tool execution aborted")),
                     }
                 }
             };
             let state = match result {
-                Ok(out) => {
+                Ok(mut out) => {
+                    let after = app
+                        .plugins
+                        .trigger(
+                            "tool",
+                            "execute.after",
+                            serde_json::json!({
+                                "tool": name,
+                                "sessionID": sid,
+                                "agent": agent.id,
+                                "messageID": message_id,
+                                "id": call_id,
+                                "input": input,
+                                "status": "completed",
+                                "result": {
+                                    "output": out.output,
+                                    "content": out.output,
+                                    "title": out.title,
+                                    "metadata": out.metadata,
+                                },
+                            }),
+                        )
+                        .await;
+                    if let Some(result) = after.get("result") {
+                        if let Some(output) = result
+                            .get("output")
+                            .and_then(Value::as_str)
+                            .or_else(|| result.get("content").and_then(Value::as_str))
+                        {
+                            out.output = output.to_string();
+                        }
+                        if let Some(title) = result.get("title").and_then(Value::as_str) {
+                            out.title = title.to_string();
+                        }
+                        if let Some(metadata) = result.get("metadata") {
+                            out.metadata = metadata.clone();
+                        }
+                    }
                     let mut text = if matches!(name.as_str(), "read" | "shell") { out.output } else { tools::truncate_output(&out.output).0 };
                     if let Some(c) = out.context {
                         text.push_str("\n\n");
@@ -567,6 +992,22 @@ async fn step_once(
                     if msg == REJECTED {
                         rejected.store(true, Ordering::SeqCst);
                     }
+                    app.plugins
+                        .trigger(
+                            "tool",
+                            "execute.after",
+                            serde_json::json!({
+                                "tool": name,
+                                "sessionID": sid,
+                                "agent": agent.id,
+                                "messageID": message_id,
+                                "id": call_id,
+                                "input": input,
+                                "status": "error",
+                                "error": { "message": msg },
+                            }),
+                        )
+                        .await;
                     app.emit(AppEvent::ToolFinished { session: sid.clone(), id: call_id.clone(), name: name.clone(), title: String::new(), output: String::new(), error: Some(msg.clone()), metadata: serde_json::Value::Null });
                     ToolState::Error { error: msg }
                 }
@@ -617,7 +1058,26 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         return Ok(());
     }
     let existing = messages.first().is_some_and(|m| m.parts.iter().any(|p| matches!(p, Part::Compaction { .. })));
-    messages.push(Message::user_text(compaction_prompt(existing)));
+    // V1 experimental.session.compacting may replace or extend the prompt.
+    let compacting = app
+        .plugins
+        .trigger(
+            "session",
+            "compacting",
+            serde_json::json!({ "sessionID": sid, "context": [], "prompt": Value::Null }),
+        )
+        .await;
+    let mut prompt = compaction_prompt(existing);
+    if let Some(custom) = compacting.get("prompt").and_then(Value::as_str) {
+        prompt = custom.to_string();
+    }
+    if let Some(context) = compacting.get("context").and_then(Value::as_array) {
+        for item in context.iter().filter_map(Value::as_str) {
+            prompt.push_str("\n\n");
+            prompt.push_str(item);
+        }
+    }
+    messages.push(Message::user_text(prompt));
     let compaction = app.agent("compaction").cloned().unwrap_or_else(|_| agent.clone());
     let names: Vec<String> = registry.iter().map(|t| t.name().to_string()).collect();
     let system = crate::prompt::system(app, &compaction, &sel.model, &names).await;
@@ -625,7 +1085,33 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
     app.emit(AppEvent::Notice { message: "Compacting conversation…".into() });
     let cancel = CancellationToken::new();
     *handle.cancel.lock().unwrap() = Some(cancel.clone());
-    let (summary, usage) = complete(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)), Some(cancel)).await?;
+    // V2 session.compaction can supply the summary directly and skip the model call.
+    let compaction_event = app
+        .plugins
+        .trigger(
+            "session",
+            "compaction",
+            serde_json::json!({
+                "sessionID": sid,
+                "agent": compaction.id,
+                "model": model_hook_json(sel),
+                "system": system,
+                "messages": crate::plugin::messages_for_hook(&sid, &messages),
+                "options": {},
+                "tools": {},
+                "result": Value::Null,
+            }),
+        )
+        .await;
+    let supplied = compaction_event
+        .pointer("/result/summary")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let (summary, usage) = if let Some(summary) = supplied {
+        (summary, Usage::default())
+    } else {
+        complete(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)), Some(cancel)).await?
+    };
     *handle.cancel.lock().unwrap() = None;
     if summary.trim().is_empty() {
         return Err(anyhow!("the model returned an empty summary"));
@@ -633,7 +1119,24 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
     let mut m = Message::new(Role::User);
     m.parts.push(Part::Compaction { summary: summary.trim().to_string() });
     if continuing {
-        m.parts.push(Part::Text { text: "Continue with the next steps of the work above, if there are any.".into(), synthetic: true });
+        let autocontinue = app
+            .plugins
+            .trigger(
+                "session",
+                "autocontinue",
+                serde_json::json!({
+                    "sessionID": sid,
+                    "agent": agent.id,
+                    "model": model_hook_json(sel),
+                    "message": {},
+                    "overflow": false,
+                    "enabled": true,
+                }),
+            )
+            .await;
+        if autocontinue.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
+            m.parts.push(Part::Text { text: "Continue with the next steps of the work above, if there are any.".into(), synthetic: true });
+        }
     }
     m.usage = usage.clone();
     m.cost = cost(&sel.model, &usage);
@@ -677,7 +1180,27 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let input = format!("Here is the first message of the conversation:\n\n<message>\n{first}\n</message>\n\nReply with only the title.");
     let mut req = build_request(&sel, &agent, vec![crate::agent::TITLE_PROMPT.into()], vec![Message::user_text(input)], vec![], &handle.with(|s| provider::SessionRef::of(s)));
     req.max_tokens = 0;
-    let (text, _) = complete_request(req, None).await?;
+    let title_event = app
+        .plugins
+        .trigger(
+            "session",
+            "title",
+            serde_json::json!({
+                "sessionID": handle.id(),
+                "agent": agent.id,
+                "model": model_hook_json(&sel),
+                "system": req.system.clone(),
+                "messages": crate::plugin::messages_for_hook(&handle.id(), &req.messages),
+                "options": {},
+                "result": Value::Null,
+            }),
+        )
+        .await;
+    let text = if let Some(result) = title_event.get("result").and_then(Value::as_str) {
+        result.to_string()
+    } else {
+        complete_request(req, None).await?.0
+    };
     let title = text
         .lines()
         .map(|l| l.trim())

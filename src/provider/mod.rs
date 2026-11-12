@@ -31,6 +31,10 @@ pub struct Request {
     pub top_p: Option<f64>,
     /// Output token limit; 0 leaves it to the provider (upstream sends none for titles).
     pub max_tokens: u64,
+    /// Extra provider body options contributed by plugins.
+    pub options: Value,
+    /// Extra request headers contributed by plugins.
+    pub headers: Vec<(String, String)>,
     pub session: SessionRef,
 }
 

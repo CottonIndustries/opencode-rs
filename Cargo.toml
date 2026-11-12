@@ -39,6 +39,7 @@ similar = { version = "2", features = ["inline"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 unicode-width = "0.2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

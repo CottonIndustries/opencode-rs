@@ -184,10 +184,10 @@ fn kill_tree(pid: u32) {
     }
 }
 
-async fn run(kind: &ShellKind, command: &str, cwd: &PathBuf, timeout_ms: u64, cancel: tokio_util::sync::CancellationToken, sink: Option<PathBuf>) -> Result<RunResult> {
+async fn run(kind: &ShellKind, command: &str, cwd: &PathBuf, timeout_ms: u64, cancel: tokio_util::sync::CancellationToken, sink: Option<PathBuf>, env: &[(String, String)]) -> Result<RunResult> {
     let mut cmd = tokio::process::Command::new(&kind.program);
     cmd.args(&kind.args).arg(command).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    cmd.env("PAGER", "cat").env("GIT_PAGER", "cat").env("OPENCODE", "1");
+    cmd.env("PAGER", "cat").env("GIT_PAGER", "cat").env("OPENCODE", "1").envs(env.iter().map(|(k, v)| (k, v)));
     #[cfg(unix)]
     cmd.process_group(0);
     #[cfg(windows)]
@@ -340,6 +340,46 @@ impl Tool for Shell {
         }
         ctx.authorize_external(&cwd).await?;
 
+        // V2 shell.create.before / V1 shell.env.
+        let mut command = command;
+        let mut cwd = cwd;
+        let mut timeout = timeout;
+        let shell_event = ctx
+            .app
+            .plugins
+            .trigger(
+                "shell",
+                "create.before",
+                json!({
+                    "command": command,
+                    "cwd": cwd.display().to_string(),
+                    "timeout": timeout,
+                    "shell": self.kind.program.display().to_string(),
+                    "env": {},
+                    "sessionID": ctx.session_id,
+                    "callID": ctx.call_id,
+                }),
+            )
+            .await;
+        if let Some(next) = shell_event.get("command").and_then(Value::as_str) {
+            command = next.to_string();
+        }
+        if let Some(next) = shell_event.get("cwd").and_then(Value::as_str) {
+            cwd = crate::util::resolve(&ctx.app.directory, next);
+        }
+        if let Some(next) = shell_event.get("timeout").and_then(Value::as_u64) {
+            timeout = next;
+        }
+        let env: Vec<(String, String)> = shell_event
+            .get("env")
+            .and_then(Value::as_object)
+            .map(|map| map.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+            .unwrap_or_default();
+        if !cwd.exists() || !cwd.is_dir() {
+            return Err(anyhow!("Working directory does not exist or is not a directory: {}", cwd.display()));
+        }
+        ctx.authorize_external(&cwd).await?;
+
         // permissions per simple command; `cd` targets are directory accesses
         let mut resources = Vec::new();
         let mut save = Vec::new();
@@ -371,9 +411,10 @@ impl Tool for Shell {
             let session = ctx.session_id.clone();
             let cmd = command.clone();
             let f = file.clone();
+            let env = env.clone();
             tokio::spawn(async move {
                 let cancel = tokio_util::sync::CancellationToken::new();
-                let res = run(&kind, &cmd, &cwd, timeout, cancel, Some(f)).await;
+                let res = run(&kind, &cmd, &cwd, timeout, cancel, Some(f), &env).await;
                 let (state, text) = match res {
                     Ok(r) => ("completed", format_result(&r).0),
                     Err(e) => ("error", e.to_string()),
@@ -388,7 +429,7 @@ impl Tool for Shell {
             .meta(json!({ "status": "running" })));
         }
 
-        let r = run(&self.kind, &command, &cwd, timeout, ctx.cancel.clone(), None).await?;
+        let r = run(&self.kind, &command, &cwd, timeout, ctx.cancel.clone(), None, &env).await?;
         if r.cancelled {
             return Err(anyhow!("Command cancelled"));
         }

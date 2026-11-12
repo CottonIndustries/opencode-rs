@@ -355,6 +355,10 @@ impl Server {
                     Err(e) => Err(e.into()),
                 };
             }
+            if app.plugin_commands.contains(&name) {
+                app.plugins.execute_command(&name, sid, &args).await?;
+                return Ok(json!({ "stopReason": "end_turn" }));
+            }
             if let Some(cmd) = app.commands.get(&name) {
                 text = crate::command::render(cmd, &args, &app.directory, &app.worktree);
                 opts.agent = cmd.agent.clone();

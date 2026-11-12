@@ -37,6 +37,21 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Append a diagnostic line to the opencode log. `OPENCODE_PRINT_LOGS` also
+/// mirrors it to stderr (the CLI's `--print-logs`).
+pub fn log(message: &str) {
+    let line = format!("{} {message}\n", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"));
+    if std::env::var_os("OPENCODE_PRINT_LOGS").is_some() {
+        eprint!("{line}");
+    }
+    let dir = crate::paths::get().log.clone();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("opencode.log")) {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 /// Glob-like wildcard matching used for permission rules: `*` matches any
 /// sequence (including `/`), `?` matches a single character.
 pub fn wildcard(pattern: &str, text: &str) -> bool {

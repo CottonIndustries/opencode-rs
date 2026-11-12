@@ -2,7 +2,7 @@
 
 use crate::app::App;
 use crate::auth::Credential;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -335,6 +335,55 @@ pub fn debug_paths() -> Result<()> {
     for (k, v) in [("home", &p.home), ("data", &p.data), ("cache", &p.cache), ("config", &p.config), ("state", &p.state), ("tmp", &p.tmp), ("log", &p.log)] {
         println!("{k:<8} {}", v.display());
     }
+    Ok(())
+}
+
+pub async fn debug_plugins() -> Result<()> {
+    let app = App::init(cwd()).await?;
+    for error in app.plugins.errors() {
+        eprintln!("warning: {error}");
+    }
+    let plugins = app.plugins.list();
+    if plugins.is_empty() {
+        println!("No plugins loaded.");
+    } else {
+        println!("{}", serde_json::to_string_pretty(&plugins)?);
+    }
+    let tools = app.plugins.tool_descriptors();
+    println!(
+        "\nTools: {}",
+        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    let websearch = app.plugins.websearch_providers();
+    if !websearch.is_empty() {
+        println!(
+            "Web search: {}",
+            websearch.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
+}
+
+pub async fn debug_plugin_tool(name: &str, input: &str) -> Result<()> {
+    let app = App::init(cwd()).await?;
+    let input: serde_json::Value = serde_json::from_str(input).context("parsing tool input")?;
+    let result = app
+        .plugins
+        .execute_tool(
+            name,
+            "call_debug",
+            input,
+            serde_json::json!({
+                "sessionID": "debug",
+                "agent": app.default_agent(),
+                "messageID": "msg_debug",
+                "id": "call_debug",
+                "directory": app.directory.to_string_lossy(),
+                "worktree": app.worktree.to_string_lossy(),
+            }),
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 

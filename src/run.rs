@@ -108,14 +108,19 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
             text = if text.is_empty() { input } else { format!("{text}\n\n{input}") };
         }
     }
-    // a leading /command expands its template
+    // a leading /command expands its template (plugin commands run later,
+    // once their session exists)
+    let mut plugin_command: Option<(String, String)> = None;
     if let Some(rest) = text.strip_prefix('/') {
         let (name, cmd_args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-        if let Some(cmd) = app.commands.get(name) {
+        if app.plugin_commands.contains(name) {
+            plugin_command = Some((name.to_string(), cmd_args.trim().to_string()));
+            text.clear();
+        } else if let Some(cmd) = app.commands.get(name) {
             text = crate::command::render(cmd, cmd_args.trim(), &app.directory, &app.worktree);
         }
     }
-    if text.trim().is_empty() && args.files.is_empty() {
+    if text.trim().is_empty() && args.files.is_empty() && plugin_command.is_none() {
         return Err(anyhow!("You must provide a message or a command"));
     }
 
@@ -149,6 +154,52 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
         handle.save();
     }
     let sid = handle.id();
+
+    if let Some((name, cmd_args)) = plugin_command {
+        let mut rx = app.subscribe();
+        app.plugins.execute_command(&name, &sid, &cmd_args).await?;
+        // The command may call session.prompt; wait for that turn to settle.
+        let started = tokio::time::Instant::now();
+        let mut saw_busy = app.session(&sid).map(|h| h.is_busy()).unwrap_or(false);
+        let deadline = started + std::time::Duration::from_secs(600);
+        loop {
+            if saw_busy && !app.session(&sid).map(|h| h.is_busy()).unwrap_or(false) {
+                break;
+            }
+            // A command that only performs host-side work never starts a turn.
+            if !saw_busy && started.elapsed() > std::time::Duration::from_secs(3) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
+                Ok(Ok(AppEvent::Busy { session, busy })) if session == sid => {
+                    if busy {
+                        saw_busy = true;
+                    } else if saw_busy {
+                        break;
+                    }
+                }
+                Ok(Ok(AppEvent::TextDelta { delta, .. })) => {
+                    print!("{delta}");
+                    let _ = std::io::stdout().flush();
+                }
+                Ok(Ok(AppEvent::Error { message, .. })) => {
+                    eprintln!("{message}");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => {
+                    if !app.session(&sid).map(|h| h.is_busy()).unwrap_or(false) && saw_busy {
+                        break;
+                    }
+                }
+            }
+        }
+        println!();
+        app.plugins.flush().await;
+        return Ok(());
+    }
 
     let mut msg = Message::user_text(text.clone());
     msg.parts.extend(expand_mentions(&app, &text));
@@ -293,6 +344,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
         println!("{}", json!({ "type": "done", "sessionID": sid, "usage": usage, "cost": cost }));
     }
     result?;
+    app.plugins.flush().await;
     if had_error {
         std::process::exit(1);
     }

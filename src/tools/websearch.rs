@@ -95,16 +95,39 @@ impl Tool for WebSearch {
     }
     async fn execute(&self, input: Value, ctx: &Context) -> Result<Output> {
         let query = req_str(&input, "query")?.to_string();
-        let (provider, key) = configured(&ctx.app.config).ok_or_else(|| anyhow!("No web search integration is configured"))?;
+        let requested = ctx.app.config.websearch.as_ref().and_then(|w| w.provider.as_deref());
+        let plugin_provider = ctx.app.plugins.websearch_provider(requested);
+        let builtin = configured(&ctx.app.config);
+        if let Some((provider, key)) = builtin {
+            ctx.ask("websearch", &[query.clone()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
+            let results = search(&provider, &key, &query).await?;
+            if results.is_empty() {
+                return Ok(Output::text("No search results found. Please try a different query.", query));
+            }
+            let text = results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| format!("{}. {}\n{}\n{}", i + 1, r.title, r.url, crate::util::truncate_chars(r.content.trim(), 3000)))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            return Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })));
+        }
+        let provider = plugin_provider.ok_or_else(|| anyhow!("No web search integration is configured"))?;
         ctx.ask("websearch", &[query.clone()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
-        let results = search(&provider, &key, &query).await?;
+        let response = ctx.app.plugins.execute_websearch(&provider, &query).await?;
+        let results = response.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
         if results.is_empty() {
             return Ok(Output::text("No search results found. Please try a different query.", query));
         }
         let text = results
             .iter()
             .enumerate()
-            .map(|(i, r)| format!("{}. {}\n{}\n{}", i + 1, r.title, r.url, crate::util::truncate_chars(r.content.trim(), 3000)))
+            .map(|(i, item)| {
+                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+                let url = item.get("url").and_then(Value::as_str).unwrap_or("");
+                let content = item.get("content").and_then(Value::as_str).unwrap_or("");
+                format!("{}. {}\n{}\n{}", i + 1, title, url, crate::util::truncate_chars(content.trim(), 3000))
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
         Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })))

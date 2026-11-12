@@ -13,6 +13,7 @@ mod mcp;
 mod models;
 mod paths;
 mod permission;
+mod plugin;
 mod prompt;
 mod provider;
 mod run;
@@ -228,6 +229,14 @@ enum DebugCmd {
     Skills,
     /// Print the system prompt for the default agent and model
     Prompt,
+    /// List loaded plugins and the tools they contribute
+    Plugins,
+    /// Execute a plugin tool with JSON input
+    PluginTool {
+        name: String,
+        #[arg(default_value = "{}")]
+        input: String,
+    },
 }
 
 fn cwd() -> PathBuf {
@@ -288,6 +297,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             DebugCmd::Agents => cli::debug_agents().await,
             DebugCmd::Skills => cli::debug_skills().await,
             DebugCmd::Prompt => cli::debug_prompt().await,
+            DebugCmd::Plugins => cli::debug_plugins().await,
+            DebugCmd::PluginTool { name, input } => cli::debug_plugin_tool(&name, &input).await,
         },
     }
 }

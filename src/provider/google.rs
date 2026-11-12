@@ -99,6 +99,11 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
         generation["thinkingConfig"] = tc;
     }
     let mut body = json!({ "contents": convert(&req), "generationConfig": generation });
+    if let Value::Object(extra) = &req.options {
+        for (k, v) in extra {
+            body[k] = v.clone();
+        }
+    }
     let system = req.system.iter().filter(|s| !s.trim().is_empty()).map(|s| json!({ "text": s })).collect::<Vec<_>>();
     if !system.is_empty() {
         body["systemInstruction"] = json!({ "parts": system });
@@ -119,6 +124,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     for (k, v) in req.provider.options.headers.iter().chain(req.model.headers.iter()) {
         headers.push((k.clone(), v.clone()));
     }
+    headers.extend(req.headers.iter().cloned());
 
     let resp = super::post(&tx, &url, &headers, &body).await?;
     let mut sse = Sse::new(resp);
