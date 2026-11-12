@@ -42,8 +42,9 @@ if yours live elsewhere.
   (thought signatures). Retries with backoff on 429/5xx (not on quota errors).
   `#variant` selects reasoning effort/budget. OpenAI Responses can use the
   WebSocket transport (`provider.<id>.options.transport: "websocket"`) with the
-  same BoringSSL/Bun HTTP stack. One socket is reused per session, rotated after
-  55 minutes, with a 15 second connect timeout and 30 minute idle timeout.
+  same BoringSSL/Bun HTTP stack, for primary step requests. One socket is
+  reused per session, rotated after 55 minutes, with a 15 second connect timeout
+  and 30 minute idle timeout.
   Handshake failures pin the session to HTTP/SSE, repeated stream failures do the
   same after five attempts, and `previous_response_id` continuations send only
   the new input when the prefix still matches.
