@@ -154,6 +154,19 @@ pub struct Shell {
     kind: ShellKind,
 }
 
+fn kind_for(program: &str) -> ShellKind {
+    let path = PathBuf::from(program);
+    let name = path.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let args = if name.contains("pwsh") || name.contains("powershell") {
+        vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into()]
+    } else if name.contains("cmd") {
+        vec!["/C".into()]
+    } else {
+        vec!["-c".into()]
+    };
+    ShellKind { program: path, args }
+}
+
 impl Shell {
     pub fn new() -> Self {
         static KIND: std::sync::OnceLock<ShellKind> = std::sync::OnceLock::new();
@@ -345,6 +358,8 @@ impl Tool for Shell {
         let mut command = command;
         let mut cwd = cwd;
         let mut timeout = timeout;
+        let mut kind = self.kind.clone();
+        let inherited: std::collections::BTreeMap<String, String> = std::env::vars().collect();
         let shell_event = ctx
             .app
             .plugins
@@ -355,8 +370,8 @@ impl Tool for Shell {
                     "command": command,
                     "cwd": cwd.display().to_string(),
                     "timeout": timeout,
-                    "shell": self.kind.program.display().to_string(),
-                    "env": {},
+                    "shell": kind.program.display().to_string(),
+                    "env": inherited,
                     "sessionID": ctx.session_id,
                     "callID": ctx.call_id,
                 }),
@@ -371,6 +386,11 @@ impl Tool for Shell {
         if let Some(next) = shell_event.get("timeout").and_then(Value::as_u64) {
             timeout = next;
         }
+        if let Some(next) = shell_event.get("shell").and_then(Value::as_str) {
+            if !next.is_empty() && next != kind.program.to_string_lossy() {
+                kind = kind_for(next);
+            }
+        }
         let mut env: std::collections::BTreeMap<String, String> = ctx
             .app
             .session(&ctx.session_id)
@@ -378,7 +398,9 @@ impl Tool for Shell {
             .unwrap_or_default();
         if let Some(map) = shell_event.get("env").and_then(Value::as_object) {
             for (key, value) in map {
-                if let Some(value) = value.as_str() {
+                if value.is_null() {
+                    env.remove(key);
+                } else if let Some(value) = value.as_str() {
                     env.insert(key.clone(), value.to_string());
                 }
             }
@@ -417,7 +439,7 @@ impl Tool for Shell {
             let dir = crate::paths::get().tool_output();
             let _ = std::fs::create_dir_all(&dir);
             let file = dir.join(format!("{id}.log"));
-            let kind = self.kind.clone();
+            let kind = kind.clone();
             let app = ctx.app.clone();
             let session = ctx.session_id.clone();
             let cmd = command.clone();
@@ -440,7 +462,7 @@ impl Tool for Shell {
             .meta(json!({ "status": "running" })));
         }
 
-        let r = run(&self.kind, &command, &cwd, timeout, ctx.cancel.clone(), None, &env).await?;
+        let r = run(&kind, &command, &cwd, timeout, ctx.cancel.clone(), None, &env).await?;
         if r.cancelled {
             return Err(anyhow!("Command cancelled"));
         }
