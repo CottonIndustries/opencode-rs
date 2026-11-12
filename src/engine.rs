@@ -566,6 +566,19 @@ async fn step_once(
     let sid = handle.id();
     let names: Vec<String> = active.iter().map(|t| t.name().to_string()).collect();
     let mut system = crate::prompt::system(app, agent, &sel.model, &names).await;
+    let entries: Vec<String> = handle.with(|session| {
+        session
+            .instruction_entries
+            .values()
+            .filter_map(|value| {
+                value
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| value.get("text").and_then(Value::as_str).map(String::from))
+            })
+            .collect()
+    });
+    system.extend(entries);
     let mut messages: Vec<Message> = handle.with(|s| s.active_messages().to_vec());
     if last_step {
         let mut m = Message::new(Role::User);
