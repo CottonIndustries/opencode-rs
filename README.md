@@ -2,8 +2,8 @@
 
 A Rust rewrite of the OpenCode terminal client, ported from the bundled v2
 sources extracted from `opencode.exe` (`../extracted`, `../readable`). It is a
-single self-contained binary (~20 MB release) — no Bun runtime or background
-server needed.
+single binary (~20 MB release) that uses the Microsoft Visual C++ Redistributable
+on Windows, with no Bun runtime or background server needed.
 
 ```
 cargo build --release
@@ -12,8 +12,8 @@ cargo build --release
 ```
 
 BoringSSL is built from source, which needs CMake, NASM and libclang. `.cargo/config.toml`
-points at Visual Studio's CMake and at `.tools/nasm` and `.tools/libclang` (not committed);
-change those paths if yours live elsewhere.
+points at `tools/cmake`, `tools/nasm` and `tools/libclang` (not committed); change those paths
+if yours live elsewhere.
 
 ## Commands
 
