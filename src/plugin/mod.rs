@@ -1976,6 +1976,55 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             }))
         }
         "app.init" => Ok(json!(true)),
+        "tui.dialog" => {
+            let kind = first.get("type").and_then(Value::as_str).unwrap_or("alert");
+            let title = first
+                .get("title")
+                .and_then(Value::as_str)
+                .or_else(|| first.get("message").and_then(Value::as_str))
+                .unwrap_or("Plugin");
+            let value = first.get("value").cloned().unwrap_or(Value::Null);
+            let fields = match kind {
+                "confirm" | "alert" => json!([{
+                    "key": "value",
+                    "title": "OK",
+                    "type": "boolean",
+                    "default": value.as_bool().unwrap_or(true),
+                }]),
+                "select" => {
+                    let options = first
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    json!([{
+                        "key": "value",
+                        "title": if options.is_empty() { "Value".to_string() } else { format!("Value (one of: {})", options.join(", ")) },
+                        "type": "string",
+                        "default": value.as_str().unwrap_or_default(),
+                    }])
+                }
+                _ => json!([{
+                    "key": "value",
+                    "title": "Value",
+                    "type": "string",
+                    "default": value.as_str().unwrap_or_default(),
+                }]),
+            };
+            let form = app.forms.create("tui", title, json!({ "kind": kind }), fields);
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "form.created",
+                "properties": { "form": form_info_json(&form) }
+            }));
+            let outcome = app.forms.wait(&form.id).await?;
+            Ok(match outcome {
+                crate::forms::Outcome::Replied(replies) => {
+                    json!({ "value": replies.get("value").cloned().unwrap_or(Value::Null) })
+                }
+                crate::forms::Outcome::Cancelled => Value::Null,
+            })
+        }
         "tui.toast" => {
             let message = first
                 .get("message")

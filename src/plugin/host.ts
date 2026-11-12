@@ -1636,10 +1636,40 @@ function makeTuiContext(plugin: PluginRecord): Json {
     show: () => {},
     set: () => {},
     close: () => {},
-    alert: async () => undefined,
-    confirm: async () => undefined,
-    prompt: async () => undefined,
-    select: async () => undefined,
+    alert: async (options: Json) => {
+      await request("tui.dialog", { type: "alert", title: options?.title, message: options?.message })
+      return undefined
+    },
+    confirm: async (options: Json) => {
+      const result = await request("tui.dialog", {
+        type: "confirm",
+        title: options?.title,
+        message: options?.message,
+        value: options?.default ?? true,
+      })
+      return typeof result?.value === "boolean" ? result.value : undefined
+    },
+    prompt: async (options: Json) => {
+      const result = await request("tui.dialog", {
+        type: "prompt",
+        title: options?.title,
+        message: options?.message,
+        value: options?.default ?? "",
+        placeholder: options?.placeholder,
+      })
+      return typeof result?.value === "string" ? result.value : undefined
+    },
+    select: async (options: Json) => {
+      const values = (options?.options ?? []).map((item: Json) => item?.value ?? item?.label)
+      const result = await request("tui.dialog", {
+        type: "select",
+        title: options?.title,
+        message: options?.message,
+        value: options?.initial ?? values[0],
+        options: values,
+      })
+      return result?.value
+    },
   }
   const ui = {
     dialog,

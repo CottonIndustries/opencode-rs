@@ -1943,7 +1943,12 @@ impl Ui {
     }
 
     fn pending_form(&self) -> Option<crate::forms::Form> {
-        self.app.forms.list(&self.sid()).into_iter().next()
+        self.app
+            .forms
+            .list(&self.sid())
+            .into_iter()
+            .next()
+            .or_else(|| self.app.forms.list("tui").into_iter().next())
     }
 
     fn form_key(&mut self, k: &Key, ev: &KeyEvent) {
