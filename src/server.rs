@@ -386,6 +386,49 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             crate::plugin::pty::manager().kill(id);
             Ok(json!({ "data": null }))
         }
+        ("GET", ["api", "vcs"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            Ok(json!({ "data": crate::vcs::dispatch("vcs.info", &input)? }))
+        }
+        ("GET", ["api", "vcs", "base"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            Ok(json!({ "data": crate::vcs::dispatch("vcs.base", &input)? }))
+        }
+        ("GET", ["api", "vcs", "status"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            Ok(json!({ "data": crate::vcs::dispatch("vcs.status", &input)? }))
+        }
+        ("GET", ["api", "vcs", "branch"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            Ok(json!({ "data": crate::vcs::dispatch("vcs.branches", &input)? }))
+        }
+        ("GET", ["api", "vcs", "diff"]) => {
+            let input = json!({
+                "directory": app.directory.to_string_lossy(),
+                "mode": "working",
+                "context": 3,
+            });
+            Ok(json!({ "data": crate::vcs::dispatch("vcs.diff", &input)? }))
+        }
+        ("POST", ["api", "vcs", "init"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            crate::vcs::dispatch("vcs.init", &input)?;
+            Ok(json!({ "data": null }))
+        }
+        ("GET", ["api", "worktree"]) => {
+            let input = json!({ "directory": app.directory.to_string_lossy() });
+            Ok(json!({ "data": crate::vcs::dispatch("worktree.list", &input)? }))
+        }
+        ("POST", ["api", "worktree"]) => {
+            let mut input = request.body.clone();
+            input["sourceDirectory"] = json!(app.directory.to_string_lossy());
+            Ok(json!({ "data": crate::vcs::dispatch("worktree.create", &input)? }))
+        }
+        ("DELETE", ["api", "worktree"]) => {
+            let input = request.body.clone();
+            crate::vcs::dispatch("worktree.remove", &input)?;
+            Ok(json!({ "data": null }))
+        }
         ("POST", ["api", "rpc", rpc, method]) => {
             let result = app.plugins.rpc_call(rpc, method, request.body.clone()).await?;
             Ok(json!({ "data": result }))
