@@ -1489,6 +1489,27 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 }
             });
             handle.save();
+            if let Some(title) = body.get("title").and_then(Value::as_str) {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.renamed",
+                    "properties": { "sessionID": id, "title": title }
+                }));
+            }
+            if let Some(metadata) = body.get("metadata") {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.metadata.updated",
+                    "properties": { "sessionID": id, "metadata": metadata }
+                }));
+            }
+            if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": if archived { "session.archived" } else { "session.unarchived" },
+                    "properties": { "sessionID": id }
+                }));
+            }
             Ok(Value::Null)
         }
         "session.messages" => {
@@ -1549,6 +1570,11 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(agent) = body.get("agent").and_then(Value::as_str) {
                 handle.with(|session| session.agent = Some(agent.to_string()));
                 handle.save();
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.agent.selected",
+                    "properties": { "sessionID": id, "agent": agent }
+                }));
             }
             Ok(Value::Null)
         }
@@ -1572,8 +1598,18 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     }
                 };
                 if let Some(reference) = reference {
-                    handle.with(|session| session.model = Some(reference));
+                    handle.with(|session| session.model = Some(reference.clone()));
                     handle.save();
+                    if let Some((provider_id, model_id, variant)) = crate::models::parse_ref(&reference) {
+                        app.plugins.emit(json!({
+                            "id": crate::util::id("evt"),
+                            "type": "session.model.selected",
+                            "properties": {
+                                "sessionID": id,
+                                "model": { "providerID": provider_id, "id": model_id, "variant": variant }
+                            }
+                        }));
+                    }
                 }
             }
             Ok(Value::Null)
@@ -1600,6 +1636,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 session.project = crate::session::project_id(&directory);
             });
             handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.moved",
+                "properties": {
+                    "sessionID": id,
+                    "location": { "directory": directory.to_string_lossy() }
+                }
+            }));
             Ok(Value::Null)
         }
         "session.abort" | "session.interrupt" => {
