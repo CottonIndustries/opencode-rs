@@ -161,9 +161,17 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
             )
             .await;
     }
-    // An idle hook may admit synthetic input, which starts another turn.
-    tokio::task::yield_now().await;
-    let busy = app.session(session_id).map(|handle| handle.is_busy()).unwrap_or(false);
+    // An idle hook may admit synthetic input, which starts another turn. Give
+    // that admission a moment to mark the session busy before going idle.
+    if let Ok(handle) = app.session(session_id) {
+        for _ in 0..25 {
+            if handle.is_busy() || !handle.queue.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+    let busy = app.session(session_id).map(|handle| handle.is_busy() || !handle.queue.lock().unwrap().is_empty()).unwrap_or(false);
     if !busy {
         app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
     }
