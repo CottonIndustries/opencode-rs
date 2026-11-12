@@ -819,6 +819,16 @@ impl Manager {
         self.tool_descriptors()
     }
 
+    pub fn abort_tool(&self, call_id: &str) {
+        if let Some(inner) = &self.inner {
+            let _ = inner.tx.send(json!({
+                "type": "notification",
+                "method": "tool.abort",
+                "params": { "callID": call_id }
+            }));
+        }
+    }
+
     pub async fn execute_tool(&self, name: &str, call_id: &str, input: Value, context: Value) -> Result<Value> {
         self.request_with_timeout(
             "tool.execute",
@@ -895,6 +905,19 @@ impl Manager {
     pub async fn flush(&self) {
         if self.enabled() {
             let _ = self.request_with_timeout("flush", json!({}), Some(std::time::Duration::from_secs(10))).await;
+        }
+    }
+
+    /// Run plugin cleanups and stop the Deno host.
+    pub async fn shutdown(&self) {
+        let Some(inner) = &self.inner else { return };
+        let _ = self.request_with_timeout("shutdown", json!({}), Some(std::time::Duration::from_secs(10))).await;
+        inner.shutdown.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Ok(mut child) = inner.child.lock() {
+            if let Some(child) = child.as_mut() {
+                let _ = child.start_kill();
+            }
         }
     }
 
@@ -1167,13 +1190,14 @@ async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::a
         "shell.exec" => {
             let command = params.get("command").and_then(Value::as_str).unwrap_or("");
             let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let mut cmd = tokio::process::Command::new(if cfg!(windows) { "powershell" } else { "sh" });
-            if cfg!(windows) {
-                cmd.args(["-NoProfile", "-Command", command]);
-            } else {
-                cmd.args(["-lc", command]);
+            let kind = crate::tools::shell::detect();
+            let mut cmd = tokio::process::Command::new(&kind.program);
+            cmd.args(&kind.args).arg(command).current_dir(cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
             }
-            cmd.current_dir(cwd).stdin(std::process::Stdio::null());
             if let Some(Value::Object(env)) = params.get("env") {
                 for (key, value) in env {
                     if let Some(value) = value.as_str() {
@@ -1194,9 +1218,14 @@ async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::a
             };
             let session_id = params.get("sessionID").and_then(Value::as_str).unwrap_or_default();
             let handle = app.session(session_id)?;
-            let agent_id = params.get("agent").and_then(Value::as_str).unwrap_or("build");
-            let fallback = app.default_agent();
-            let agent = app.agent(agent_id).cloned().or_else(|_| app.agent(&fallback).cloned())?;
+            let session_agent = handle.with(|session| session.agent.clone());
+            let agent_id = params
+                .get("agent")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .or(session_agent)
+                .unwrap_or_else(|| app.default_agent());
+            let agent = app.agent(&agent_id).cloned().or_else(|_| app.agent(&app.default_agent()).cloned())?;
             let action = params.get("action").and_then(Value::as_str).unwrap_or("tool");
             let resources: Vec<String> = params
                 .get("resources")
@@ -1291,6 +1320,28 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.create" => {
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
             let handle = app.create_session(parent);
+            handle.with(|session| {
+                if let Some(title) = body.get("title").and_then(Value::as_str) {
+                    session.title = title.to_string();
+                }
+                if let Some(agent) = body.get("agent").and_then(Value::as_str) {
+                    session.agent = Some(agent.to_string());
+                }
+                if let Some(model) = body.get("model") {
+                    if let (Some(provider_id), Some(id)) = (
+                        model.get("providerID").and_then(Value::as_str),
+                        model.get("id").or_else(|| model.get("modelID")).and_then(Value::as_str),
+                    ) {
+                        let mut reference = format!("{provider_id}/{id}");
+                        if let Some(variant) = model.get("variant").and_then(Value::as_str) {
+                            reference.push('#');
+                            reference.push_str(variant);
+                        }
+                        session.model = Some(reference);
+                    }
+                }
+            });
+            handle.save();
             let session = handle.with(|s| s.clone());
             Ok(session_json(&session))
         }
@@ -1337,6 +1388,41 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             // return empty data rather than failing the plugin.
             Ok(Value::Null)
         }
+        "session.switchAgent" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.switchAgent requires sessionID"))?;
+            let handle = app.session(&id)?;
+            if let Some(agent) = body.get("agent").and_then(Value::as_str) {
+                handle.with(|session| session.agent = Some(agent.to_string()));
+                handle.save();
+            }
+            Ok(Value::Null)
+        }
+        "session.switchModel" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.switchModel requires sessionID"))?;
+            let handle = app.session(&id)?;
+            if let Some(model) = body.get("model") {
+                let reference = if let Some(text) = model.as_str() {
+                    Some(text.to_string())
+                } else {
+                    match (model.get("providerID").and_then(Value::as_str), model.get("id").or_else(|| model.get("modelID")).and_then(Value::as_str)) {
+                        (Some(provider_id), Some(model_id)) => {
+                            let mut value = format!("{provider_id}/{model_id}");
+                            if let Some(variant) = model.get("variant").and_then(Value::as_str) {
+                                value.push('#');
+                                value.push_str(variant);
+                            }
+                            Some(value)
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(reference) = reference {
+                    handle.with(|session| session.model = Some(reference));
+                    handle.save();
+                }
+            }
+            Ok(Value::Null)
+        }
         "session.abort" | "session.interrupt" => {
             let id = session_id().ok_or_else(|| anyhow!("session.abort requires sessionID"))?;
             let handle = app.session(&id)?;
@@ -1375,6 +1461,22 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                             }
                         }
                         _ => {}
+                    }
+                }
+            }
+            if let Some(attachments) = body
+                .get("files")
+                .or_else(|| body.pointer("/prompt/files"))
+                .and_then(Value::as_array)
+            {
+                for attachment in attachments {
+                    let uri = attachment.get("uri").and_then(Value::as_str).unwrap_or_default();
+                    if let Some((meta, data)) = uri.split_once(";base64,") {
+                        files.push(crate::session::FilePart {
+                            mime: meta.trim_start_matches("data:").to_string(),
+                            data: data.to_string(),
+                            name: attachment.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        });
                     }
                 }
             }
@@ -1418,15 +1520,19 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.command requires sessionID"))?;
             let name = body
                 .get("command")
+                .or_else(|| body.get("name"))
                 .and_then(Value::as_str)
                 .map(String::from)
                 .or_else(|| arg("command"))
+                .or_else(|| arg("name"))
                 .unwrap_or_default();
             let arguments = body
                 .get("arguments")
+                .or_else(|| body.get("text"))
                 .and_then(Value::as_str)
                 .map(String::from)
                 .or_else(|| arg("arguments"))
+                .or_else(|| arg("text"))
                 .unwrap_or_default();
             if app.plugin_commands.contains(&name) {
                 app.plugins.execute_command(&name, &id, &arguments).await?;
@@ -1469,13 +1575,15 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .or_else(|| arg("id"))
                 .or_else(|| first.pointer("/path/id").and_then(Value::as_str).map(String::from))
                 .unwrap_or_default();
-            let reply = match body
+            let decision = body
                 .get("reply")
                 .and_then(Value::as_str)
+                .or_else(|| body.get("decision").and_then(Value::as_str))
                 .or_else(|| first.get("reply").and_then(Value::as_str))
-            {
-                Some("always") => crate::permission::Reply::Always,
-                Some("reject") => crate::permission::Reply::Reject,
+                .or_else(|| first.get("decision").and_then(Value::as_str));
+            let reply = match decision {
+                Some("always") | Some("allow-always") => crate::permission::Reply::Always,
+                Some("reject") | Some("deny") => crate::permission::Reply::Reject,
                 _ => crate::permission::Reply::Once,
             };
             app.reply_permission(&id, reply);
@@ -1616,7 +1724,10 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
     json!({
         "id": session.id,
         "parentID": session.parent_id,
+        "projectID": crate::session::project_id(&session.directory),
         "title": session.title,
+        "cost": 0.0,
+        "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
         "time": { "created": session.time_created, "updated": session.time_updated },
         "location": { "directory": session.directory.to_string_lossy() },
     })
@@ -1628,7 +1739,9 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
         "parentID": session.parent_id,
         "projectID": session.project,
         "agent": session.agent,
-        "model": session.model,
+        "model": session.model.as_deref().and_then(crate::models::parse_ref).map(|(provider_id, id, variant)| json!({
+            "providerID": provider_id, "id": id, "variant": variant
+        })),
         "title": session.title,
         "cost": 0.0,
         "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
@@ -1874,7 +1987,7 @@ pub fn apply_state(
         agent.color = item.get("color").and_then(Value::as_str).map(String::from);
         agents.insert(id.to_string(), agent);
     }
-    if agents.is_empty() {
+    if value.get("agents").and_then(Value::as_array).is_none() {
         agents = crate::agent::load(config, &[]);
     }
 
@@ -1940,7 +2053,7 @@ pub fn apply_state(
         }
         mcp.insert(name.to_string(), server);
     }
-    if mcp.is_empty() {
+    if value.get("mcp").and_then(Value::as_array).is_none() {
         mcp = config.mcp.clone();
     }
 
@@ -1999,7 +2112,7 @@ pub fn apply_state(
             },
         );
     }
-    if providers.is_empty() {
+    if value.get("providers").and_then(Value::as_array).is_none() {
         providers = base_providers.clone();
     }
 
@@ -2035,8 +2148,12 @@ pub fn messages_for_hook(session_id: &str, messages: &[crate::session::Message])
                     "state": match state {
                         ToolState::Pending => json!({ "status": "pending", "input": input }),
                         ToolState::Running => json!({ "status": "running", "input": input }),
-                        ToolState::Completed { output, title, metadata, .. } => json!({
-                            "status": "completed", "input": input, "output": output, "title": title, "metadata": metadata
+                        ToolState::Completed { output, title, metadata, attachments } => json!({
+                            "status": "completed", "input": input, "output": output, "title": title, "metadata": metadata,
+                            "attachments": attachments.iter().map(|file| json!({
+                                "type": "file", "mime": file.mime, "filename": file.name,
+                                "url": format!("data:{};base64,{}", file.mime, file.data),
+                            })).collect::<Vec<_>>(),
                         }),
                         ToolState::Error { error } => json!({ "status": "error", "input": input, "error": error }),
                     }
@@ -2122,15 +2239,20 @@ pub fn apply_messages_hook(messages: &mut Vec<crate::session::Message>, value: &
                 Some("tool") => {
                     let call = part.get("callID").and_then(Value::as_str).unwrap_or_default();
                     let existing = message.parts.iter().find_map(|p| match p {
-                        Part::Tool { id, name, input, provider_meta, .. } if id == call => {
-                            Some((name.clone(), input.clone(), provider_meta.clone()))
+                        Part::Tool { id, name, input, state, provider_meta } if id == call => {
+                            let attachments = match state {
+                                ToolState::Completed { attachments, .. } => attachments.clone(),
+                                _ => Vec::new(),
+                            };
+                            Some((name.clone(), input.clone(), provider_meta.clone(), attachments))
                         }
                         _ => None,
                     });
-                    let (name, input, provider_meta) = existing.unwrap_or((
+                    let (name, input, provider_meta, attachments) = existing.unwrap_or((
                         part.get("tool").and_then(Value::as_str).unwrap_or_default().to_string(),
                         part.pointer("/state/input").cloned().unwrap_or(Value::Null),
                         None,
+                        Vec::new(),
                     ));
                     let state = part.get("state").cloned().unwrap_or(Value::Null);
                     let state = match state.get("status").and_then(Value::as_str) {
@@ -2138,7 +2260,28 @@ pub fn apply_messages_hook(messages: &mut Vec<crate::session::Message>, value: &
                             output: state.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
                             title: state.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
                             metadata: state.get("metadata").cloned().unwrap_or(Value::Null),
-                            attachments: Vec::new(),
+                            attachments: state
+                                .get("attachments")
+                                .and_then(Value::as_array)
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(|item| {
+                                            let mime = item.get("mime").and_then(Value::as_str)?.to_string();
+                                            let url = item.get("url").and_then(Value::as_str).unwrap_or_default();
+                                            let data = url.split_once("base64,").map(|(_, data)| data.to_string()).unwrap_or_default();
+                                            if data.is_empty() {
+                                                return None;
+                                            }
+                                            Some(crate::session::FilePart {
+                                                mime,
+                                                data,
+                                                name: item.get("filename").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or(attachments),
                         },
                         Some("error") => ToolState::Error {
                             error: state.get("error").and_then(Value::as_str).unwrap_or_default().to_string(),

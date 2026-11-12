@@ -198,6 +198,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
         }
         println!();
         app.plugins.flush().await;
+        app.plugins.shutdown().await;
         return Ok(());
     }
 
@@ -345,6 +346,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
     }
     result?;
     app.plugins.flush().await;
+    app.plugins.shutdown().await;
     if had_error {
         std::process::exit(1);
     }

@@ -341,6 +341,7 @@ impl Tool for Shell {
         ctx.authorize_external(&cwd).await?;
 
         // V2 shell.create.before / V1 shell.env.
+        let requested_cwd = cwd.clone();
         let mut command = command;
         let mut cwd = cwd;
         let mut timeout = timeout;
@@ -378,7 +379,9 @@ impl Tool for Shell {
         if !cwd.exists() || !cwd.is_dir() {
             return Err(anyhow!("Working directory does not exist or is not a directory: {}", cwd.display()));
         }
-        ctx.authorize_external(&cwd).await?;
+        if cwd != requested_cwd {
+            ctx.authorize_external(&cwd).await?;
+        }
 
         // permissions per simple command; `cd` targets are directory accesses
         let mut resources = Vec::new();

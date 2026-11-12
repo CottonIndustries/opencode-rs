@@ -299,7 +299,7 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
     // Plugin transforms can hide builtins, rewrite their descriptions or
     // schemas, and add new executable tools.
     let descriptors = app.plugins.tool_list().await;
-    if !descriptors.is_empty() {
+    if app.plugins.enabled() {
         let descriptors_by_name: std::collections::BTreeMap<String, crate::plugin::ToolDescriptor> =
             descriptors.iter().map(|d| (d.name.clone(), d.clone())).collect();
         let mut next: Vec<Arc<dyn Tool>> = Vec::new();

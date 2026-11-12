@@ -98,38 +98,57 @@ impl Tool for WebSearch {
         let requested = ctx.app.config.websearch.as_ref().and_then(|w| w.provider.as_deref());
         let plugin_provider = ctx.app.plugins.websearch_provider(requested);
         let builtin = configured(&ctx.app.config);
-        if let Some((provider, key)) = builtin {
-            ctx.ask("websearch", &[query.clone()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
-            let results = search(&provider, &key, &query).await?;
-            if results.is_empty() {
-                return Ok(Output::text("No search results found. Please try a different query.", query));
+        // A provider named in config or selected by a plugin's default wins
+        // over an unrelated builtin API key.
+        let plugin_selected = plugin_provider.is_some()
+            && (requested.is_some() || ctx.app.config.websearch.as_ref().and_then(|w| w.provider.as_ref()).is_none());
+        if !plugin_selected {
+            if let Some((provider, key)) = builtin {
+                return builtin_search(ctx, &provider, &key, &query).await;
             }
-            let text = results
-                .iter()
-                .enumerate()
-                .map(|(i, r)| format!("{}. {}\n{}\n{}", i + 1, r.title, r.url, crate::util::truncate_chars(r.content.trim(), 3000)))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            return Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })));
         }
-        let provider = plugin_provider.ok_or_else(|| anyhow!("No web search integration is configured"))?;
-        ctx.ask("websearch", &[query.clone()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
-        let response = ctx.app.plugins.execute_websearch(&provider, &query).await?;
-        let results = response.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
-        if results.is_empty() {
-            return Ok(Output::text("No search results found. Please try a different query.", query));
+        if let Some(provider) = plugin_provider {
+            return plugin_search(ctx, &provider, &query).await;
         }
-        let text = results
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-                let url = item.get("url").and_then(Value::as_str).unwrap_or("");
-                let content = item.get("content").and_then(Value::as_str).unwrap_or("");
-                format!("{}. {}\n{}\n{}", i + 1, title, url, crate::util::truncate_chars(content.trim(), 3000))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })))
+        if let Some((provider, key)) = configured(&ctx.app.config) {
+            return builtin_search(ctx, &provider, &key, &query).await;
+        }
+        Err(anyhow!("No web search integration is configured"))
     }
+}
+
+async fn builtin_search(ctx: &Context, provider: &str, key: &str, query: &str) -> Result<Output> {
+    ctx.ask("websearch", &[query.to_string()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
+    let results = search(provider, key, query).await?;
+    if results.is_empty() {
+        return Ok(Output::text("No search results found. Please try a different query.", query));
+    }
+    let text = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. {}\n{}\n{}", i + 1, r.title, r.url, crate::util::truncate_chars(r.content.trim(), 3000)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })))
+}
+
+async fn plugin_search(ctx: &Context, provider: &str, query: &str) -> Result<Output> {
+    ctx.ask("websearch", &[query.to_string()], &["*".into()], format!("Search the web: {query}"), json!({ "query": query, "provider": provider })).await?;
+    let response = ctx.app.plugins.execute_websearch(provider, query).await?;
+    let results = response.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+    if results.is_empty() {
+        return Ok(Output::text("No search results found. Please try a different query.", query));
+    }
+    let text = results
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+            let url = item.get("url").and_then(Value::as_str).unwrap_or("");
+            let content = item.get("content").and_then(Value::as_str).unwrap_or("");
+            format!("{}. {}\n{}\n{}", i + 1, title, url, crate::util::truncate_chars(content.trim(), 3000))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(Output::text(text, query).meta(json!({ "provider": provider, "results": results.len() })))
 }

@@ -308,6 +308,7 @@ impl App {
         rules.extend(approved.iter().map(|(a, r)| permission::rule(a, r, Effect::Allow)));
 
         let mut needs_ask = Vec::new();
+        let mut denial_message: Option<String> = None;
         for r in resources {
             let configured = permission::evaluate(&rules, action, r);
             let event = self
@@ -319,7 +320,7 @@ impl App {
                         "sessionID": handle.id(),
                         "agent": agent.id,
                         "action": action,
-                        "resources": [r],
+                        "resources": resources,
                         "metadata": metadata.clone(),
                         "effect": match configured {
                             Effect::Allow => "allow",
@@ -330,13 +331,16 @@ impl App {
                             "id": crate::util::id("per"),
                             "sessionID": handle.id(),
                             "permission": action,
-                            "patterns": [r],
+                            "patterns": resources,
                             "always": save,
                             "metadata": metadata.clone(),
                         },
                     }),
                 )
                 .await;
+            if let Some(message) = event.get("message").and_then(serde_json::Value::as_str) {
+                denial_message = Some(message.to_string());
+            }
             let effect = event
                 .get("effect")
                 .and_then(serde_json::Value::as_str)
@@ -345,6 +349,9 @@ impl App {
             match effect {
                 Effect::Allow => {}
                 Effect::Deny => {
+                    if let Some(message) = denial_message {
+                        return Err(anyhow!("Permission denied: {message}"));
+                    }
                     return Err(anyhow!(
                         "Permission denied: the {action} permission for {r} is denied by the configured rules. Do not retry; continue without it or ask the user."
                     ))

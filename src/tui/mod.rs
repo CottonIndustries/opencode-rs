@@ -3163,6 +3163,7 @@ pub async fn start(dir: std::path::PathBuf, opts: StartOptions) -> Result<()> {
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let res = ui.event_loop(&mut terminal, opts.prompt.clone()).await;
     app.plugins.flush().await;
+    app.plugins.shutdown().await;
     // clear the title and give the terminal its own background back
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, ratatui::crossterm::style::Print("\x1b]0;\x07\x1b]111\x1b\\"));
     ratatui::restore();

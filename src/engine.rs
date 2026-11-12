@@ -150,14 +150,17 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     }
     // V2 experimental.idle runs before the session settles. It may admit
     // synthetic input through ctx.session.synthetic(), which starts a new turn.
-    let _ = app
-        .plugins
-        .trigger(
-            "session",
-            "experimental.idle",
-            serde_json::json!({ "sessionID": session_id, "background": [] }),
-        )
-        .await;
+    // It does not run after a failed or interrupted turn.
+    if result.is_ok() {
+        let _ = app
+            .plugins
+            .trigger(
+                "session",
+                "experimental.idle",
+                serde_json::json!({ "sessionID": session_id, "background": [] }),
+            )
+            .await;
+    }
     // An idle hook may admit synthetic input, which starts another turn.
     tokio::task::yield_now().await;
     let busy = app.session(session_id).map(|handle| handle.is_busy()).unwrap_or(false);
@@ -232,7 +235,8 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         .await;
     if let Some(model) = resolved.get("model") {
         if let (Some(provider_id), Some(model_id)) = (model.get("providerID").and_then(Value::as_str), model.get("id").and_then(Value::as_str)) {
-            if provider_id != sel.provider.id || model_id != sel.model.id {
+            let next_variant = model.get("variant").and_then(Value::as_str);
+            if provider_id != sel.provider.id || model_id != sel.model.id || next_variant != sel.variant.as_deref() {
                 let mut reference = format!("{provider_id}/{model_id}");
                 if let Some(variant) = model.get("variant").and_then(Value::as_str) {
                     reference.push('#');
@@ -613,12 +617,14 @@ async fn step_once(
                     "options": sel.provider.options,
                 },
                 "message": last_user,
-                "system": system,
+                // V2 SystemPart[]; V1 chat.params ignores this field.
+                "system": system.iter().map(|text| serde_json::json!({ "type": "text", "text": text })).collect::<Vec<_>>(),
                 "messages": crate::plugin::messages_for_hook(&sid, &messages),
                 "options": {
                     "temperature": agent.temperature,
                     "topP": agent.top_p,
                     "topK": Value::Null,
+                    "maxTokens": provider::max_output(&sel.model),
                     "maxOutputTokens": provider::max_output(&sel.model),
                     "options": {},
                 },
@@ -628,7 +634,10 @@ async fn step_once(
         )
         .await;
     if let Some(list) = context_event.get("system").and_then(Value::as_array) {
-        system = list.iter().filter_map(Value::as_str).map(String::from).collect();
+        system = list
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from).or_else(|| item.get("text").and_then(Value::as_str).map(String::from)))
+            .collect();
     }
     if let Some(list) = context_event.get("messages") {
         crate::plugin::apply_messages_hook(&mut messages, list);
@@ -678,11 +687,24 @@ async fn step_once(
     if let Some(top_p) = options.get("topP").and_then(Value::as_f64) {
         req.top_p = Some(top_p);
     }
-    if let Some(max) = options.get("maxOutputTokens").and_then(Value::as_u64) {
+    if let Some(max) = options
+        .get("maxTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| options.get("maxOutputTokens").and_then(Value::as_u64))
+    {
         req.max_tokens = max;
     }
     if let Some(extra) = options.get("options").filter(|v| v.is_object()) {
         req.options = extra.clone();
+    } else if options.is_object() {
+        // V2 SessionRequestOptions is flat: unknown keys are provider options.
+        let mut extra = serde_json::Map::new();
+        for (key, value) in options.as_object().unwrap() {
+            if !matches!(key.as_str(), "temperature" | "topP" | "topK" | "maxTokens" | "maxOutputTokens" | "options") {
+                extra.insert(key.clone(), value.clone());
+            }
+        }
+        req.options = Value::Object(extra);
     }
     req.headers = headers;
     let model_request = app
@@ -936,7 +958,10 @@ async fn step_once(
                     };
                     tokio::select! {
                         r = t.execute(input.clone(), &ctx) => r,
-                        _ = cancel.cancelled() => Err(anyhow!("Tool execution aborted")),
+                        _ = cancel.cancelled() => {
+                            app.plugins.abort_tool(&call_id);
+                            Err(anyhow!("Tool execution aborted"))
+                        }
                     }
                 }
             };
@@ -1095,7 +1120,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
                 "sessionID": sid,
                 "agent": compaction.id,
                 "model": model_hook_json(sel),
-                "system": system,
+                "system": system.iter().map(|text| serde_json::json!({ "type": "text", "text": text })).collect::<Vec<_>>(),
                 "messages": crate::plugin::messages_for_hook(&sid, &messages),
                 "options": {},
                 "tools": {},
@@ -1189,7 +1214,7 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
                 "sessionID": handle.id(),
                 "agent": agent.id,
                 "model": model_hook_json(&sel),
-                "system": req.system.clone(),
+                "system": req.system.iter().map(|text| serde_json::json!({ "type": "text", "text": text })).collect::<Vec<_>>(),
                 "messages": crate::plugin::messages_for_hook(&handle.id(), &req.messages),
                 "options": {},
                 "result": Value::Null,

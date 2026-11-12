@@ -5,7 +5,7 @@
 // This file is embedded into the opencode binary and written to the cache
 // directory at runtime.
 
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Effect, Exit, Schema, Scope, Stream } from "effect"
 import { z } from "npm:zod@4.1.8"
 import { toJSONSchema } from "npm:zod@4.1.8/v4/core"
 
@@ -405,6 +405,7 @@ function registerTransform(plugin: PluginRecord, domain: string, callback: Funct
     transforms.set(domain, current.filter((item) => item.callback !== callback))
   }
   plugin.registrations.push(remove)
+  return remove
 }
 
 function registerHook(
@@ -714,20 +715,51 @@ async function trigger(domain: string, name: string, event: Json): Promise<Json>
   return event
 }
 
+function toV2Event(event: Json): Json {
+  const properties = event.properties ?? event.data ?? {}
+  let type = event.type
+  let data = properties
+  if (event.type === "message.part.updated") {
+    const part = properties.part ?? {}
+    if (part.type === "text") {
+      type = "session.text.delta"
+      data = { sessionID: properties.sessionID, delta: properties.delta ?? part.text ?? "" }
+    } else if (part.type === "reasoning") {
+      type = "session.reasoning.delta"
+      data = { sessionID: properties.sessionID, delta: properties.delta ?? part.text ?? "" }
+    } else if (part.type === "tool") {
+      const status = part.state?.status
+      type = status === "completed" ? "session.tool.success" : status === "error" ? "session.tool.failed" : "session.tool.called"
+      data = { sessionID: properties.sessionID, callID: properties.callID ?? part.callID, tool: part.tool ?? part.name, ...part.state }
+    }
+  } else if (event.type === "message.updated") {
+    type = "session.message.updated"
+  } else if (event.type === "session.retry") {
+    type = "session.retry.scheduled"
+  } else if (event.type === "session.step") {
+    type = "session.step.finished"
+  } else if (event.type === "permission.replied") {
+    data = { sessionID: properties.sessionID, requestID: properties.requestID, reply: properties.reply ?? properties.decision }
+  }
+  return { id: event.id ?? `evt_${Date.now()}`, created: event.created ?? properties.created ?? Date.now(), type, data }
+}
+
 async function emitEvent(event: Json) {
   for (const plugin of plugins) {
     const handler = plugin.hooks?.event
     if (typeof handler !== "function") continue
     try {
+      // Legacy V1 hooks receive the V1 envelope.
       await settle(handler({ event }))
     } catch (error) {
       log("error", `plugin ${plugin.id} event hook failed: ${String(error)}`)
     }
   }
+  const v2 = toV2Event(event)
   for (const subscriber of subscribers) {
     if (subscriber.done) continue
-    if (subscriber.types && !subscriber.types.has(event.type)) continue
-    subscriber.queue.push(event)
+    if (subscriber.types && !subscriber.types.has(v2.type)) continue
+    subscriber.queue.push(v2)
     subscriber.wake?.()
   }
 }
@@ -847,11 +879,13 @@ function normalizeToolResult(result: Json): Json {
     title: result.title ?? "",
     metadata: result.metadata ?? {},
     content: typeof content === "string" ? content : undefined,
-    attachments: Array.isArray(result.content)
-      ? result.content
-          .filter((part: Json) => part?.type === "file")
-          .map((part: Json) => ({ mime: part.mime ?? "application/octet-stream", url: part.uri, filename: part.name }))
-      : undefined,
+    attachments: Array.isArray(result.attachments)
+      ? result.attachments.filter((part: Json) => part?.type === "file")
+      : Array.isArray(result.content)
+        ? result.content
+            .filter((part: Json) => part?.type === "file")
+            .map((part: Json) => ({ mime: part.mime ?? "application/octet-stream", url: part.uri, filename: part.name }))
+        : undefined,
   }
 }
 
@@ -865,6 +899,7 @@ async function executePluginTool(params: Json): Promise<Json> {
     const legacy = tool.plugin?.mode === "legacy"
     const context: Json = {
       ...params.context,
+      signal: controller.signal,
       abort: controller.signal,
       metadata: (input: Json) => {
         notify("tool.metadata", { callID: params.callID, ...input })
@@ -1145,6 +1180,12 @@ function apiResponse(data: Json): Json {
   return { location: { directory }, data }
 }
 
+function makeRegistration(mode: PluginMode, remove: () => void): Json {
+  return mode === "effect"
+    ? Effect.sync(() => ({ dispose: Effect.sync(remove) }))
+    : Promise.resolve({ dispose: async () => remove() })
+}
+
 function makeClientProxy(path = ""): Json {
   const invoke = async (...args: Json[]) => {
     if (path === "config.get") return apiResponse(initialState.config ?? {})
@@ -1178,33 +1219,40 @@ function makeBunShell(): Json {
         command += rendered + (strings.raw[i + 1] ?? "")
       }
     }
-    const state = { command, cwd: directory, env: {} as Record<string, string>, quiet: false, nothrow: false }
-    const promise = (async () => {
-      const result = await request("shell.exec", { command: state.command, cwd: state.cwd, env: state.env })
-      const output = {
-        stdout: encoder.encode(result.stdout ?? ""),
-        stderr: encoder.encode(result.stderr ?? ""),
-        exitCode: result.exitCode ?? 0,
-        text: () => result.stdout ?? "",
-        json: () => JSON.parse(result.stdout ?? "null"),
-        arrayBuffer: () => encoder.encode(result.stdout ?? "").buffer,
-        bytes: () => encoder.encode(result.stdout ?? ""),
-        blob: () => new Blob([result.stdout ?? ""]),
+    const state = { command, cwd: directory, env: {} as Record<string, string>, quiet: false, nothrow: false, started: false }
+    let promise: Promise<Json> | undefined
+    const exec = () => {
+      if (!promise) {
+        state.started = true
+        promise = (async () => {
+          const result = await request("shell.exec", { command: state.command, cwd: state.cwd, env: state.env })
+          const output = {
+            stdout: encoder.encode(result.stdout ?? ""),
+            stderr: encoder.encode(result.stderr ?? ""),
+            exitCode: result.exitCode ?? 0,
+            text: () => result.stdout ?? "",
+            json: () => JSON.parse(result.stdout ?? "null"),
+            arrayBuffer: () => encoder.encode(result.stdout ?? "").buffer,
+            bytes: () => encoder.encode(result.stdout ?? ""),
+            blob: () => new Blob([result.stdout ?? ""]),
+          }
+          if (!state.nothrow && output.exitCode !== 0) {
+            const error = new Error(`Command failed with exit code ${output.exitCode}: ${command}`) as Json
+            error.exitCode = output.exitCode
+            error.stdout = output.stdout
+            error.stderr = output.stderr
+            error.text = output.text
+            throw error
+          }
+          return output
+        })()
       }
-      if (!state.nothrow && output.exitCode !== 0) {
-        const error = new Error(`Command failed with exit code ${output.exitCode}: ${command}`) as Json
-        error.exitCode = output.exitCode
-        error.stdout = output.stdout
-        error.stderr = output.stderr
-        error.text = output.text
-        throw error
-      }
-      return output
-    })()
+      return promise
+    }
     const chain: Json = {
-      then: promise.then.bind(promise),
-      catch: promise.catch.bind(promise),
-      finally: promise.finally.bind(promise),
+      then: (onFulfilled?: Function, onRejected?: Function) => exec().then(onFulfilled as never, onRejected as never),
+      catch: (onRejected?: Function) => exec().catch(onRejected as never),
+      finally: (onFinally?: Function) => exec().finally(onFinally as never),
       cwd: (next: string) => {
         state.cwd = next
         return chain
@@ -1225,14 +1273,14 @@ function makeBunShell(): Json {
         state.nothrow = !value
         return chain
       },
-      text: async (encoding?: string) => (await promise).text(encoding),
-      json: async () => (await promise).json(),
+      text: async (encoding?: string) => (await exec()).text(encoding),
+      json: async () => (await exec()).json(),
       lines: async function* () {
-        const text = await promise.then((result) => result.text())
+        const text = (await exec()).text()
         for (const line of text.split("\n")) yield line
       },
-      arrayBuffer: async () => (await promise).arrayBuffer(),
-      blob: async () => (await promise).blob(),
+      arrayBuffer: async () => (await exec()).arrayBuffer(),
+      blob: async () => (await exec()).blob(),
       stdin: new WritableStream(),
     }
     return chain
@@ -1259,6 +1307,15 @@ function renderShellValue(value: Json): string {
 // ---------------------------------------------------------------- api builder
 
 function callRPC(method: string, params?: Json): Promise<Json> {
+  // The Rust App is built after plugin setup so registry transforms apply
+  // before any session starts. Read-only client calls made during setup get
+  // neutral answers instead of failing the plugin; they work normally once
+  // initialization completes.
+  if (initializing) {
+    if (method === "session.list" || method === "permission.list") return Promise.resolve([])
+    if (method.startsWith("session.") || method.startsWith("permission.")) return Promise.resolve(null)
+    if (method === "generate.text") return Promise.resolve({ text: "" })
+  }
   return request("client.call", { path: method, args: params === undefined ? [] : [params] })
 }
 
@@ -1298,11 +1355,12 @@ function makeDomains(plugin: PluginRecord): Json {
   const mode = plugin.mode
   const sync = (fn: Function) => (mode === "effect" ? Effect.sync(fn) : Promise.resolve().then(fn))
   const lazy = (fn: Function) => (mode === "effect" ? Effect.tryPromise({ try: fn, catch: (error: unknown) => error }) : fn)
+  const registration = (remove: () => void) => makeRegistration(mode, remove)
   const local = (domain: string, prefix: string, extras: Json = {}, envelope = true): Json => {
     const target = registry[domain as keyof Registry] as unknown as Map<string, Json> | undefined
     const base: Json = {
       ...extras,
-      transform: (callback: Function) => sync(() => registerTransform(plugin, domain, callback)),
+      transform: (callback: Function) => registration(registerTransform(plugin, domain, callback)),
       reload: () => sync(() => rebuild(domain)),
     }
     if (target instanceof Map) {
@@ -1322,7 +1380,7 @@ function makeDomains(plugin: PluginRecord): Json {
   const domain = (name: string, prefix: string, hookDomain = name, envelope = true): Json => ({
     ...local(name, prefix, {}, envelope),
     hook: (hookName: string, callback: Function, options?: Json) =>
-      sync(() => registerHook(plugin, hookDomain, hookName, callback, options)),
+      registration(registerHook(plugin, hookDomain, hookName, callback, options).remove),
   })
 
   const agent = local("agents", "agent", {
@@ -1337,10 +1395,15 @@ function makeDomains(plugin: PluginRecord): Json {
   })
   const skill = local("skills", "skill")
   const tool = domain("tools", "tool", "tool", false)
-  const mcp = local("mcp", "mcp")
-  const provider = local("providers", "provider")
+  const mcp = local("mcp", "mcp", {
+    list: sync(() => apiResponse([...registry.mcp.keys()].map((name) => ({ name, status: { status: "pending" } })))),
+  })
+  const provider = local("providers", "provider", {
+    list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
+    get: (id: string) => sync(() => apiResponse(registry.providers.get(id)?.provider)),
+  })
   const modelBase: Json = {
-    transform: (callback: Function) => sync(() => registerTransform(plugin, "model", callback)),
+    transform: (callback: Function) => registration(registerTransform(plugin, "model", callback)),
     reload: () => sync(() => rebuild("model")),
     list: (providerID?: string) =>
       sync(() => {
@@ -1381,17 +1444,21 @@ function makeDomains(plugin: PluginRecord): Json {
   const model = api(modelBase, mode, "model")
   const permissionBase: Json = {
     hook: (hookName: string, callback: Function, options?: Json) =>
-      sync(() => registerHook(plugin, "permission", hookName, callback, options)),
+      registration(registerHook(plugin, "permission", hookName, callback, options).remove),
     assert: lazy((input: Json) => request("permission.assert", input)),
     list: lazy(async () => apiResponse(await callRPC("permission.list"))),
     get: (input: Json) => lazy(async () => apiResponse(await callRPC("permission.get", input)))(input),
     reply: (input: Json) => lazy(async () => apiResponse(await callRPC("permission.reply", input)))(input),
   }
   const shell: Json = {
-    hook: (hookName: string, callback: Function) => sync(() => registerHook(plugin, "shell", hookName, callback)),
+    hook: (hookName: string, callback: Function) =>
+      registration(registerHook(plugin, "shell", hookName, callback).remove),
   }
   const event: Json = {
-    subscribe: (options?: Json) => subscribeEvents(options),
+    subscribe: (options?: Json) =>
+      mode === "effect"
+        ? Stream.fromAsyncIterable(subscribeEvents(options), (error) => error as never)
+        : subscribeEvents(options),
   }
   const configApi: Json = {
     get: sync(() => initialState.config ?? {}),
@@ -1406,7 +1473,7 @@ function makeDomains(plugin: PluginRecord): Json {
   }
   const aisdk: Json = {
     hook: (hookName: string, callback: Function, options?: Json) =>
-      sync(() => registerHook(plugin, "aisdk", hookName, callback, options)),
+      registration(registerHook(plugin, "aisdk", hookName, callback, options).remove),
   }
   const websearch = local("websearch", "websearch")
   const worktree = local("worktrees", "worktree")
@@ -1471,7 +1538,7 @@ function makeSessionDomain(plugin: PluginRecord): Json {
   const base: Json = {
     list: lazy(async (input: Json) => apiResponse(await callRPC("session.list", input))),
     hook: (name: string, callback: Function, options?: Json) =>
-      (mode === "effect" ? Effect.sync(() => registerHook(plugin, "session", name, callback, options)) : Promise.resolve(registerHook(plugin, "session", name, callback, options))),
+      makeRegistration(mode, registerHook(plugin, "session", name, callback, options).remove),
     context: lazy(async (input: Json) => apiResponse(await callRPC("session.context", input))),
     instructions: lazy(async (input: Json) => apiResponse(await callRPC("session.instructions", input))),
     wait: lazy(async (input: Json) => apiResponse(await callRPC("session.wait", input))),
