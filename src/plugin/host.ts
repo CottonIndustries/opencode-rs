@@ -1463,10 +1463,12 @@ function makeDomains(plugin: PluginRecord): Json {
       reload: () => effect(() => rebuild(domain)),
     }
     if (target instanceof Map) {
-      base.list = sync(() => {
-        const value = [...target.values()]
-        return envelope ? apiResponse(value) : value
-      })
+      if (!("list" in extras)) {
+        base.list = sync(() => {
+          const value = [...target.values()]
+          return envelope ? apiResponse(value) : value
+        })
+      }
       if (!("get" in extras)) {
         base.get = sync((id: string) => {
           const value = target.get(id)
@@ -1483,8 +1485,8 @@ function makeDomains(plugin: PluginRecord): Json {
   })
 
   const agent = local("agents", "agent", {
-    list: sync(() => [...registry.agents.values()]),
-    get: sync((id: string) => registry.agents.get(id)),
+    list: sync(() => apiResponse([...registry.agents.values()])),
+    get: sync((id: string) => apiResponse(registry.agents.get(id))),
   })
   const commandTarget = registry.commands
   const command = local("commands", "command", {
@@ -1495,7 +1497,9 @@ function makeDomains(plugin: PluginRecord): Json {
   const skill = local("skills", "skill")
   const tool = domain("tools", "tool", "tool", false)
   const mcp = local("mcp", "mcp", {
-    list: sync(() => apiResponse([...registry.mcp.keys()].map((name) => ({ name, status: { status: "pending" } })))),
+    list: sync(() =>
+      apiResponse([...registry.mcp.keys()].map((name) => ({ name, status: { status: "pending" } }))),
+    ),
   })
   const provider = local("providers", "provider", {
     list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
@@ -1541,9 +1545,12 @@ function makeDomains(plugin: PluginRecord): Json {
     hook: (hookName: string, callback: Function, options?: Json) =>
       registration(registerHook(plugin, "permission", hookName, callback, options).remove),
     assert: lazy((input: Json) => request("permission.assert", input)),
-    list: lazy(async () => apiResponse(await callRPC("permission.list"))),
-    get: (input: Json) => lazy(async () => apiResponse(await callRPC("permission.get", input)))(input),
-    reply: (input: Json) => lazy(async () => apiResponse(await callRPC("permission.reply", input)))(input),
+    list: lazy(async () => callRPC("permission.list")),
+    get: lazy((input: Json) => callRPC("permission.get", input)),
+    reply: lazy(async (input: Json) => {
+      await callRPC("permission.reply", input)
+      return undefined
+    }),
   }
   const shell: Json = {
     hook: (hookName: string, callback: Function) =>
@@ -1556,7 +1563,8 @@ function makeDomains(plugin: PluginRecord): Json {
         : subscribeEvents(options),
   }
   const configApi: Json = {
-    get: sync(() => initialState.config ?? {}),
+    get: sync(() => [{ type: "document", info: initialState.config ?? {} }]),
+    shells: sync(() => []),
     providers: sync(() => listProviderRecords()),
     provider: sync((id: string) => providerRecord(id)),
   }
@@ -1570,8 +1578,19 @@ function makeDomains(plugin: PluginRecord): Json {
     hook: (hookName: string, callback: Function, options?: Json) =>
       registration(registerHook(plugin, "aisdk", hookName, callback, options).remove),
   }
-  const websearch = local("websearch", "websearch")
-  const worktree = local("worktrees", "worktree")
+  const websearch = local("websearch", "websearch", {
+    providers: sync(() =>
+      apiResponse([...registry.websearch.values()].map((item) => ({ id: item.id, name: item.name }))),
+    ),
+    query: lazy(async (input: Json) => {
+      const result = await callRPC("websearch.execute", {
+        providerID: input.providerID,
+        query: input.query,
+      })
+      return apiResponse(result)
+    }),
+  })
+  const worktree = local("worktrees", "worktree", {}, false)
   const vcs = local("vcs", "vcs")
   const reference = local("references", "reference")
   const integration = local("integrations", "integration")
@@ -1589,7 +1608,7 @@ function makeDomains(plugin: PluginRecord): Json {
       }))
     },
   }
-  const generate: Json = { text: (input: Json) => lazy(() => callRPC("generate.text", input))(input) }
+  const generate: Json = { text: lazy((input: Json) => callRPC("generate.text", input)) }
   const experimental: Json = {
     terminal: { read: lazy((input: Json) => callRPC("experimental.terminal.read", input)) },
     generate,
@@ -1603,7 +1622,7 @@ function makeDomains(plugin: PluginRecord): Json {
     agent,
     aisdk,
     command,
-    config: api(configApi, mode, "config"),
+    config: api(configApi, mode, "config", false),
     credential: api({ activate: lazy((input: Json) => callRPC("credential.activate", input)) }, mode, "credential"),
     event,
     experimental,
@@ -1611,7 +1630,7 @@ function makeDomains(plugin: PluginRecord): Json {
     mcp,
     model,
     generate,
-    permission: api(permissionBase, mode, "permission"),
+    permission: api(permissionBase, mode, "permission", false),
     plugin: api(pluginApi, mode, "plugin"),
     provider,
     reference,
