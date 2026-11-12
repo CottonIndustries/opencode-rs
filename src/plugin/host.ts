@@ -1876,7 +1876,10 @@ function providerRecord(id: string): Json | undefined {
 function makeDomains(plugin: PluginRecord): Json {
   const mode = plugin.mode
   const effect = (fn: Function) => (mode === "effect" ? Effect.sync(fn) : Promise.resolve().then(fn))
-  const sync = (fn: Function) => (mode === "effect" ? (...args: Json[]) => Effect.sync(() => fn(...args)) : fn)
+  const sync = (fn: Function) =>
+    mode === "effect"
+      ? (...args: Json[]) => Effect.sync(() => fn(...args))
+      : (...args: Json[]) => Promise.resolve().then(() => fn(...args))
   const lazy = (fn: Function) =>
     mode === "effect"
       ? (...args: Json[]) => Effect.tryPromise({ try: () => fn(...args), catch: (error: unknown) => error })
@@ -1953,10 +1956,14 @@ function makeDomains(plugin: PluginRecord): Json {
     list: (input?: Json) =>
       sync((input?: Json) => {
         const providerID = typeof input === "string" ? input : input?.providerID
+        const types = Array.isArray(input?.types) ? new Set<string>(input.types) : undefined
         const out: Json[] = []
         for (const [id, record] of registry.providers) {
           if (providerID && id !== providerID) continue
-          out.push(...record.models.values())
+          for (const model of record.models.values()) {
+            if (types && !types.has(model.type ?? "chat")) continue
+            out.push(model)
+          }
         }
         return apiResponse(out)
       })(input),
@@ -1971,13 +1978,26 @@ function makeDomains(plugin: PluginRecord): Json {
       sync((providerID: string, modelID: string) => {
         registry.providers.get(providerID)?.models.delete(modelID)
       })(providerID, modelID),
-    default: Object.assign(sync(() => apiResponse(registry.defaultModel)), {
-      get: sync(() => apiResponse(registry.defaultModel)),
-      set: (providerID: string, modelID: string) =>
-        sync((providerID: string, modelID: string) => {
-          registry.defaultModel = { providerID, modelID }
-        })(providerID, modelID),
-    }),
+    default: Object.assign(
+      sync(() => {
+        const ref = registry.defaultModel
+        if (!ref) return apiResponse(null)
+        const modelID = ref.modelID ?? ref.id
+        return apiResponse(registry.providers.get(ref.providerID)?.models.get(modelID) ?? null)
+      }),
+      {
+        get: sync(() => {
+          const ref = registry.defaultModel
+          if (!ref) return apiResponse(null)
+          const modelID = ref.modelID ?? ref.id
+          return apiResponse(registry.providers.get(ref.providerID)?.models.get(modelID) ?? null)
+        }),
+        set: (providerID: string, modelID: string) =>
+          sync((providerID: string, modelID: string) => {
+            registry.defaultModel = { providerID, modelID }
+          })(providerID, modelID),
+      },
+    ),
     provider: {
       list: sync(() => listProviderRecords()),
       get: sync((id: string) => providerRecord(id)),

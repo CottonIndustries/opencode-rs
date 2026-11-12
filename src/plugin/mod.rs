@@ -3655,6 +3655,11 @@ fn model_json(model: &crate::models::Model) -> Value {
         "id": model.id,
         "modelID": model.id,
         "providerID": model.provider_id,
+        "type": match model.kind {
+            crate::models::ModelKind::Chat => "chat",
+            crate::models::ModelKind::Image => "image",
+            crate::models::ModelKind::Decision => "decision",
+        },
         "name": model.name,
         "family": model.family,
         "capabilities": {
