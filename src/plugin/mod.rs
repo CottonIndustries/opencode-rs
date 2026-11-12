@@ -2224,6 +2224,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             .collect::<Vec<_>>())),
         "session.children" => {
             let id = session_id().ok_or_else(|| anyhow!("session.children requires sessionID"))?;
+            app.session(&id)?;
             Ok(json!(crate::session::list(&app.project)
                 .into_iter()
                 .filter(|s| s.parent_id.as_deref() == Some(id.as_str()))
