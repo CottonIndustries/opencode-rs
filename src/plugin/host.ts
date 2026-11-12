@@ -35,6 +35,9 @@ const project: string = config.project ?? "global"
 const version: string = config.version ?? "0.0.0"
 const channel: string = config.channel ?? "latest"
 const storageDir: string = config.storageDir ?? ""
+const shellProgram: string = config.shell ?? ""
+let bunShellCwd = directory
+let bunShellEnv: Record<string, string> = {}
 
 // ---------------------------------------------------------------- transport
 
@@ -1528,7 +1531,14 @@ function makeBunShell(): Json {
         command += rendered + (strings.raw[i + 1] ?? "")
       }
     }
-    const state = { command, cwd: directory, env: {} as Record<string, string>, quiet: false, nothrow: false, started: false }
+    const state = {
+      command,
+      cwd: bunShellCwd,
+      env: { ...bunShellEnv } as Record<string, string>,
+      quiet: false,
+      nothrow: false,
+      started: false,
+    }
     let promise: Promise<Json> | undefined
     const exec = () => {
       if (!promise) {
@@ -1597,8 +1607,17 @@ function makeBunShell(): Json {
   Object.assign(shell, {
     braces: (pattern: string) => [pattern],
     escape: (value: string) => "'" + value.replaceAll("'", "'\\''") + "'",
-    env: (_next?: Record<string, string | undefined>) => shell,
-    cwd: (_next?: string) => shell,
+    env: (next?: Record<string, string | undefined>) => {
+      for (const [key, value] of Object.entries(next ?? {})) {
+        if (value === undefined) delete bunShellEnv[key]
+        else bunShellEnv[key] = value
+      }
+      return shell
+    },
+    cwd: (next?: string) => {
+      if (next) bunShellCwd = next
+      return shell
+    },
     nothrow: () => shell,
     throws: (_value: boolean) => shell,
   })
@@ -1606,11 +1625,12 @@ function makeBunShell(): Json {
 }
 
 function renderShellValue(value: Json): string {
-  if (typeof value === "string") return value
   if (value && typeof value === "object" && "raw" in value) return String(value.raw)
-  if (value && typeof value === "object" && typeof value.toString === "function" && value.toString !== Object.prototype.toString)
-    return String(value)
-  return String(value)
+  if (typeof value !== "string") return String(value)
+  const shell = shellProgram.toLowerCase()
+  if (shell.includes("cmd.exe")) return `"${value.replaceAll('"', '""')}"`
+  if (shell.includes("powershell") || shell.includes("pwsh")) return `'${value.replaceAll("'", "''")}'`
+  return `'${value.replaceAll("'", "'\\''")}'`
 }
 
 // ---------------------------------------------------------------- api builder

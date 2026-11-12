@@ -1062,12 +1062,14 @@ async fn start(
         .cache
         .join("plugin-runtime")
         .join(format!("config-{}-{}.json", std::process::id(), crate::util::id("run")));
+    let shell = crate::tools::shell::detect();
     let config = json!({
         "directory": directory.to_string_lossy(),
         "worktree": worktree.to_string_lossy(),
         "project": project,
         "version": crate::VERSION,
         "channel": crate::UPSTREAM_CHANNEL,
+        "shell": shell.program,
         "storageDir": crate::paths::get().data.join("storage").join("plugin").join("kv").to_string_lossy(),
         "plugins": plugins,
         "state": snapshot,
@@ -1273,11 +1275,21 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
             Ok(Value::Null)
         }
         "shell.exec" => {
-            let command = params.get("command").and_then(Value::as_str).unwrap_or("");
             let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let kind = crate::tools::shell::detect();
-            let mut cmd = tokio::process::Command::new(&kind.program);
-            cmd.args(&kind.args).arg(command).current_dir(cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
+            let mut cmd = if let Some(argv) = params.get("argv").and_then(Value::as_array) {
+                let mut args = argv.iter().filter_map(Value::as_str);
+                let program = args.next().ok_or_else(|| anyhow!("shell.exec argv is empty"))?;
+                let mut cmd = tokio::process::Command::new(program);
+                cmd.args(args);
+                cmd
+            } else {
+                let command = params.get("command").and_then(Value::as_str).unwrap_or("");
+                let kind = crate::tools::shell::detect();
+                let mut cmd = tokio::process::Command::new(&kind.program);
+                cmd.args(&kind.args).arg(command);
+                cmd
+            };
+            cmd.current_dir(cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
             #[cfg(windows)]
             {
                 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
