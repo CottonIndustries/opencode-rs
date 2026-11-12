@@ -937,6 +937,22 @@ async fn step_once(
                 match &ev {
                     Event::TextDelta(d) => app.emit(AppEvent::TextDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
                     Event::ReasoningDelta(d) => app.emit(AppEvent::ReasoningDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
+                    Event::ToolInputStart { id, name } => app.plugins.emit(serde_json::json!({
+                        "id": crate::util::id("evt"),
+                        "type": "session.tool.input.started",
+                        "properties": { "sessionID": sid.clone(), "assistantMessageID": msg_id.clone(), "id": id.clone(), "name": name.clone() },
+                    })),
+                    Event::ToolCall { id, name, input, .. } => app.plugins.emit(serde_json::json!({
+                        "id": crate::util::id("evt"),
+                        "type": "session.tool.input.ended",
+                        "properties": {
+                            "sessionID": sid.clone(),
+                            "assistantMessageID": msg_id.clone(),
+                            "id": id.clone(),
+                            "name": name.clone(),
+                            "text": input.to_string(),
+                        },
+                    })),
                     Event::Retry(m) => app.emit(AppEvent::Retry { session: sid.clone(), message: m.clone() }),
                     _ => app.emit(AppEvent::Updated { session: sid.clone() }),
                 }
