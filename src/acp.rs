@@ -361,7 +361,7 @@ impl Server {
                 };
             }
             if app.plugin_commands().contains(&name) {
-                app.plugins.execute_command(&name, sid, &args).await?;
+                let _ = app.plugins.execute_command(&name, sid, &args).await?;
                 return Ok(json!({ "stopReason": "end_turn" }));
             }
             let commands = app.commands();

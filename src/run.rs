@@ -157,7 +157,11 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
 
     if let Some((name, cmd_args)) = plugin_command {
         let mut rx = app.subscribe();
-        app.plugins.execute_command(&name, &sid, &cmd_args).await?;
+        let ack = app.plugins.execute_command(&name, &sid, &cmd_args).await?;
+        let admitted = ack
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| matches!(kind, "user" | "synthetic" | "compaction"));
         // The command may call session.prompt; wait for that turn to settle.
         let started = tokio::time::Instant::now();
         let mut saw_busy = app.session(&sid).map(|h| h.is_busy()).unwrap_or(false);
@@ -167,7 +171,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
                 break;
             }
             // A command that only performs host-side work never starts a turn.
-            if !saw_busy && started.elapsed() > std::time::Duration::from_secs(3) {
+            if !saw_busy && started.elapsed() > std::time::Duration::from_secs(if admitted { 10 } else { 3 }) {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -187,6 +191,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
                 }
                 Ok(Ok(AppEvent::Error { message, .. })) => {
                     eprintln!("{message}");
+                    break;
                 }
                 Ok(Ok(_)) => {}
                 Ok(Err(_)) | Err(_) => {

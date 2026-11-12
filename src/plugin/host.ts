@@ -1088,8 +1088,8 @@ async function executePluginCommand(params: Json): Promise<Json> {
     prompt: { text: params.arguments ?? "" },
     delivery: params.delivery ?? "steer",
   }
-  await settle(command.execute(invocation))
-  return {}
+  const result = await settle(command.execute(invocation))
+  return result ?? {}
 }
 
 // ---------------------------------------------------------------- v1 adapter

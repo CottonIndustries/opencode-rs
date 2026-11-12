@@ -838,14 +838,13 @@ impl Manager {
         .await
     }
 
-    pub async fn execute_command(&self, name: &str, session_id: &str, arguments: &str) -> Result<()> {
+    pub async fn execute_command(&self, name: &str, session_id: &str, arguments: &str) -> Result<Value> {
         self.request_with_timeout(
             "command.execute",
             json!({ "name": name, "sessionID": session_id, "arguments": arguments, "delivery": "steer" }),
             None,
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     fn apply_runtime_state(&self, state: &Value) {
@@ -1875,7 +1874,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .or_else(|| arg("text"))
                 .unwrap_or_default();
             if app.plugin_commands().contains(&name) {
-                app.plugins.execute_command(&name, &id, &arguments).await?;
+                let _ = app.plugins.execute_command(&name, &id, &arguments).await?;
                 Ok(json!(true))
             } else if let Some(cmd) = app.commands().get(&name).cloned() {
                 let text = crate::command::render(&cmd, &arguments, &app.directory, &app.worktree);
