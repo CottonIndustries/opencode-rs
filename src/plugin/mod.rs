@@ -1797,7 +1797,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             let (cwd, environment) = handle.with(|session| (session.directory.clone(), session.environment.clone()));
             let shell = crate::tools::shell::detect();
-            let shell_id = crate::util::id("sh");
+            let shell_id = body
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| id.starts_with("sh_"))
+                .map(String::from)
+                .unwrap_or_else(|| crate::util::id("sh"));
             let file = crate::paths::get().tool_output().join(format!("{shell_id}.log"));
             let _ = std::fs::create_dir_all(file.parent().unwrap_or(std::path::Path::new(".")));
             let started = crate::util::now_ms();
