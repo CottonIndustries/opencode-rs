@@ -27,7 +27,7 @@ pub enum AppEvent {
     Retry { session: String, message: String },
     Permission(permission::Request),
     PermissionResolved { id: String, session_id: String, reply: String },
-    Title { session: String },
+    Title { session: String, title: String },
     Notice { message: String },
 }
 
@@ -682,8 +682,8 @@ fn plugin_event(ev: &AppEvent) -> serde_json::Value {
                 "sessionID": session_id, "requestID": request, "reply": reply
             }
         }),
-        AppEvent::Title { session } => json!({
-            "id": id(), "type": "session.updated", "properties": { "sessionID": session }
+        AppEvent::Title { session, title } => json!({
+            "id": id(), "type": "session.renamed", "properties": { "sessionID": session, "title": title }
         }),
         AppEvent::StepFinished { session } => json!({
             "id": id(), "type": "session.step", "properties": { "sessionID": session }

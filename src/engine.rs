@@ -347,7 +347,8 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         tokio::spawn(async move {
             // best effort: the session keeps its default title on failure
             let _ = generate_title(&a, &h).await;
-            a.emit(AppEvent::Title { session: h.id() });
+            let title = h.with(|s| s.title.clone());
+            a.emit(AppEvent::Title { session: h.id(), title });
         });
     }
     run_loop(app, handle, agent, sel).await

@@ -322,7 +322,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
     };
     let mut title_done = false;
     while let Ok(ev) = rx.try_recv() {
-        if matches!(&ev, AppEvent::Title { session } if *session == sid) {
+        if matches!(&ev, AppEvent::Title { session, .. } if *session == sid) {
             title_done = true;
         }
         handle_event(ev, &mut out);
@@ -333,7 +333,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
         let wait = async {
             loop {
                 match rx.recv().await {
-                    Ok(AppEvent::Title { session }) if session == sid => break,
+                    Ok(AppEvent::Title { session, .. }) if session == sid => break,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     _ => {}
                 }
