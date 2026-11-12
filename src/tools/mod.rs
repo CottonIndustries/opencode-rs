@@ -163,9 +163,28 @@ pub fn descriptors(config: &crate::config::Config) -> Vec<(String, String, Value
         Arc::new(glob::Glob),
         Arc::new(grep::Grep),
         Arc::new(webfetch::WebFetch),
+        Arc::new(artifact::Create),
+        Arc::new(artifact::Read),
+        Arc::new(artifact::Update),
+        Arc::new(artifact::Delete),
+        Arc::new(question::QuestionTool),
     ];
     if config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
+    }
+    if config.experimental.codemode {
+        tools.push(Arc::new(codemode::Execute));
+    }
+    if config.experimental.schedules {
+        tools.push(Arc::new(schedule::Create));
+        tools.push(Arc::new(schedule::List));
+        tools.push(Arc::new(schedule::Pause));
+        tools.push(Arc::new(schedule::Resume));
+        tools.push(Arc::new(schedule::Delete));
+    }
+    if !config.mcp.is_empty() {
+        tools.push(Arc::new(mcp_resource::ListResources));
+        tools.push(Arc::new(mcp_resource::ReadResource));
     }
     // Include websearch unconditionally in the plugin-facing catalog; whether
     // it is active depends on configured or plugin-provided integrations.
