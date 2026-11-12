@@ -1805,11 +1805,20 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.compact" => {
             let id = session_id().ok_or_else(|| anyhow!("session.compact requires sessionID"))?;
+            let message_id = crate::util::id("msg");
             let app = app.clone();
+            let session = id.clone();
             tokio::spawn(async move {
-                let _ = crate::engine::compact_session(app, &id).await;
+                let _ = crate::engine::compact_session(app, &session).await;
             });
-            Ok(json!(true))
+            Ok(json!({
+                "id": message_id,
+                "sessionID": id,
+                "time": { "created": crate::util::now_ms() },
+                "type": "compaction",
+                "payload": {},
+                "delivery": "steer",
+            }))
         }
         "permission.list" => Ok(json!(app
             .pending_permissions()
