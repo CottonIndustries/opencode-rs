@@ -138,13 +138,12 @@ impl Tool for SkillTool {
     }
     async fn execute(&self, input: Value, ctx: &Context) -> Result<Output> {
         let id = req_str(&input, "id").or_else(|_| req_str(&input, "name"))?;
-        let skill = ctx
-            .app
-            .skills
+        let skills = ctx.app.skills();
+        let skill = skills
             .iter()
             .find(|s| s.id == id || s.name.eq_ignore_ascii_case(id))
             .ok_or_else(|| {
-                let ids: Vec<&str> = ctx.app.skills.iter().map(|s| s.id.as_str()).collect();
+                let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
                 anyhow!("Unable to load skill {id}: not found. Available skills: {}", ids.join(", "))
             })?;
         ctx.ask("skill", &[skill.id.clone()], &[skill.id.clone()], format!("Load skill {}", skill.name), json!({ "name": skill.name })).await?;

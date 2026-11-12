@@ -113,10 +113,10 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
     let mut plugin_command: Option<(String, String)> = None;
     if let Some(rest) = text.strip_prefix('/') {
         let (name, cmd_args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-        if app.plugin_commands.contains(name) {
+        if app.plugin_commands().contains(name) {
             plugin_command = Some((name.to_string(), cmd_args.trim().to_string()));
             text.clear();
-        } else if let Some(cmd) = app.commands.get(name) {
+        } else if let Some(cmd) = app.commands().get(name) {
             text = crate::command::render(cmd, cmd_args.trim(), &app.directory, &app.worktree);
         }
     }

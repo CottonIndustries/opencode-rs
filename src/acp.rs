@@ -355,11 +355,12 @@ impl Server {
                     Err(e) => Err(e.into()),
                 };
             }
-            if app.plugin_commands.contains(&name) {
+            if app.plugin_commands().contains(&name) {
                 app.plugins.execute_command(&name, sid, &args).await?;
                 return Ok(json!({ "stopReason": "end_turn" }));
             }
-            if let Some(cmd) = app.commands.get(&name) {
+            let commands = app.commands();
+            if let Some(cmd) = commands.get(&name) {
                 text = crate::command::render(cmd, &args, &app.directory, &app.worktree);
                 opts.agent = cmd.agent.clone();
                 opts.model = cmd.model.clone();
@@ -655,7 +656,7 @@ fn mcp_servers(v: Option<&Value>) -> std::result::Result<BTreeMap<String, McpCon
 }
 
 fn commands_update(app: &App) -> Value {
-    let mut cmds: Vec<Value> = app.commands.values().map(|c| json!({ "name": c.name, "description": c.description })).collect();
+    let mut cmds: Vec<Value> = app.commands().values().map(|c| json!({ "name": c.name, "description": c.description })).collect();
     cmds.push(json!({ "name": "compact", "description": "Compact the session" }));
     json!({ "sessionUpdate": "available_commands_update", "availableCommands": cmds })
 }

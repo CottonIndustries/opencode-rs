@@ -21,8 +21,8 @@ pub fn available(app: &App, caller: &Agent) -> Vec<(String, Option<String>)> {
         rules.extend(crate::permission::from_config(p));
     }
     rules.extend(caller.permissions.iter().cloned());
-    let mut v: Vec<(String, Option<String>)> = app
-        .agents
+    let agents = app.agents();
+    let mut v: Vec<(String, Option<String>)> = agents
         .values()
         .filter(|a| a.is_subagent() && !a.hidden && a.mode != crate::agent::Mode::Primary)
         .filter(|a| crate::permission::evaluate(&rules, "subagent", &a.id) != Effect::Deny)
@@ -100,7 +100,7 @@ impl Tool for Subagent {
             }
         };
         let child_id = child.id();
-        let model = arg_str(&input, "model").map(String::from).or_else(|| app.agents.get(&agent_id).and_then(|a| a.model.clone())).or_else(|| Some(ctx.model.full_id()));
+        let model = arg_str(&input, "model").map(String::from).or_else(|| app.agent(&agent_id).ok().and_then(|a| a.model.clone())).or_else(|| Some(ctx.model.full_id()));
         let opts = PromptOptions { agent: Some(agent_id.clone()), model, variant: None };
         let msg = Message::user_text(prompt);
         let title = format!("{description} (@{agent_id})");

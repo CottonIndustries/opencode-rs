@@ -1103,7 +1103,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         }
     }
     messages.push(Message::user_text(prompt));
-    let compaction = app.agent("compaction").cloned().unwrap_or_else(|_| agent.clone());
+    let compaction = app.agent("compaction").unwrap_or_else(|_| agent.clone());
     let names: Vec<String> = registry.iter().map(|t| t.name().to_string()).collect();
     let system = crate::prompt::system(app, &compaction, &sel.model, &names).await;
     let specs = registry.iter().map(|t| tools::spec(t.as_ref())).collect();

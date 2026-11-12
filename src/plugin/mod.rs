@@ -1225,7 +1225,7 @@ async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::a
                 .map(String::from)
                 .or(session_agent)
                 .unwrap_or_else(|| app.default_agent());
-            let agent = app.agent(&agent_id).cloned().or_else(|_| app.agent(&app.default_agent()).cloned())?;
+            let agent = app.agent(&agent_id).or_else(|_| app.agent(&app.default_agent()))?;
             let action = params.get("action").and_then(Value::as_str).unwrap_or("tool");
             let resources: Vec<String> = params
                 .get("resources")
@@ -1534,10 +1534,10 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .or_else(|| arg("arguments"))
                 .or_else(|| arg("text"))
                 .unwrap_or_default();
-            if app.plugin_commands.contains(&name) {
+            if app.plugin_commands().contains(&name) {
                 app.plugins.execute_command(&name, &id, &arguments).await?;
                 Ok(json!(true))
-            } else if let Some(cmd) = app.commands.get(&name).cloned() {
+            } else if let Some(cmd) = app.commands().get(&name).cloned() {
                 let text = crate::command::render(&cmd, &arguments, &app.directory, &app.worktree);
                 let mut opts = crate::app::PromptOptions::default();
                 opts.agent = cmd.agent.clone();
@@ -1589,14 +1589,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             app.reply_permission(&id, reply);
             Ok(Value::Null)
         }
-        "agent.list" | "app.agents" => Ok(json!(app.agents.values().map(agent_json).collect::<Vec<_>>())),
+        "agent.list" | "app.agents" => Ok(json!(app.agents().values().map(agent_json).collect::<Vec<_>>())),
         "command.list" | "app.commands" => Ok(json!(app
-            .commands
+            .commands()
             .values()
             .map(|c| json!({ "name": c.name, "description": c.description }))
             .collect::<Vec<_>>())),
         "skill.list" | "app.skills" => Ok(json!(app
-            .skills
+            .skills()
             .iter()
             .map(|skill| json!({
                 "id": skill.id,
@@ -1663,7 +1663,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "generate.text" => {
             let text = first.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
             let fallback = app.default_agent();
-            let agent = app.agent("build").cloned().or_else(|_| app.agent(&fallback).cloned())?;
+            let agent = app.agent("build").or_else(|_| app.agent(&fallback))?;
             let sel = crate::engine::select_model(app, &agent, &Default::default(), None)?;
             let (text, _) = crate::engine::complete(
                 &sel,

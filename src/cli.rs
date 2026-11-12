@@ -396,7 +396,8 @@ pub async fn debug_config() -> Result<()> {
 
 pub async fn debug_agents() -> Result<()> {
     let app = App::init(cwd()).await?;
-    for a in app.agents.values() {
+    let agents = app.agents();
+    for a in agents.values() {
         println!(
             "{:<12} {:<9} {}{}",
             a.id,
@@ -414,7 +415,7 @@ pub async fn debug_agents() -> Result<()> {
 
 pub async fn debug_skills() -> Result<()> {
     let app = App::init(cwd()).await?;
-    for s in &app.skills {
+    for s in app.skills() {
         println!("{:<16} {}  [{}]", s.id, crate::util::truncate_chars(&s.description, 80), s.path.display());
     }
     Ok(())

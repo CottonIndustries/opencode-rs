@@ -284,7 +284,7 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
     if app.config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
     }
-    if !app.skills.is_empty() {
+    if !app.skills().is_empty() {
         tools.push(Arc::new(skill::SkillTool));
     }
     let subagents = subagent::available(app, agent);

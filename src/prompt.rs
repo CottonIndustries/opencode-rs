@@ -205,7 +205,7 @@ pub async fn system(app: &App, agent: &Agent, model: &Model, tools: &[String]) -
         ctx.push(i);
     }
     if tools.iter().any(|t| t == "skill") {
-        ctx.push(skills_block(&app.skills));
+        ctx.push(skills_block(&app.skills()));
     }
     ctx.push(date());
     out.push(ctx.join("\n\n"));

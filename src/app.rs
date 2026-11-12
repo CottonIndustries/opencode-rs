@@ -106,12 +106,12 @@ pub struct App {
     pub config: Config,
     pub config_files: Vec<PathBuf>,
     pub providers: RwLock<BTreeMap<String, Provider>>,
-    pub agents: BTreeMap<String, Agent>,
-    pub skills: Vec<crate::tools::skill::Skill>,
-    pub commands: BTreeMap<String, crate::command::Command>,
+    pub agents: RwLock<BTreeMap<String, Agent>>,
+    pub skills: RwLock<Vec<crate::tools::skill::Skill>>,
+    pub commands: RwLock<BTreeMap<String, crate::command::Command>>,
     pub mcp: crate::mcp::Manager,
     pub plugins: crate::plugin::Manager,
-    pub plugin_commands: std::collections::BTreeSet<String>,
+    pub plugin_commands: RwLock<std::collections::BTreeSet<String>>,
     pub events: broadcast::Sender<AppEvent>,
     pub ask_mode: Mutex<AskMode>,
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
@@ -176,12 +176,12 @@ impl App {
             config,
             config_files: files,
             providers: RwLock::new(providers),
-            agents,
-            skills,
-            commands,
+            agents: RwLock::new(agents),
+            skills: RwLock::new(skills),
+            commands: RwLock::new(commands),
             mcp,
             plugins: plugin_manager,
-            plugin_commands,
+            plugin_commands: RwLock::new(plugin_commands),
             events,
             ask_mode: Mutex::new(AskMode::Interactive),
             pending: Mutex::new(HashMap::new()),
@@ -190,6 +190,19 @@ impl App {
         });
         app.plugins.attach(&app);
         Ok(app)
+    }
+
+    /// Apply a transformed plugin state after startup (transform `reload()`).
+    pub fn apply_plugin_state(&self, state: &serde_json::Value) {
+        let base_agents = self.agents();
+        let base_commands = self.commands();
+        let base_providers = self.providers();
+        let applied = crate::plugin::apply_state(state, &self.config, &base_providers, &base_agents, &base_commands);
+        *self.providers.write().unwrap() = applied.providers;
+        *self.agents.write().unwrap() = applied.agents;
+        *self.skills.write().unwrap() = applied.skills;
+        *self.commands.write().unwrap() = applied.commands;
+        *self.plugin_commands.write().unwrap() = applied.plugin_commands;
     }
 
     /// Start a turn in the background (plugin/client requests are admitted,
@@ -228,16 +241,44 @@ impl App {
         self.providers.read().unwrap().clone()
     }
 
-    pub fn agent(&self, id: &str) -> Result<&Agent> {
-        self.agents.get(id).ok_or_else(|| anyhow!("agent not found: {id}"))
+    pub fn agent(&self, id: &str) -> Result<Agent> {
+        self.agents
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("agent not found: {id}"))
+    }
+
+    pub fn agents(&self) -> BTreeMap<String, Agent> {
+        self.agents.read().unwrap().clone()
+    }
+
+    pub fn skills(&self) -> Vec<crate::tools::skill::Skill> {
+        self.skills.read().unwrap().clone()
+    }
+
+    pub fn commands(&self) -> BTreeMap<String, crate::command::Command> {
+        self.commands.read().unwrap().clone()
+    }
+
+    pub fn plugin_commands(&self) -> std::collections::BTreeSet<String> {
+        self.plugin_commands.read().unwrap().clone()
     }
 
     pub fn default_agent(&self) -> String {
-        crate::agent::default_agent(&self.config, &self.agents)
+        crate::agent::default_agent(&self.config, &self.agents.read().unwrap())
     }
 
-    pub fn primary_agents(&self) -> Vec<&Agent> {
-        let mut v: Vec<&Agent> = self.agents.values().filter(|a| a.is_primary() && !a.hidden).collect();
+    pub fn primary_agents(&self) -> Vec<Agent> {
+        let mut v: Vec<Agent> = self
+            .agents
+            .read()
+            .unwrap()
+            .values()
+            .filter(|a| a.is_primary() && !a.hidden)
+            .cloned()
+            .collect();
         v.sort_by_key(|a| (a.id != "build", a.id.clone()));
         v
     }

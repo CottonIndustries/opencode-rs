@@ -326,7 +326,7 @@ impl Ui {
         } else {
             handle
         };
-        let agent = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).filter(|a| app.agents.contains_key(a)).unwrap_or_else(|| app.default_agent());
+        let agent = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).filter(|a| app.agents().contains_key(a)).unwrap_or_else(|| app.default_agent());
         let mut ui = Ui {
             theme: theme::fallback(mode),
             app,
@@ -515,7 +515,7 @@ impl Ui {
     /// Model for the current agent: explicit, session, agent, config, recent, default.
     fn pick_model(&mut self, explicit: Option<String>) {
         let session = self.handle.with(|s| s.model.clone());
-        let agent = self.app.agents.get(&self.agent).and_then(|a| a.model.clone());
+        let agent = self.app.agent(&self.agent).ok().and_then(|a| a.model.clone());
         let candidates = [explicit, session, agent, self.app.config.model.clone()];
         let mut chosen = candidates.into_iter().flatten().find(|m| self.valid_model(m));
         if chosen.is_none() {
@@ -563,7 +563,8 @@ impl Ui {
 
     /// Visible agents in upstream order; their index picks the categorical color.
     fn agent_order(&self) -> Vec<String> {
-        let mut ids: Vec<&crate::agent::Agent> = self.app.agents.values().filter(|a| !a.hidden).collect();
+        let agents = self.app.agents();
+        let mut ids: Vec<&crate::agent::Agent> = agents.values().filter(|a| !a.hidden).collect();
         ids.sort_by_key(|a| (a.id != "build", a.id != "plan", !a.is_primary(), a.id.clone()));
         ids.into_iter().map(|a| a.id.clone()).collect()
     }
@@ -572,14 +573,15 @@ impl Ui {
         let colors = self.theme.agent_colors();
         let order = self.agent_order();
         let Some(i) = order.iter().position(|a| a == id) else { return colors[0] };
-        if let Some(c) = self.app.agents.get(id).and_then(|a| a.color.as_deref()).and_then(Rgba::from_hex) {
+        if let Some(c) = self.app.agent(id).ok().and_then(|a| a.color.as_deref().and_then(Rgba::from_hex)) {
             return c;
         }
         colors[i % colors.len()]
     }
 
     fn primary_agents(&self) -> Vec<String> {
-        let mut v: Vec<&crate::agent::Agent> = self.app.agents.values().filter(|a| a.is_primary() && !a.hidden).collect();
+        let agents = self.app.agents();
+        let mut v: Vec<&crate::agent::Agent> = agents.values().filter(|a| a.is_primary() && !a.hidden).collect();
         v.sort_by_key(|a| (a.id != "build", a.id != "plan", a.id.clone()));
         v.into_iter().map(|a| a.id.clone()).collect()
     }
@@ -691,7 +693,8 @@ impl Ui {
                 out.push((format!("/{s}"), c.title.clone(), pick));
             }
         }
-        for c in self.app.commands.values() {
+        let commands = self.app.commands();
+        for c in commands.values() {
             out.push((format!("/{}", c.name), c.description.clone(), Pick::Slash(c.name.clone())));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -812,7 +815,7 @@ impl Ui {
                 self.scroll = 0;
                 self.redo.clear();
                 self.visit(id);
-                if let Some(a) = self.handle.with(|s| s.agent.clone()).filter(|a| self.app.agents.contains_key(a)) {
+                if let Some(a) = self.handle.with(|s| s.agent.clone()).filter(|a| self.app.agent(a).is_ok()) {
                     self.agent = a;
                 }
                 self.pick_model(None);
@@ -951,7 +954,7 @@ impl Ui {
         let i = agents.iter().position(|a| *a == self.agent).unwrap_or(0) as isize;
         let n = agents.len() as isize;
         self.agent = agents[(i + dir).rem_euclid(n) as usize].clone();
-        if let Some(m) = self.app.agents.get(&self.agent).and_then(|a| a.model.clone()) {
+        if let Some(m) = self.app.agent(&self.agent).ok().and_then(|a| a.model.clone()) {
             self.pick_model(Some(m));
         }
     }
@@ -1052,9 +1055,9 @@ impl Ui {
                 self.exec(cmd.id, args);
                 return;
             }
-            if let Some(cmd) = self.app.commands.get(name).cloned() {
+            if let Some(cmd) = self.app.commands().get(name).cloned() {
                 self.clear_prompt();
-                if self.app.plugin_commands.contains(name) {
+                if self.app.plugin_commands().contains(name) {
                     self.enter_session();
                     let app = self.app.clone();
                     let sid = self.sid();
@@ -1145,7 +1148,8 @@ impl Ui {
         for c in &cmds {
             opts.push(Opt { title: c.title.clone(), footer: self.shortcut(c.id), category: c.category.into(), value: c.id.into(), search: c.id.into(), ..Default::default() });
         }
-        for c in self.app.commands.values() {
+        let commands = self.app.commands();
+        for c in commands.values() {
             opts.push(Opt { title: format!("/{}", c.name), description: c.description.clone(), category: "Commands".into(), value: format!("slash:{}", c.name), ..Default::default() });
         }
         let mut s = Select::new(Kind::Palette, "Commands", opts);
@@ -1272,11 +1276,12 @@ impl Ui {
     }
 
     fn open_agents(&mut self) {
+        let agents = self.app.agents();
         let opts = self
             .primary_agents()
             .into_iter()
             .map(|id| {
-                let a = &self.app.agents[&id];
+                let a = &agents[&id];
                 Opt { title: id.clone(), description: a.description.clone().unwrap_or_default(), current: id == self.agent, value: id, ..Default::default() }
             })
             .collect();
@@ -1395,7 +1400,7 @@ impl Ui {
             Kind::Agents => {
                 self.dialog = None;
                 self.agent = value;
-                if let Some(m) = self.app.agents.get(&self.agent).and_then(|a| a.model.clone()) {
+                if let Some(m) = self.app.agent(&self.agent).ok().and_then(|a| a.model.clone()) {
                     self.pick_model(Some(m));
                 }
             }
@@ -1813,10 +1818,11 @@ impl Ui {
             }
             AutoKind::Reference => {
                 let mut non_files: Vec<prompt::Option_> = Vec::new();
-                for s in &self.app.skills {
+                for s in self.app.skills() {
                     non_files.push(prompt::Option_ { display: format!("@{}", s.id), description: s.description.clone(), label: "skill", value: s.id.clone(), action: Pick::Mention(s.id.clone()) });
                 }
-                let mut subs: Vec<&crate::agent::Agent> = self.app.agents.values().filter(|a| !a.hidden && a.is_subagent() && !a.is_primary()).collect();
+                let agents = self.app.agents();
+                let mut subs: Vec<&crate::agent::Agent> = agents.values().filter(|a| !a.hidden && a.is_subagent() && !a.is_primary()).collect();
                 subs.sort_by_key(|a| a.id.clone());
                 for a in subs {
                     non_files.push(prompt::Option_ { display: format!("@{}", a.id), description: String::new(), label: "agent", value: a.id.clone(), action: Pick::Mention(a.id.clone()) });
