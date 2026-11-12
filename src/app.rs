@@ -458,61 +458,66 @@ impl App {
         let approved: Vec<(String, String)> = handle.with(|s| s.approved.clone());
         rules.extend(approved.iter().map(|(a, r)| permission::rule(a, r, Effect::Allow)));
 
-        let mut needs_ask = Vec::new();
-        let mut denial_message: Option<String> = None;
-        for r in resources {
-            let configured = permission::evaluate(&rules, action, r);
-            let event = self
-                .plugins
-                .trigger(
-                    "permission",
-                    "evaluate",
-                    serde_json::json!({
-                        "sessionID": handle.id(),
-                        "agent": agent.id,
-                        "action": action,
-                        "resources": resources,
-                        "metadata": metadata.clone(),
-                        "effect": match configured {
-                            Effect::Allow => "allow",
-                            Effect::Deny => "deny",
-                            Effect::Ask => "ask",
-                        },
-                        "request": {
-                            "id": crate::util::id("per"),
-                            "sessionID": handle.id(),
-                            "permission": action,
-                            "patterns": resources,
-                            "always": save,
-                            "metadata": metadata.clone(),
-                        },
-                    }),
-                )
-                .await;
-            if let Some(message) = event.get("message").and_then(serde_json::Value::as_str) {
-                denial_message = Some(message.to_string());
-            }
-            let effect = event
-                .get("effect")
-                .and_then(serde_json::Value::as_str)
-                .and_then(Effect::parse)
-                .unwrap_or(configured);
-            match effect {
-                Effect::Allow => {}
+        let mut asks = false;
+        for resource in resources {
+            match permission::evaluate(&rules, action, resource) {
                 Effect::Deny => {
-                    if let Some(message) = denial_message {
-                        return Err(anyhow!("Permission denied: {message}"));
-                    }
                     return Err(anyhow!(
-                        "Permission denied: the {action} permission for {r} is denied by the configured rules. Do not retry; continue without it or ask the user."
+                        "Permission denied: the {action} permission for {resource} is denied by the configured rules. Do not retry; continue without it or ask the user."
                     ))
                 }
-                Effect::Ask => needs_ask.push(r.clone()),
+                Effect::Ask => asks = true,
+                Effect::Allow => {}
             }
         }
-        if needs_ask.is_empty() {
-            return Ok(());
+        let configured = if asks { Effect::Ask } else { Effect::Allow };
+        let event = self
+            .plugins
+            .trigger(
+                "permission",
+                "evaluate",
+                serde_json::json!({
+                    "sessionID": handle.id(),
+                    "agent": agent.id,
+                    "action": action,
+                    "resources": resources,
+                    "metadata": metadata.clone(),
+                    "effect": match configured {
+                        Effect::Allow => "allow",
+                        Effect::Deny => "deny",
+                        Effect::Ask => "ask",
+                    },
+                    "request": {
+                        "id": crate::util::id("per"),
+                        "sessionID": handle.id(),
+                        "permission": action,
+                        "patterns": resources,
+                        "always": save,
+                        "metadata": metadata.clone(),
+                    },
+                }),
+            )
+            .await;
+        let denial_message = event.get("message").and_then(serde_json::Value::as_str).map(String::from);
+        let effect = event
+            .get("effect")
+            .and_then(serde_json::Value::as_str)
+            .and_then(Effect::parse)
+            .unwrap_or(configured);
+        match effect {
+            Effect::Allow => return Ok(()),
+            Effect::Deny => {
+                if let Some(message) = denial_message {
+                    return Err(anyhow!("Permission denied: {message}"));
+                }
+                return Err(anyhow!(
+                    "Permission denied: the {action} permission for {} is denied by a plugin. Do not retry; continue without it or ask the user.",
+                    resources.join(", ")
+                ));
+            }
+            Effect::Ask => {}
         }
+        let needs_ask = resources.to_vec();
         let mode = *self.ask_mode.lock().unwrap();
         match mode {
             AskMode::AutoApprove => return Ok(()),

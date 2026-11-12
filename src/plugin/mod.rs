@@ -1298,6 +1298,9 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
                 .unwrap_or_default();
+            if resources.is_empty() {
+                return Err(anyhow!("permission.assert requires at least one resource"));
+            }
             let save: Vec<String> = params
                 .get("save")
                 .and_then(Value::as_array)
