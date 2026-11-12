@@ -1951,6 +1951,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                         .unwrap_or_else(|| first.to_string())
                 )
             })?;
+            app.session(&id)?;
             let mut texts: Vec<String> = Vec::new();
             let mut files: Vec<crate::session::FilePart> = Vec::new();
             if let Some(parts) = body.get("parts").and_then(Value::as_array) {
@@ -2054,6 +2055,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.synthetic" => {
             let id = session_id().ok_or_else(|| anyhow!("session.synthetic requires sessionID"))?;
+            app.session(&id)?;
             let text = body.get("text").and_then(Value::as_str).unwrap_or("").to_string();
             let message_id = crate::util::id("msg");
             let session_id = id.clone();
@@ -2074,6 +2076,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.command" => {
             let id = session_id().ok_or_else(|| anyhow!("session.command requires sessionID"))?;
+            app.session(&id)?;
             let name = body
                 .get("command")
                 .or_else(|| body.get("name"))
@@ -2106,6 +2109,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.compact" => {
             let id = session_id().ok_or_else(|| anyhow!("session.compact requires sessionID"))?;
+            app.session(&id)?;
             let message_id = crate::util::id("msg");
             let app = app.clone();
             let session = id.clone();
