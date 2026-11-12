@@ -167,6 +167,23 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
             }
         }
     }
+    if let Some(directory) = handle.pending_move.lock().unwrap().take() {
+        crate::plugin::kill_terminal(session_id);
+        handle.with(|session| {
+            session.directory = directory.clone();
+            session.project = crate::session::project_id(&directory);
+        });
+        handle.save();
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.moved",
+            "properties": {
+                "sessionID": session_id,
+                "projectID": crate::session::project_id(&directory),
+                "location": { "directory": directory.to_string_lossy() }
+            }
+        }));
+    }
     // V2 experimental.idle runs before the session settles. It may admit
     // synthetic input through ctx.session.synthetic(), which starts a new turn.
     // It does not run after a failed or interrupted turn.

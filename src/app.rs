@@ -77,6 +77,7 @@ pub struct Handle {
     pub cancel: Mutex<Option<CancellationToken>>,
     pub busy: AtomicBool,
     pub queue: Mutex<VecDeque<(Message, PromptOptions)>>,
+    pub pending_move: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl Handle {
@@ -426,6 +427,7 @@ impl App {
             cancel: Mutex::new(None),
             busy: AtomicBool::new(false),
             queue: Mutex::new(VecDeque::new()),
+            pending_move: Mutex::new(None),
         });
         self.sessions.lock().unwrap().insert(id, h.clone());
         h

@@ -25,6 +25,10 @@ const DENO_VERSION: &str = "2.9.8";
 const HOST_TS: &str = include_str!("host.ts");
 const PLUGIN_API_VERSION: &str = "2.2.7";
 const V1_PLUGIN_API_VERSION: &str = "1.19.5";
+
+pub fn kill_terminal(session_id: &str) {
+    pty::manager().kill(session_id);
+}
 const EFFECT_VERSION: &str = "4.1.0";
 
 // ---------------------------------------------------------------- plugin specs
@@ -2487,8 +2491,30 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("session.move requires directory"))?;
             let handle = app.session(&id)?;
-            pty::manager().kill(&id);
+            let delivery = body.get("delivery").and_then(Value::as_str).unwrap_or("steer");
             let directory = std::path::PathBuf::from(directory);
+            if handle.is_busy() && delivery == "queue" {
+                let inbox_id = crate::util::id("msg");
+                *handle.pending_move.lock().unwrap() = Some(directory.clone());
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.enqueued",
+                    "properties": {
+                        "sessionID": id,
+                        "inboxID": inbox_id,
+                        "item": {
+                            "type": "move",
+                            "payload": {
+                                "projectID": crate::session::project_id(&directory),
+                                "location": { "directory": directory.to_string_lossy() }
+                            },
+                            "delivery": "queue"
+                        }
+                    }
+                }));
+                return Ok(Value::Null);
+            }
+            pty::manager().kill(&id);
             handle.with(|session| {
                 session.directory = directory.clone();
                 session.project = crate::session::project_id(&directory);
