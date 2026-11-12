@@ -2100,6 +2100,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.status" => {
             let id = session_id().ok_or_else(|| anyhow!("session.status requires sessionID"))?;
             let handle = app.session(&id)?;
+            if let Some(retry) = handle.retry.lock().unwrap().clone() {
+                return Ok(retry);
+            }
             Ok(json!({ "type": if handle.is_busy() { "busy" } else { "idle" } }))
         }
         "session.active" => {
@@ -2867,25 +2870,39 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.compact" => {
             let id = session_id().ok_or_else(|| anyhow!("session.compact requires sessionID"))?;
-            app.session(&id)?;
+            let handle = app.session(&id)?;
+            let delivery = body.get("delivery").and_then(Value::as_str).unwrap_or("steer");
             let message_id = body
                 .get("id")
                 .or_else(|| first.get("id"))
                 .and_then(Value::as_str)
                 .map(String::from)
                 .unwrap_or_else(|| crate::util::id("msg"));
-            let app = app.clone();
-            let session = id.clone();
-            tokio::spawn(async move {
-                let _ = crate::engine::compact_session(app, &session).await;
-            });
+            if handle.is_busy() {
+                *handle.pending_compaction.lock().unwrap() = Some(message_id.clone());
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.enqueued",
+                    "properties": {
+                        "sessionID": id.clone(),
+                        "inboxID": message_id.clone(),
+                        "item": { "type": "compaction", "payload": {}, "delivery": delivery }
+                    }
+                }));
+            } else {
+                let app = app.clone();
+                let session = id.clone();
+                tokio::spawn(async move {
+                    let _ = crate::engine::compact_session(app, &session).await;
+                });
+            }
             Ok(json!({
                 "id": message_id,
                 "sessionID": id,
                 "time": { "created": crate::util::now_ms() },
                 "type": "compaction",
                 "payload": {},
-                "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
+                "delivery": delivery,
             }))
         }
         "permission.list" => {

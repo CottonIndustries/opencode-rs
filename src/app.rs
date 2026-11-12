@@ -78,6 +78,8 @@ pub struct Handle {
     pub busy: AtomicBool,
     pub queue: Mutex<VecDeque<(Message, PromptOptions)>>,
     pub pending_move: Mutex<Option<std::path::PathBuf>>,
+    pub pending_compaction: Mutex<Option<String>>,
+    pub retry: Mutex<Option<serde_json::Value>>,
 }
 
 impl Handle {
@@ -330,6 +332,25 @@ impl App {
     }
 
     pub fn emit(&self, ev: AppEvent) {
+        match &ev {
+            AppEvent::Retry { session, message, assistant_message_id, attempt, at } => {
+                if let Some(handle) = self.sessions.lock().unwrap().get(session) {
+                    *handle.retry.lock().unwrap() = Some(serde_json::json!({
+                        "type": "retry",
+                        "assistantMessageID": assistant_message_id,
+                        "attempt": attempt,
+                        "message": message,
+                        "at": at,
+                    }));
+                }
+            }
+            AppEvent::Busy { session, .. } => {
+                if let Some(handle) = self.sessions.lock().unwrap().get(session) {
+                    *handle.retry.lock().unwrap() = None;
+                }
+            }
+            _ => {}
+        }
         let mut plugin_event = plugin_event(&ev);
         if let Some(session_id) = plugin_event.pointer("/properties/sessionID").and_then(serde_json::Value::as_str) {
             let kind = plugin_event.get("type").and_then(serde_json::Value::as_str).unwrap_or_default();
@@ -428,6 +449,8 @@ impl App {
             busy: AtomicBool::new(false),
             queue: Mutex::new(VecDeque::new()),
             pending_move: Mutex::new(None),
+            pending_compaction: Mutex::new(None),
+            retry: Mutex::new(None),
         });
         self.sessions.lock().unwrap().insert(id, h.clone());
         h

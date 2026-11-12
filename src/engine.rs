@@ -210,6 +210,18 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     let busy = app.session(session_id).map(|handle| handle.is_busy() || !handle.queue.lock().unwrap().is_empty()).unwrap_or(false);
     if !busy {
         app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
+        if let Some(inbox_id) = handle.pending_compaction.lock().unwrap().take() {
+            app.plugins.emit(serde_json::json!({
+                "id": crate::util::id("evt"),
+                "type": "session.inbox.delivered",
+                "properties": { "sessionID": session_id, "inboxID": inbox_id }
+            }));
+            let app = app.clone();
+            let session = session_id.to_string();
+            tokio::spawn(async move {
+                let _ = compact_session(app, &session).await;
+            });
+        }
     }
     match &result {
         Ok(false) => app.plugins.emit(serde_json::json!({
