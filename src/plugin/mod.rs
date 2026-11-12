@@ -1462,7 +1462,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(directory) = filter.get("directory").and_then(Value::as_str) {
                 list.retain(|s| s.directory.to_string_lossy() == directory);
             }
-            if filter.get("archived").and_then(Value::as_bool) != Some(true) {
+            if let Some(project) = filter.get("project").and_then(Value::as_str) {
+                list.retain(|s| crate::session::project_id(&s.directory) == project);
+            }
+            if filter.get("archived").and_then(Value::as_bool) == Some(true) {
+                list.retain(|s| s.archived);
+            } else {
                 list.retain(|s| !s.archived);
             }
             if filter.get("order").and_then(Value::as_str) == Some("asc") {
@@ -1495,17 +1500,71 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.fork" => {
             let id = session_id().ok_or_else(|| anyhow!("session.fork requires sessionID"))?;
             let handle = app.session(&id)?;
+            let before = body.get("before").and_then(Value::as_str).map(String::from);
             let forked = {
                 let session = handle.session.lock().unwrap();
-                crate::session::fork(&session)
+                let mut forked = crate::session::fork(&session);
+                if let Some(before) = &before {
+                    if let Some(index) = forked.messages.iter().position(|message| message.id == *before) {
+                        forked.messages.truncate(index);
+                    }
+                }
+                forked
+            };
+            let boundary = match &before {
+                Some(message_id) => json!({ "type": "before", "messageID": message_id }),
+                None => forked
+                    .messages
+                    .last()
+                    .map(|message| json!({ "type": "through", "messageID": message.id }))
+                    .unwrap_or_else(|| json!({ "type": "before", "messageID": "" })),
             };
             crate::session::save(&forked)?;
             let forked = app.session(&forked.id)?;
             let session = forked.with(|session| session.clone());
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.forked",
+                "properties": {
+                    "sessionID": session.id,
+                    "parentID": id,
+                    "boundary": boundary,
+                }
+            }));
             Ok(session_json(&session))
         }
         "session.background" => Ok(Value::Null),
-        "session.skill" => Ok(Value::Null),
+        "session.skill" => {
+            let session_id = session_id().ok_or_else(|| anyhow!("session.skill requires sessionID"))?;
+            let skill_id = body
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("session.skill requires a skill id"))?;
+            let skill = app
+                .skills()
+                .into_iter()
+                .find(|skill| skill.id == skill_id)
+                .ok_or_else(|| anyhow!("skill not found: {skill_id}"))?;
+            let text = format!("[Skill activated: {}]\n{}", skill.name, skill.content);
+            let handle = app.session(&session_id)?;
+            handle.with(|session| {
+                session
+                    .instruction_entries
+                    .insert(format!("skill:{}", skill.id), json!({ "name": skill.name, "text": text.clone() }));
+            });
+            handle.save();
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.skill.activated",
+                "properties": {
+                    "sessionID": session_id,
+                    "id": skill.id,
+                    "name": skill.name,
+                    "text": text,
+                }
+            }));
+            Ok(Value::Null)
+        }
         "session.create" => {
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
             let handle = app.create_session(parent);
@@ -1802,6 +1861,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "type": "session.moved",
                 "properties": {
                     "sessionID": id,
+                    "projectID": crate::session::project_id(&directory),
                     "location": { "directory": directory.to_string_lossy() }
                 }
             }));
@@ -1854,12 +1914,21 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .and_then(Value::as_array)
             {
                 for attachment in attachments {
+                    let name = attachment.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                    if let Some(data) = attachment.get("data").and_then(Value::as_str) {
+                        let mime = attachment
+                            .get("mime")
+                            .and_then(Value::as_str)
+                            .unwrap_or("application/octet-stream");
+                        files.push(crate::session::FilePart { mime: mime.to_string(), data: data.to_string(), name });
+                        continue;
+                    }
                     let uri = attachment.get("uri").and_then(Value::as_str).unwrap_or_default();
                     if let Some((meta, data)) = uri.split_once(";base64,") {
                         files.push(crate::session::FilePart {
                             mime: meta.trim_start_matches("data:").to_string(),
                             data: data.to_string(),
-                            name: attachment.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                            name,
                         });
                     }
                 }
