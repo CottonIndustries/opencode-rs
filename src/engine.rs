@@ -79,6 +79,7 @@ fn compaction_prompt(existing: bool) -> String {
     parts.join("\n\n")
 }
 
+#[derive(Clone)]
 pub struct Selection {
     pub provider: Provider,
     pub model: Model,
@@ -351,38 +352,7 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, mut opts: Pr
     let mut sel = select_model(&app, &agent, &opts, session_model.as_deref())?;
     // V2 `experimental.model.resolve`: a router plugin can serve this request
     // with a different model without changing the session's selection.
-    let resolved = app
-        .plugins
-        .trigger(
-            "session",
-            "experimental.model.resolve",
-            serde_json::json!({
-                "sessionID": handle.id(),
-                "agent": agent.id,
-                "kind": "primary",
-                "model": {
-                    "providerID": sel.provider.id,
-                    "id": sel.model.id,
-                    "variant": sel.variant,
-                },
-            }),
-        )
-        .await;
-    if let Some(model) = resolved.get("model") {
-        if let (Some(provider_id), Some(model_id)) = (model.get("providerID").and_then(Value::as_str), model.get("id").and_then(Value::as_str)) {
-            let next_variant = model.get("variant").and_then(Value::as_str);
-            if provider_id != sel.provider.id || model_id != sel.model.id || next_variant != sel.variant.as_deref() {
-                let mut reference = format!("{provider_id}/{model_id}");
-                if let Some(variant) = model.get("variant").and_then(Value::as_str) {
-                    reference.push('#');
-                    reference.push_str(variant);
-                }
-                if let Ok(next) = select_model(&app, &agent, &PromptOptions { model: Some(reference), ..opts.clone() }, session_model.as_deref()) {
-                    sel = next;
-                }
-            }
-        }
-    }
+    resolve_model_hook(&app, &agent, &mut sel, &handle.id(), "primary").await;
     let full = sel.model.full_id();
     let model_ref = match &sel.variant {
         Some(v) => format!("{full}#{v}"),
@@ -784,6 +754,56 @@ pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &S
         .await;
     if let Some(options) = language.get("options").filter(|value| value.is_object()) {
         req.options = options.clone();
+    }
+}
+
+/// Let a V2 router plugin replace the model for a session request kind.
+pub(crate) async fn resolve_model_hook(
+    app: &Arc<App>,
+    agent: &Agent,
+    sel: &mut Selection,
+    session_id: &str,
+    kind: &str,
+) {
+    let resolved = app
+        .plugins
+        .trigger(
+            "session",
+            "experimental.model.resolve",
+            serde_json::json!({
+                "sessionID": session_id,
+                "agent": agent.id,
+                "kind": kind,
+                "model": {
+                    "providerID": sel.provider.id,
+                    "id": sel.model.id,
+                    "variant": sel.variant,
+                },
+            }),
+        )
+        .await;
+    let Some(model) = resolved.get("model") else { return };
+    if let (Some(provider_id), Some(model_id)) = (
+        model.get("providerID").and_then(Value::as_str),
+        model.get("id").and_then(Value::as_str),
+    ) {
+        let next_variant = model.get("variant").and_then(Value::as_str);
+        if provider_id == sel.provider.id && model_id == sel.model.id && next_variant == sel.variant.as_deref() {
+            return;
+        }
+        let mut reference = format!("{provider_id}/{model_id}");
+        if let Some(variant) = next_variant {
+            reference.push('#');
+            reference.push_str(variant);
+        }
+        if let Ok(next) = select_model(
+            app,
+            agent,
+            &PromptOptions { model: Some(reference), ..Default::default() },
+            Some(&sel.model.full_id()),
+        ) {
+            *sel = next;
+        }
     }
 }
 
@@ -1511,6 +1531,9 @@ pub(crate) async fn complete_request_with(
 /// Summarize the active history into a compaction checkpoint.
 pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &Selection, registry: &[Arc<dyn Tool>], continuing: bool) -> Result<()> {
     let sid = handle.id();
+    let mut routed = sel.clone();
+    resolve_model_hook(app, agent, &mut routed, &sid, "compaction").await;
+    let sel = &routed;
     let mut messages: Vec<Message> = handle.with(|s| s.active_messages().to_vec());
     if messages.is_empty() {
         return Ok(());
@@ -1744,7 +1767,8 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let providers = app.providers();
     let small = crate::models::small_model(&app.config, &providers, &provider_id).unwrap_or(main);
     let sel = select_model(app, &agent, &PromptOptions { model: Some(small), ..Default::default() }, None)?;
-    let sel = Selection { variant: if sel.model.has_reasoning_type("toggle") { Some("off".into()) } else { Some("low".into()).filter(|v| sel.model.variants().contains(v)) }, ..sel };
+    let mut sel = Selection { variant: if sel.model.has_reasoning_type("toggle") { Some("off".into()) } else { Some("low".into()).filter(|v| sel.model.variants().contains(v)) }, ..sel };
+    resolve_model_hook(app, &agent, &mut sel, &handle.id(), "title").await;
     let input = format!("Here is the first message of the conversation:\n\n<message>\n{first}\n</message>\n\nReply with only the title.");
     let mut req = build_request(&sel, &agent, vec![crate::agent::TITLE_PROMPT.into()], vec![Message::user_text(input)], vec![], &handle.with(|s| provider::SessionRef::of(s)));
     attach_hooks(app, &mut req, &handle.id(), &agent, &sel, "title");

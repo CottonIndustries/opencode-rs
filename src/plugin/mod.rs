@@ -1513,7 +1513,10 @@ async fn plugin_generate(
         None => (None, None),
     };
     let opts = crate::app::PromptOptions { model: model_ref, variant, ..Default::default() };
-    let sel = crate::engine::select_model(app, &agent, &opts, session_model.as_deref())?;
+    let mut sel = crate::engine::select_model(app, &agent, &opts, session_model.as_deref())?;
+    if contextful {
+        crate::engine::resolve_model_hook(app, &agent, &mut sel, session_id, "generate").await;
+    }
     let mut system: Vec<String> = Vec::new();
     let mut messages;
     let mut specs: Vec<crate::provider::ToolSpec> = Vec::new();
