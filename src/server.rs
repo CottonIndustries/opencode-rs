@@ -237,6 +237,65 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(json!({ "data": crate::artifact::update(id, &request.body)? }))
         }
         ("DELETE", ["api", "artifact", id]) => Ok(json!({ "data": crate::artifact::delete(id)? })),
+        ("GET", ["api", "experimental", "session", id, "terminal"]) => {
+            app.session(id)?;
+            let terminals = crate::plugin::pty::manager()
+                .list()
+                .into_iter()
+                .filter(|terminal| terminal["sessionID"].as_str() == Some(*id))
+                .collect::<Vec<_>>();
+            Ok(json!({ "data": terminals }))
+        }
+        ("POST", ["api", "experimental", "session", id, "terminal"]) => {
+            app.session(id)?;
+            let command = request.body.get("command").and_then(Value::as_str).unwrap_or_default();
+            let args = request
+                .body
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let cwd = request
+                .body
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(|cwd| crate::util::resolve(&app.directory, cwd))
+                .unwrap_or_else(|| app.directory.clone());
+            let env = request
+                .body
+                .get("env")
+                .and_then(Value::as_object)
+                .map(|map| map.iter().filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string()))).collect())
+                .unwrap_or_default();
+            let size = request.body.get("size");
+            let cols = size.and_then(|size| size.get("cols")).and_then(Value::as_u64).unwrap_or(120) as u16;
+            let rows = size.and_then(|size| size.get("rows")).and_then(Value::as_u64).unwrap_or(40) as u16;
+            let terminal = crate::plugin::pty::manager().create(id, command, &args, &cwd, &env, cols, rows)?;
+            Ok(json!({ "data": terminal }))
+        }
+        ("GET", ["api", "experimental", "session", id, "terminal", "read"]) => {
+            app.session(id)?;
+            Ok(json!({ "data": crate::plugin::pty::manager().read(id) }))
+        }
+        ("POST", ["api", "experimental", "session", id, "terminal", "write"]) => {
+            app.session(id)?;
+            let data = request.body.get("data").and_then(Value::as_str).unwrap_or_default();
+            crate::plugin::pty::manager().write(id, data)?;
+            Ok(json!({ "data": null }))
+        }
+        ("POST", ["api", "experimental", "session", id, "terminal", "resize"]) => {
+            app.session(id)?;
+            let size = request.body.get("size").cloned().unwrap_or(Value::Null);
+            let cols = size.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+            let rows = size.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
+            crate::plugin::pty::manager().resize(id, cols, rows)?;
+            Ok(json!({ "data": null }))
+        }
+        ("DELETE", ["api", "experimental", "session", id, "terminal"]) => {
+            app.session(id)?;
+            crate::plugin::pty::manager().kill(id);
+            Ok(json!({ "data": null }))
+        }
         ("GET", ["api", "permission"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "form"]) => Ok(json!({ "data": [] })),
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),

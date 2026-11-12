@@ -9,8 +9,7 @@
 //! cache. When it is missing, a pinned official release is downloaded on first
 //! use.
 
-#[allow(dead_code)]
-mod pty;
+pub(crate) mod pty;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};

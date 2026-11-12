@@ -13,6 +13,7 @@ const ROWS: u16 = 40;
 const COLS: u16 = 120;
 
 struct Terminal {
+    command: String,
     cwd: String,
     rows: u16,
     cols: u16,
@@ -49,9 +50,51 @@ impl Terminals {
         if command.is_empty() {
             return Ok(());
         }
-        let terminal = Terminal::spawn(command, cwd, environment)?;
+        let terminal = Terminal::spawn(command, cwd, environment, ROWS, COLS)?;
         sessions.insert(session_id.to_string(), terminal);
         Ok(())
+    }
+
+    pub fn create(
+        &self,
+        session_id: &str,
+        command: &str,
+        args: &[String],
+        cwd: &Path,
+        environment: &std::collections::BTreeMap<String, String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Value> {
+        let mut line = command.to_string();
+        for arg in args {
+            line.push(' ');
+            line.push_str(arg);
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(existing) = sessions.remove(session_id) {
+            let _ = existing.child.lock().unwrap().kill();
+        }
+        let terminal = Terminal::spawn(&line, cwd, environment, rows.max(1), cols.max(1))?;
+        let info = terminal.info(session_id);
+        sessions.insert(session_id.to_string(), terminal);
+        Ok(info)
+    }
+
+    pub fn list(&self) -> Vec<Value> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.iter().map(|(id, terminal)| terminal.info(id)).collect()
+    }
+
+    pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let terminal = sessions.get_mut(session_id).ok_or_else(|| anyhow!("terminal not found: {session_id}"))?;
+        terminal.write_raw(data)
+    }
+
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
+        let sessions = self.sessions.lock().unwrap();
+        let terminal = sessions.get(session_id).ok_or_else(|| anyhow!("terminal not found: {session_id}"))?;
+        terminal.resize(cols.max(1), rows.max(1))
     }
 
     pub fn read(&self, session_id: &str) -> Option<Value> {
@@ -82,15 +125,40 @@ impl Terminals {
 }
 
 impl Terminal {
+    fn info(&self, id: &str) -> Value {
+        json!({
+            "id": id,
+            "title": self.parser.lock().unwrap().screen().title(),
+            "command": self.command,
+            "args": [],
+            "cwd": self.cwd,
+            "status": "running",
+            "sessionID": id,
+            "size": { "cols": self.cols, "rows": self.rows },
+        })
+    }
+
+    fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        self._master
+            .lock()
+            .unwrap()
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|error| anyhow!("terminal resize failed: {error}"))?;
+        self.parser.lock().unwrap().set_size(rows, cols);
+        Ok(())
+    }
+
     fn spawn(
         command: &str,
         cwd: &Path,
         environment: &std::collections::BTreeMap<String, String>,
+        rows: u16,
+        cols: u16,
     ) -> Result<Self> {
         let shell = crate::tools::shell::detect();
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|error| anyhow!("opening terminal failed: {error}"))?;
         // The interactive shell must not receive the non-interactive `-c`
         // arguments used by the shell tool.
@@ -125,7 +193,7 @@ impl Terminal {
                 .take_writer()
                 .map_err(|error| anyhow!("terminal writer failed: {error}"))?,
         ));
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(ROWS, COLS, 1000)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
         let sink = parser.clone();
         let replies = writer.clone();
         std::thread::spawn(move || {
@@ -150,9 +218,10 @@ impl Terminal {
             }
         });
         let mut terminal = Terminal {
+            command: command.to_string(),
             cwd: cwd.to_string_lossy().into_owned(),
-            rows: ROWS,
-            cols: COLS,
+            rows,
+            cols,
             parser,
             writer,
             _master: Mutex::new(pair.master),
@@ -164,9 +233,16 @@ impl Terminal {
     }
 
     fn write(&mut self, command: &str) -> Result<()> {
+        self.write_raw(command)?;
         let mut writer = self.writer.lock().unwrap();
-        writer.write_all(command.as_bytes())?;
         writer.write_all(b"\r\n")?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    fn write_raw(&mut self, data: &str) -> Result<()> {
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(data.as_bytes())?;
         writer.flush()?;
         Ok(())
     }
