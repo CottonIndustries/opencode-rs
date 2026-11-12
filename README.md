@@ -32,6 +32,7 @@ if yours live elsewhere.
 | `opencode pair [--url U]` | Create a single-use pairing link for a running server (`/auth/connect/:code`) |
 | `opencode debug paths\|config\|agents\|skills\|prompt\|plugins` | Troubleshooting (`plugins` also lists plugin tools) |
 | `opencode debug plugin-tool <name> [json]` | Execute a plugin tool with the given input |
+| `opencode debug plugin-tui <name> [input]` | Execute a plugin TUI command |
 
 ## What is ported
 
@@ -133,6 +134,9 @@ if yours live elsewhere.
     downloaded once into the opencode cache. Local plugin dependencies are
     resolved from their `package.json` without writing `node_modules` into the
     project. `OPENCODE_DISABLE_PLUGINS=1` skips loading plugins.
+  - Package `./tui` entries load in TUI mode with `ctx.keymap`, command palette
+    and slash commands, key bindings, toasts, dialogs, storage and the plugin
+    client. Slot/JSX rendering is not ported, so plugin panels stay inert.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /sessions /models /agents /compact /variant /thinking /details
@@ -153,7 +157,13 @@ upstream bytecode VM; snapshots, the `search` helper and static tool
 authorization are not part of it.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
-RPC endpoints are available through the API and plugin host. Integrations and
+RPC endpoints are available through the API and plugin host. `opencode serve`
+covers sessions (prompt, command, shell, fork, revert, compact, diff, forms,
+inbox, permissions, environment, move, generate), messages, agents, providers,
+models, projects, plugins, MCP (including add/connect/disconnect), filesystem
+read/list/find/write, background shells and jobs, scheduled tasks, web search,
+image/decision generation, artifacts, PTY and persistent terminals, VCS and
+worktrees, durable session logs over SSE, and pairing/auth. Integrations and
 credentials are handled by plugins; `aisdk` SDK/language hooks pass options
 through, but a plugin-returned model object cannot replace the Rust provider.
 
