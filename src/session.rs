@@ -222,6 +222,10 @@ pub struct Session {
     pub model: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// History-only records (agent/model/location switches, skills, system
+    /// updates, idle markers) that are not part of the model conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<ShellMessage>,
     #[serde(default)]
@@ -277,6 +281,7 @@ impl Session {
             agent: None,
             model: None,
             messages: vec![],
+            records: vec![],
             shells: vec![],
             todos: vec![],
             permissions: None,
@@ -295,6 +300,17 @@ impl Session {
             cost_total: 0.0,
             tokens_total: Usage::default(),
         }
+    }
+    /// Append a history-only record with a stable id and creation time.
+    pub fn record(&mut self, value: serde_json::Value) {
+        let mut value = value;
+        if value.get("id").is_none() {
+            value["id"] = serde_json::json!(crate::util::id("msg"));
+        }
+        if value.get("time").is_none() {
+            value["time"] = serde_json::json!({ "created": crate::util::now_ms() });
+        }
+        self.records.push(value);
     }
     pub fn has_default_title(&self) -> bool {
         self.title.starts_with(DEFAULT_TITLE_PREFIX) || self.title.starts_with("Child session - ")

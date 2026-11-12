@@ -182,6 +182,13 @@ pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts:
         crate::plugin::kill_terminal(session_id);
         crate::provider::ws_transport::close(session_id).await;
         handle.with(|session| {
+            let previous = session.directory.clone();
+            session.record(serde_json::json!({
+                "type": "location-switched",
+                "location": { "directory": directory.to_string_lossy() },
+                "projectID": crate::session::project_id(&directory),
+                "previous": { "location": { "directory": previous.to_string_lossy() } },
+            }));
             session.directory = directory.clone();
             session.project = crate::session::project_id(&directory);
         });
@@ -230,6 +237,11 @@ pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts:
             session.idle_ms = Some(crate::util::now_ms());
             session.last_outcome = Some(outcome.to_string());
             session.time_updated = crate::util::now_ms();
+            let mut record = serde_json::json!({ "type": "idle", "outcome": outcome });
+            if let Err(error) = &result {
+                record["error"] = serde_json::json!({ "type": "unknown", "message": error.to_string() });
+            }
+            session.record(record);
         });
         handle.save();
         app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
@@ -452,21 +464,39 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
     }
     let user_message_id = msg.id.clone();
     let previous = handle.with(|s| (s.agent.clone(), s.model.clone()));
+    let agent_changed = previous.0.as_deref() != Some(agent.id.as_str());
+    let model_changed = previous.1.as_deref() != Some(full.as_str());
     let first = handle.with(|s| {
         s.agent = Some(agent.id.clone());
         s.model = Some(full.clone());
+        if agent_changed {
+            s.record(serde_json::json!({
+                "type": "agent-switched",
+                "agent": agent.id,
+                "previous": previous.0.clone(),
+            }));
+        }
+        if model_changed {
+            s.record(serde_json::json!({
+                "type": "model-switched",
+                "model": { "providerID": sel.provider.id, "id": sel.model.id, "variant": sel.variant },
+                "previous": previous.1.as_deref().and_then(crate::models::parse_ref).map(|(provider_id, id, variant)| {
+                    serde_json::json!({ "providerID": provider_id, "id": id, "variant": variant })
+                }),
+            }));
+        }
         s.messages.push(msg);
         s.messages.iter().filter(|m| m.role == Role::User).count() == 1 && s.has_default_title()
     });
     handle.save();
-    if previous.0 != Some(agent.id.clone()) {
+    if agent_changed {
         app.plugins.emit(serde_json::json!({
             "id": crate::util::id("evt"),
             "type": "session.agent.selected",
             "properties": { "sessionID": handle.id(), "agent": agent.id.clone(), "previous": previous.0 }
         }));
     }
-    if previous.1 != Some(full.clone()) {
+    if model_changed {
         app.plugins.emit(serde_json::json!({
             "id": crate::util::id("evt"),
             "type": "session.model.selected",

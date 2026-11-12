@@ -717,6 +717,27 @@ mod tests {
     }
 
     #[test]
+    fn history_projects_records_and_synthetic_messages() {
+        let mut synthetic = crate::session::Message::user_text("");
+        synthetic.time = 1;
+        synthetic.parts = vec![crate::session::Part::Text { text: "note".into(), synthetic: true }];
+        let mut user = crate::session::Message::user_text("hello");
+        user.time = 2;
+        let records = vec![json!({
+            "id": "msg_record",
+            "time": { "created": 3 },
+            "type": "agent-switched",
+            "agent": "build",
+        })];
+        let history = session_history_json(&[synthetic, user], &[], &records);
+        let history = history.as_array().unwrap();
+        assert_eq!(history[0]["type"], "synthetic");
+        assert_eq!(history[1]["type"], "user");
+        assert_eq!(history[2]["type"], "agent-switched");
+        assert_eq!(history[2]["id"], "msg_record");
+    }
+
+    #[test]
     fn message_hook_round_trips_text() {
         let mut messages = vec![crate::session::Message::user_text("hello")];
         let value = messages_for_hook("ses_test", &messages);
@@ -2105,6 +2126,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 session
                     .instruction_entries
                     .insert(format!("skill.{}", skill.id), json!({ "name": skill.name, "text": text.clone() }));
+                session.record(json!({
+                    "type": "skill",
+                    "skill": skill.id,
+                    "name": skill.name,
+                    "text": text.clone(),
+                }));
             });
             handle.save();
             app.plugins.emit(json!({
@@ -2284,31 +2311,31 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.messages requires sessionID"))?;
             let handle = app.session(&id)?;
             Ok(handle.with(|s| {
-                let mut messages: Vec<crate::session::Message> = s.messages.clone();
+                let mut values = session_history_json(&s.messages, &s.shells, &s.records)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 if let Some(kind) = first.get("type").and_then(Value::as_str) {
-                    messages.retain(|message| match kind {
-                        "user" => message.role == crate::session::Role::User,
-                        "assistant" => message.role == crate::session::Role::Assistant,
-                        _ => true,
-                    });
+                    values.retain(|value| value.get("type").and_then(Value::as_str) == Some(kind));
                 }
                 if first.get("order").and_then(Value::as_str) == Some("desc") {
-                    messages.reverse();
+                    values.reverse();
                 }
                 if let Some(cursor) = first.get("cursor").and_then(Value::as_str) {
-                    if let Some(index) = messages.iter().position(|message| message.id == cursor) {
-                        messages.drain(..=index);
+                    if let Some(index) = values.iter().position(|value| value.get("id").and_then(Value::as_str) == Some(cursor)) {
+                        values.drain(..=index);
                     }
                 }
-                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| messages.len() > limit as usize);
+                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| values.len() > limit as usize);
                 if let Some(limit) = first.get("limit").and_then(Value::as_u64) {
-                    messages.truncate(limit as usize);
+                    values.truncate(limit as usize);
                 }
+                let id = |value: &Value| value.get("id").and_then(Value::as_str).map(String::from);
                 json!({
-                    "data": session_history_json(&messages, &s.shells),
+                    "data": Value::Array(values.clone()),
                     "cursor": {
-                        "previous": messages.first().map(|message| message.id.clone()),
-                        "next": if has_more { messages.last().map(|message| message.id.clone()) } else { None },
+                        "previous": values.first().and_then(id),
+                        "next": if has_more { values.last().and_then(id) } else { None },
                     },
                 })
             }))
@@ -2661,32 +2688,31 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.message.list requires sessionID"))?;
             let handle = app.session(&id)?;
             Ok(handle.with(|s| {
-                let mut messages: Vec<&crate::session::Message> = s.messages.iter().collect();
+                let mut values = session_history_json(&s.messages, &s.shells, &s.records)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 if let Some(kind) = first.get("type").and_then(Value::as_str) {
-                    messages.retain(|message| match kind {
-                        "user" => message.role == crate::session::Role::User,
-                        "assistant" => message.role == crate::session::Role::Assistant,
-                        _ => true,
-                    });
+                    values.retain(|value| value.get("type").and_then(Value::as_str) == Some(kind));
                 }
                 if first.get("order").and_then(Value::as_str) == Some("desc") {
-                    messages.reverse();
+                    values.reverse();
                 }
                 if let Some(cursor) = first.get("cursor").and_then(Value::as_str) {
-                    if let Some(index) = messages.iter().position(|message| message.id == cursor) {
-                        messages.drain(..=index);
+                    if let Some(index) = values.iter().position(|value| value.get("id").and_then(Value::as_str) == Some(cursor)) {
+                        values.drain(..=index);
                     }
                 }
-                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| messages.len() > limit as usize);
+                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| values.len() > limit as usize);
                 if let Some(limit) = first.get("limit").and_then(Value::as_u64) {
-                    messages.truncate(limit as usize);
+                    values.truncate(limit as usize);
                 }
-                let all: Vec<crate::session::Message> = messages.iter().map(|m| (*m).clone()).collect();
+                let id = |value: &Value| value.get("id").and_then(Value::as_str).map(String::from);
                 json!({
-                    "data": session_history_json(&all, &s.shells),
+                    "data": Value::Array(values.clone()),
                     "cursor": {
-                        "previous": messages.first().map(|message| message.id.clone()),
-                        "next": if has_more { messages.last().map(|message| message.id.clone()) } else { None },
+                        "previous": values.first().and_then(id),
+                        "next": if has_more { values.last().and_then(id) } else { None },
                     },
                 })
             }))
@@ -2706,20 +2732,26 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     Ok(value.as_array().and_then(|items| items.first()).cloned().unwrap_or(Value::Null))
                 }
                 None => {
-                    let shell = handle.with(|s| {
+                    let found = handle.with(|s| {
                         s.shells
                             .iter()
                             .find(|shell| shell.id == message_id)
                             .map(shell_message_json)
+                            .or_else(|| {
+                                s.records
+                                    .iter()
+                                    .find(|record| record.get("id").and_then(Value::as_str) == Some(message_id))
+                                    .cloned()
+                            })
                     });
-                    shell.ok_or_else(|| anyhow!("message not found: {message_id}"))
+                    found.ok_or_else(|| anyhow!("message not found: {message_id}"))
                 }
             }
         }
         "session.context" => {
             let id = session_id().ok_or_else(|| anyhow!("session.context requires sessionID"))?;
             let handle = app.session(&id)?;
-            Ok(handle.with(|s| session_history_json(&s.active_messages(), &s.shells)))
+            Ok(handle.with(|s| session_history_json(&s.active_messages(), &s.shells, &s.records)))
         }
         "session.instructions" => {
             let id = session_id().ok_or_else(|| anyhow!("session.instructions requires sessionID"))?;
@@ -2756,7 +2788,19 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let value = body.get("value").cloned().unwrap_or(Value::Null);
             let hash = instruction_hash(&value);
             let stored = format!("api/{key}");
-            handle.with(|session| session.instruction_entries.insert(stored.clone(), value));
+            handle.with(|session| {
+                let text = value
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| value.get("text").and_then(Value::as_str).map(String::from))
+                    .unwrap_or_else(|| value.to_string());
+                session.record(json!({
+                    "type": "system",
+                    "text": text,
+                    "description": format!("Instruction updated: {key}"),
+                }));
+                session.instruction_entries.insert(stored.clone(), value);
+            });
             handle.save();
             app.plugins.emit(json!({
                 "id": crate::util::id("evt"),
@@ -2773,7 +2817,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 return Err(anyhow!("instruction entry key must be slash-free"));
             }
             let stored = format!("api/{key}");
-            handle.with(|session| session.instruction_entries.remove(&stored));
+            handle.with(|session| {
+                session.instruction_entries.remove(&stored);
+                session.record(json!({
+                    "type": "system",
+                    "text": "",
+                    "description": format!("Instruction removed: {key}"),
+                }));
+            });
             handle.save();
             app.plugins.emit(json!({
                 "id": crate::util::id("evt"),
@@ -2786,7 +2837,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.switchAgent requires sessionID"))?;
             let handle = app.session(&id)?;
             if let Some(agent) = body.get("agent").and_then(Value::as_str) {
-                handle.with(|session| session.agent = Some(agent.to_string()));
+                handle.with(|session| {
+                    let previous = session.agent.clone();
+                    if previous.as_deref() != Some(agent) {
+                        session.record(json!({ "type": "agent-switched", "agent": agent, "previous": previous }));
+                    }
+                    session.agent = Some(agent.to_string());
+                });
                 handle.save();
                 app.plugins.emit(json!({
                     "id": crate::util::id("evt"),
@@ -2816,7 +2873,21 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     }
                 };
                 if let Some(reference) = reference {
-                    handle.with(|session| session.model = Some(reference.clone()));
+                    handle.with(|session| {
+                        let previous = session.model.clone();
+                        if previous.as_deref() != Some(reference.as_str()) {
+                            session.record(json!({
+                                "type": "model-switched",
+                                "model": crate::models::parse_ref(&reference).map(|(provider_id, id, variant)| {
+                                    json!({ "providerID": provider_id, "id": id, "variant": variant })
+                                }),
+                                "previous": previous.as_deref().and_then(crate::models::parse_ref).map(|(provider_id, id, variant)| {
+                                    json!({ "providerID": provider_id, "id": id, "variant": variant })
+                                }),
+                            }));
+                        }
+                        session.model = Some(reference.clone());
+                    });
                     handle.save();
                     if let Some((provider_id, model_id, variant)) = crate::models::parse_ref(&reference) {
                         app.plugins.emit(json!({
@@ -2874,6 +2945,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             pty::manager().kill(&id);
             crate::provider::ws_transport::close(&id).await;
             handle.with(|session| {
+                let previous = session.directory.clone();
+                session.record(json!({
+                    "type": "location-switched",
+                    "location": { "directory": directory.to_string_lossy() },
+                    "projectID": crate::session::project_id(&directory),
+                    "previous": { "location": { "directory": previous.to_string_lossy() } },
+                }));
                 session.directory = directory.clone();
                 session.project = crate::session::project_id(&directory);
             });
@@ -3411,9 +3489,14 @@ fn shell_message_json(shell: &crate::session::ShellMessage) -> Value {
     value
 }
 
-fn session_history_json(messages: &[crate::session::Message], shells: &[crate::session::ShellMessage]) -> Value {
+fn session_history_json(
+    messages: &[crate::session::Message],
+    shells: &[crate::session::ShellMessage],
+    records: &[Value],
+) -> Value {
     let mut values = session_messages_json(messages).as_array().cloned().unwrap_or_default();
     values.extend(shells.iter().map(shell_message_json));
+    values.extend(records.iter().cloned());
     values.sort_by_key(|value| {
         value
             .pointer("/time/created")
@@ -3457,15 +3540,26 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                     }
                     return value;
                 }
-                let text = message
+                let text_parts: Vec<(&str, bool)> = message
                     .parts
                     .iter()
                     .filter_map(|part| match part {
-                        Part::Text { text, .. } => Some(text.as_str()),
+                        Part::Text { text, synthetic } => Some((text.as_str(), *synthetic)),
                         _ => None,
                     })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .collect();
+                let text = text_parts.iter().map(|(text, _)| *text).collect::<Vec<_>>().join("\n");
+                if !text_parts.is_empty()
+                    && text_parts.iter().all(|(_, synthetic)| *synthetic)
+                    && !message.parts.iter().any(|part| matches!(part, Part::File(_)))
+                {
+                    return json!({
+                        "id": message.id,
+                        "time": { "created": message.time },
+                        "type": "synthetic",
+                        "text": text,
+                    });
+                }
                 let files: Vec<Value> = message
                     .parts
                     .iter()
@@ -3977,6 +4071,7 @@ pub fn apply_state(
                     template: String::new(),
                     agent: None,
                     model: None,
+                    mcp_prompt: None,
                 },
             );
         } else if let Some(command) = commands.get_mut(name) {
