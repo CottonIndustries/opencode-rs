@@ -1583,6 +1583,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 if let Some(metadata) = body.get("metadata") {
                     session.metadata = Some(metadata.clone());
                 }
+                if let Some(permissions) = body.get("permissions") {
+                    session.permissions = Some(permissions.clone());
+                }
                 if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
                     session.archived = archived;
                 }
@@ -1625,6 +1628,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 if let Some(metadata) = body.get("metadata") {
                     session.metadata = Some(metadata.clone());
                 }
+                if let Some(permissions) = body.get("permissions") {
+                    session.permissions = Some(permissions.clone());
+                }
                 if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
                     session.archived = archived;
                 }
@@ -1642,6 +1648,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     "id": crate::util::id("evt"),
                     "type": "session.metadata.updated",
                     "properties": { "sessionID": id, "metadata": metadata }
+                }));
+            }
+            if let Some(permissions) = body.get("permissions") {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.permissions",
+                    "properties": { "sessionID": id, "permissions": permissions }
                 }));
             }
             if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
@@ -2326,6 +2339,7 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
         "projectID": crate::session::project_id(&session.directory),
         "title": session.title,
         "metadata": session.metadata,
+        "permissions": session.permissions,
         "cost": session.cost,
         "tokens": {
             "input": session.tokens.input,
@@ -2354,6 +2368,7 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
         })),
         "title": session.title,
         "metadata": session.metadata,
+        "permissions": session.permissions,
         "cost": cost,
         "tokens": {
             "input": usage.input,

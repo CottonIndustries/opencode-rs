@@ -204,6 +204,8 @@ pub struct Session {
     pub loaded_instructions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -232,6 +234,7 @@ impl Session {
             model: None,
             messages: vec![],
             todos: vec![],
+            permissions: None,
             approved: vec![],
             loaded_instructions: vec![],
             metadata: None,
@@ -400,6 +403,7 @@ pub struct Summary {
     pub time_updated: i64,
     pub directory: PathBuf,
     pub metadata: Option<serde_json::Value>,
+    pub permissions: Option<serde_json::Value>,
     pub archived: bool,
     pub cost: f64,
     pub tokens: Usage,
@@ -418,6 +422,8 @@ pub fn list(project: &str) -> Vec<Summary> {
         directory: PathBuf,
         #[serde(default)]
         metadata: Option<serde_json::Value>,
+        #[serde(default)]
+        permissions: Option<serde_json::Value>,
         #[serde(default)]
         archived: bool,
         #[serde(default)]
@@ -442,6 +448,7 @@ pub fn list(project: &str) -> Vec<Summary> {
                         time_updated: h.time_updated,
                         directory: h.directory,
                         metadata: h.metadata,
+                        permissions: h.permissions,
                         archived: h.archived,
                         cost: h.cost_total,
                         tokens: h.tokens_total,

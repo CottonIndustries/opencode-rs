@@ -455,6 +455,9 @@ impl App {
             rules.extend(permission::from_config(p));
         }
         rules.extend(agent.permissions.iter().cloned());
+        if let Some(session_permissions) = handle.with(|s| s.permissions.clone()) {
+            rules.extend(permission::from_config(&session_permissions));
+        }
         let approved: Vec<(String, String)> = handle.with(|s| s.approved.clone());
         rules.extend(approved.iter().map(|(a, r)| permission::rule(a, r, Effect::Allow)));
 
