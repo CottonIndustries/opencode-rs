@@ -173,6 +173,8 @@ async function receive(message: Json) {
       eventQueue = eventQueue
         .then(() => emitEvent(event))
         .catch((error) => log("error", `event dispatch failed: ${String(error)}`))
+    } else if (message.method === "tool.abort") {
+      abortControllers.get(message.params?.callID)?.abort()
     }
     return
   }
@@ -924,6 +926,9 @@ function toV2Event(event: Json): Json | null {
       title: info.title,
       agent: info.agent,
       model: info.model,
+      metadata: info.metadata,
+      permissions: info.permissions,
+      subpath: info.subpath,
       version,
     }
   } else if (event.type === "session.error") {
@@ -1718,7 +1723,9 @@ function makeDomains(plugin: PluginRecord): Json {
     list: sync(() => apiResponse([...registry.agents.values()])),
     get: sync((input: Json) => {
       const id = typeof input === "string" ? input : input?.agentID ?? input?.id
-      return apiResponse(registry.agents.get(id))
+      const value = registry.agents.get(id)
+      if (!value) throw new Error(`agent not found: ${String(id)}`)
+      return apiResponse(value)
     }),
   })
   const commandTarget = registry.commands
@@ -1740,21 +1747,24 @@ function makeDomains(plugin: PluginRecord): Json {
     list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
     get: sync((input: Json) => {
       const id = typeof input === "string" ? input : input?.providerID ?? input?.id
-      return apiResponse(registry.providers.get(id)?.provider)
+      const value = registry.providers.get(id)?.provider
+      if (!value) throw new Error(`provider not found: ${String(id)}`)
+      return apiResponse(value)
     }),
   })
   const modelBase: Json = {
     transform: (callback: Function) => registration(registerTransform(plugin, "model", callback)),
     reload: () => effect(() => rebuild("model")),
-    list: (providerID?: string) =>
-      sync((providerID?: string) => {
+    list: (input?: Json) =>
+      sync((input?: Json) => {
+        const providerID = typeof input === "string" ? input : input?.providerID
         const out: Json[] = []
         for (const [id, record] of registry.providers) {
           if (providerID && id !== providerID) continue
           out.push(...record.models.values())
         }
         return apiResponse(out)
-      })(providerID),
+      })(input),
     get: (providerID: string, modelID: string) =>
       sync((providerID: string, modelID: string) => apiResponse(registry.providers.get(providerID)?.models.get(modelID)))(providerID, modelID),
     update: (providerID: string, modelID: string, update: (value: Json) => void) =>
@@ -1766,13 +1776,13 @@ function makeDomains(plugin: PluginRecord): Json {
       sync((providerID: string, modelID: string) => {
         registry.providers.get(providerID)?.models.delete(modelID)
       })(providerID, modelID),
-    default: {
+    default: Object.assign(sync(() => apiResponse(registry.defaultModel)), {
       get: sync(() => apiResponse(registry.defaultModel)),
       set: (providerID: string, modelID: string) =>
         sync((providerID: string, modelID: string) => {
-          registry.defaultModel = { providerID, id: modelID, modelID }
+          registry.defaultModel = { providerID, modelID }
         })(providerID, modelID),
-    },
+    }),
     provider: {
       list: sync(() => listProviderRecords()),
       get: sync((id: string) => providerRecord(id)),
@@ -1783,7 +1793,7 @@ function makeDomains(plugin: PluginRecord): Json {
     hook: (hookName: string, callback: Function, options?: Json) =>
       registration(registerHook(plugin, "permission", hookName, callback, options).remove),
     assert: lazy((input: Json) => request("permission.assert", input)),
-    list: lazy(async () => callRPC("permission.list")),
+    list: lazy(async (input: Json) => callRPC("permission.list", input)),
     get: lazy((input: Json) => callRPC("permission.get", input)),
     reply: lazy(async (input: Json) => {
       await callRPC("permission.reply", input)
@@ -1832,7 +1842,7 @@ function makeDomains(plugin: PluginRecord): Json {
       apiResponse([...registry.websearch.values()].map((item) => ({ id: item.id, name: item.name }))),
     ),
     query: lazy(async (input: Json) => {
-      const result = await callRPC("websearch.execute", {
+      const result = await request("websearch.execute", {
         providerID: input.providerID,
         query: input.query,
       })
@@ -1858,7 +1868,16 @@ function makeDomains(plugin: PluginRecord): Json {
     diff: vcsCall("diff", true),
     branch: { list: vcsCall("branches", true) },
   }
-  const reference = local("references", "reference")
+  const reference = local("references", "reference", {
+    list: sync(() =>
+      apiResponse([...registry.references.entries()].map(([name, source]) => ({ name, ...source }))),
+    ),
+    get: sync((input: Json) => {
+      const name = typeof input === "string" ? input : input?.name ?? input?.id
+      const source = registry.references.get(name)
+      return apiResponse(source ? { name, ...source } : undefined)
+    }),
+  })
   const integration = local("integrations", "integration", {
     list: sync(() => apiResponse(projectIntegrations())),
     get: sync((input: Json) => {
@@ -1912,7 +1931,7 @@ function makeDomains(plugin: PluginRecord): Json {
     }),
   }
   const pluginApi: Json = { list: lazy(async () => apiResponse(pluginList())) }
-  const rpc: Json = {
+  const rpcBase: Json = {
     register: (definition: Json, handlers: Json) => {
       const id = definition?.id
       if (typeof id !== "string") throw new Error("rpc.register requires a definition id")
@@ -1947,6 +1966,41 @@ function makeDomains(plugin: PluginRecord): Json {
       return result
     }),
   }
+  const rpc: Json = Object.assign(
+    (definition: Json) => {
+      const methods: Json = {}
+      for (const name of Object.keys(definition?.methods ?? {})) {
+        methods[name] = lazy(async (input: Json) => {
+          return await settle(rpcBase.call({ rpcID: definition.id, method: name, input }))
+        })
+      }
+      return Object.assign(methods, {
+        events: {
+          subscribe: (name: string, options?: Json) => {
+            if (!Object.hasOwn(definition?.events ?? {}, name)) {
+              throw new Error(`Unknown RPC event: ${String(definition?.id)}.${name}`)
+            }
+            return subscribeEvents({
+              types: [`rpc.${definition.id}.${name}`],
+              signal: options?.signal,
+            })
+          },
+          on: (name: string, handler: Function, options?: Json) => {
+            const controller = new AbortController()
+            const signal = options?.signal
+              ? AbortSignal.any([controller.signal, options.signal])
+              : controller.signal
+            const source = subscribeEvents({ types: [`rpc.${definition.id}.${name}`], signal })
+            void (async () => {
+              for await (const event of source) await handler(event)
+            })().catch((error) => log("error", `rpc event handler failed: ${String(error)}`))
+            return () => controller.abort()
+          },
+        },
+      })
+    },
+    rpcBase,
+  )
   const generate: Json = { text: lazy((input: Json) => callRPC("generate.text", input)) }
   const experimental: Json = {
     terminal: { read: lazy((input: Json) => callRPC("experimental.terminal.read", input)) },
@@ -2010,6 +2064,7 @@ function makeSessionDomain(plugin: PluginRecord): Json {
       list: paged("session.message.list"),
       get: call("session.message.get"),
     },
+    active: call("session.active"),
     create: call("session.create"),
     fork: call("session.fork"),
     get: call("session.get"),
@@ -2022,8 +2077,8 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     compact: call("session.compact"),
     synthetic: call("session.synthetic"),
     interrupt: lazy(async (input: Json) => {
-      await callRPC("session.abort", input)
-      return { interrupted: true }
+      const result = await callRPC("session.interrupt", input)
+      return { interrupted: result?.interrupted === true }
     }),
     update: voidCall("session.update"),
     move: voidCall("session.move"),
@@ -2039,6 +2094,27 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     },
     wait: voidCall("session.wait"),
     status: call("session.status"),
+    shell: voidCall("session.shell"),
+    environment: voidCall("session.environment"),
+    view: voidCall("session.view"),
+    diff: call("session.diff"),
+    revert: {
+      stage: call("session.revert.stage"),
+      clear: voidCall("session.revert.clear"),
+      commit: voidCall("session.revert.commit"),
+    },
+    inbox: {
+      list: call("session.inbox.list"),
+      cancel: voidCall("session.inbox.cancel"),
+      update: voidCall("session.inbox.update"),
+    },
+    form: {
+      list: call("session.form.list"),
+      create: call("session.form.create"),
+      get: call("session.form.get"),
+      reply: voidCall("session.form.reply"),
+      cancel: voidCall("session.form.cancel"),
+    },
     hook: (name: string, callback: Function, options?: Json) =>
       makeRegistration(mode, registerHook(plugin, "session", name, callback, options).remove),
   }
