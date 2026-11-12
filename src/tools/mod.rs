@@ -1,5 +1,6 @@
 //! Built-in tools and the per-request registry.
 
+pub mod artifact;
 pub mod edit;
 pub mod glob;
 pub mod grep;
@@ -277,6 +278,10 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
         Arc::new(glob::Glob),
         Arc::new(grep::Grep),
         Arc::new(webfetch::WebFetch),
+        Arc::new(artifact::Create),
+        Arc::new(artifact::Read),
+        Arc::new(artifact::Update),
+        Arc::new(artifact::Delete),
     ];
     if websearch::configured(&app.config).is_some() || app.plugins.has_websearch() {
         tools.push(Arc::new(websearch::WebSearch));

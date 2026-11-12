@@ -265,6 +265,7 @@ type Registry = {
 
 let websearchDefault: string | false | undefined
 let vcsDefault: string | undefined
+let artifactDefault: string | false | undefined
 const namespaces = new Map<string, Json>()
 const integrationMethods = new Map<string, Map<string, Json>>()
 const credentials = new Map<string, Json>()
@@ -748,6 +749,29 @@ function editorFor(domain: string): Json {
         },
       }
     case "artifacts":
+      return {
+        list: () => [...target.values()],
+        get: (id: string) => target.get(id),
+        add: (definition: Json) => {
+          const id = definition.id ?? definition.name
+          target.set(id, { ...definition, id })
+          artifactDefault = id
+        },
+        remove: (id: string) => {
+          target.delete(id)
+          if (artifactDefault === id) artifactDefault = undefined
+        },
+        update: (id: string, update: (value: Json) => void) => {
+          const value = target.get(id)
+          if (value) update(value)
+        },
+        default: {
+          get: () => artifactDefault,
+          set: (id: string | false | undefined) => {
+            artifactDefault = id
+          },
+        },
+      }
     case "worktrees":
     default:
       return {

@@ -3,6 +3,7 @@
 mod acp;
 mod agent;
 mod app;
+mod artifact;
 mod auth;
 mod cli;
 mod command;

@@ -230,6 +230,13 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let events = crate::event_store::read(Some(id), after, None);
             Ok(json!({ "data": events }))
         }
+        ("GET", ["api", "artifact"]) => Ok(json!({ "data": crate::artifact::list()? })),
+        ("POST", ["api", "artifact"]) => Ok(json!({ "data": crate::artifact::create(&request.body)? })),
+        ("GET", ["api", "artifact", id]) => Ok(json!({ "data": crate::artifact::get(id)? })),
+        ("PATCH" | "PUT", ["api", "artifact", id]) => {
+            Ok(json!({ "data": crate::artifact::update(id, &request.body)? }))
+        }
+        ("DELETE", ["api", "artifact", id]) => Ok(json!({ "data": crate::artifact::delete(id)? })),
         ("GET", ["api", "permission"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "form"]) => Ok(json!({ "data": [] })),
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
