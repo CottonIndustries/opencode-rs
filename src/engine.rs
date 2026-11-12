@@ -408,20 +408,20 @@ async fn prepare_prompt(
     if let Some(skills) = prompt_event.pointer("/prompt/skills") {
         msg.skills = (!skills.is_null()).then(|| skills.clone());
     }
-    let prompt_text = prompt_event
-        .pointer("/prompt/text")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if prompt_event.pointer("/prompt/text").is_some() && prompt_text != msg.text() {
-        let files: Vec<Part> = msg.parts.iter().filter(|p| matches!(p, Part::File(_))).cloned().collect();
-        msg.parts = if prompt_text.is_empty() {
-            files
-        } else {
-            let mut parts = vec![Part::Text { text: prompt_text, synthetic: false }];
-            parts.extend(files);
-            parts
-        };
+    // A hook may return a prompt object without `text` (for example when it
+    // only adds files or metadata). Only replace the text when the hook
+    // actually supplied a string; otherwise the original user text survives.
+    if let Some(prompt_text) = prompt_event.pointer("/prompt/text").and_then(Value::as_str) {
+        if prompt_text != msg.text() {
+            let files: Vec<Part> = msg.parts.iter().filter(|p| matches!(p, Part::File(_))).cloned().collect();
+            msg.parts = if prompt_text.is_empty() {
+                files
+            } else {
+                let mut parts = vec![Part::Text { text: prompt_text.to_string(), synthetic: false }];
+                parts.extend(files);
+                parts
+            };
+        }
     }
     if let Some(files) = prompt_event.pointer("/prompt/files").and_then(Value::as_array) {
         let mut parts: Vec<Part> = msg.parts.iter().filter(|p| !matches!(p, Part::File(_))).cloned().collect();
