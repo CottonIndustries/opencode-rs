@@ -330,6 +330,45 @@ impl Manager {
         self.status.lock().unwrap().clear();
     }
 
+    /// Add or replace one server definition without touching the others.
+    pub fn set_server(&self, name: &str, config: McpConfig) {
+        let mut configs = self.configs.read().unwrap().clone();
+        configs.insert(name.to_string(), config);
+        self.clients.lock().unwrap().remove(name);
+        self.status.lock().unwrap().remove(name);
+        *self.tools.lock().unwrap() = None;
+        *self.configs.write().unwrap() = configs;
+    }
+
+    pub fn remove_server(&self, name: &str) {
+        let mut configs = self.configs.read().unwrap().clone();
+        configs.remove(name);
+        self.clients.lock().unwrap().remove(name);
+        self.status.lock().unwrap().remove(name);
+        *self.tools.lock().unwrap() = None;
+        *self.configs.write().unwrap() = configs;
+    }
+
+    pub async fn connect_server(&self, name: &str) -> Result<Status> {
+        *self.tools.lock().unwrap() = None;
+        self.clients.lock().unwrap().remove(name);
+        self.status.lock().unwrap().remove(name);
+        self.tools().await;
+        Ok(self
+            .status
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or(Status::Disabled))
+    }
+
+    pub fn disconnect_server(&self, name: &str) {
+        self.clients.lock().unwrap().remove(name);
+        self.status.lock().unwrap().insert(name.to_string(), Status::Disabled);
+        *self.tools.lock().unwrap() = None;
+    }
+
     pub async fn tools(&self) -> Vec<Arc<dyn Tool>> {
         if let Some(tools) = self.tools.lock().unwrap().clone() {
             return tools;

@@ -737,6 +737,23 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             }))
         }
         ("GET", ["api", "mcp", "resource"]) => Ok(json!({ "data": app.mcp.resource_catalog(None).await? })),
+        ("PUT", ["api", "experimental", "mcp", name]) => {
+            let config: crate::config::McpConfig = serde_json::from_value(request.body.clone())?;
+            app.mcp.set_server(name, config);
+            Ok(Value::Null)
+        }
+        ("DELETE", ["api", "experimental", "mcp", name]) => {
+            app.mcp.remove_server(name);
+            Ok(Value::Null)
+        }
+        ("POST", ["api", "experimental", "mcp", name, "connect"]) => {
+            let status = app.mcp.connect_server(name).await?;
+            Ok(json!({ "data": mcp_status_json(&status) }))
+        }
+        ("POST", ["api", "experimental", "mcp", name, "disconnect"]) => {
+            app.mcp.disconnect_server(name);
+            Ok(Value::Null)
+        }
         ("GET", ["api", "plugin"]) => Ok(json!({ "data": app.plugins.list() })),
         ("GET", ["api", "reference"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "agent", agent_id]) => {
@@ -898,6 +915,14 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(Value::Null)
         }
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
+    }
+}
+
+fn mcp_status_json(status: &crate::mcp::Status) -> Value {
+    match status {
+        crate::mcp::Status::Connected { tools } => json!({ "status": "connected", "tools": tools }),
+        crate::mcp::Status::Disabled => json!({ "status": "disabled" }),
+        crate::mcp::Status::Failed(error) => json!({ "status": "error", "error": error }),
     }
 }
 
