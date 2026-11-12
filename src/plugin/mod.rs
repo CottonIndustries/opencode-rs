@@ -1793,10 +1793,84 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.background" => Ok(Value::Null),
         "session.shell" => {
             let id = session_id().ok_or_else(|| anyhow!("session.shell requires sessionID"))?;
-            let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+            let command = body.get("command").and_then(Value::as_str).unwrap_or("").to_string();
             let handle = app.session(&id)?;
             let (cwd, environment) = handle.with(|session| (session.directory.clone(), session.environment.clone()));
-            pty::manager().shell(&id, command, &cwd, &environment)?;
+            let shell = crate::tools::shell::detect();
+            let shell_id = crate::util::id("sh");
+            let file = crate::paths::get().tool_output().join(format!("{shell_id}.log"));
+            let _ = std::fs::create_dir_all(file.parent().unwrap_or(std::path::Path::new(".")));
+            let started = crate::util::now_ms();
+            let info = json!({
+                "id": shell_id,
+                "status": "running",
+                "command": command.clone(),
+                "cwd": cwd.to_string_lossy(),
+                "shell": shell.program.to_string_lossy(),
+                "file": file.to_string_lossy(),
+                "metadata": { "sessionID": id, "background": true },
+                "time": { "started": started },
+            });
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "session.shell.started",
+                "properties": { "sessionID": id.clone(), "shell": info.clone() }
+            }));
+            let app = app.clone();
+            let session_id = id.clone();
+            let shell_id = info["id"].as_str().unwrap_or_default().to_string();
+            let shell_program = shell.program.to_string_lossy().into_owned();
+            tokio::spawn(async move {
+                let mut cmd = tokio::process::Command::new(&shell.program);
+                cmd.args(&shell.args).arg(&command).current_dir(&cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
+                for (key, value) in &environment {
+                    cmd.env(key, value);
+                }
+                #[cfg(windows)]
+                {
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                }
+                let (status, exit, text) = match cmd.output().await {
+                    Ok(output) => (
+                        "exited",
+                        output.status.code().unwrap_or(-1),
+                        format!(
+                            "{}{}",
+                            crate::util::decode_output(&output.stdout),
+                            crate::util::decode_output(&output.stderr)
+                        ),
+                    ),
+                    Err(error) => ("killed", -1, error.to_string()),
+                };
+                let _ = std::fs::write(&file, &text);
+                let completed = crate::util::now_ms();
+                let size = text.len();
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.shell.ended",
+                    "properties": {
+                        "sessionID": session_id.clone(),
+                        "shell": {
+                            "id": shell_id,
+                            "status": status,
+                            "command": command,
+                            "cwd": cwd.to_string_lossy(),
+                            "shell": shell_program,
+                            "file": file.to_string_lossy(),
+                            "exit": exit,
+                            "metadata": { "sessionID": session_id, "background": true },
+                            "time": { "started": started, "completed": completed },
+                        },
+                        "output": {
+                            "output": text,
+                            "cursor": size,
+                            "size": size,
+                            "truncated": false,
+                        }
+                    }
+                }));
+            });
             Ok(Value::Null)
         }
         "session.skill" => {
