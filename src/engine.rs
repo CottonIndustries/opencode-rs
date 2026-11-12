@@ -566,6 +566,21 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
                 },
             },
         }));
+        let (total_usage, total_cost) = handle.with(|session| session.usage_total());
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.usage.updated",
+            "properties": {
+                "sessionID": sid.clone(),
+                "cost": total_cost,
+                "tokens": {
+                    "input": total_usage.input,
+                    "output": total_usage.output,
+                    "reasoning": total_usage.reasoning,
+                    "cache": { "read": total_usage.cache_read, "write": total_usage.cache_write },
+                },
+            },
+        }));
         if res.aborted || res.rejected {
             interrupted = true;
             break;
@@ -958,6 +973,7 @@ async fn step_once(
     let task = tokio::spawn(provider::stream(req, tx));
     let mut reasoning_open = false;
     let mut aborted = false;
+    let mut streamed = false;
     let update = |f: &mut dyn FnMut(&mut Message)| {
         handle.with(|s| {
             if let Some(m) = s.messages.iter_mut().rev().find(|m| m.id == msg_id) {
@@ -969,6 +985,14 @@ async fn step_once(
         tokio::select! {
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
+                if !streamed {
+                    streamed = true;
+                    app.plugins.emit(serde_json::json!({
+                        "id": crate::util::id("evt"),
+                        "type": "session.step.streamed",
+                        "properties": { "sessionID": sid.clone(), "assistantMessageID": msg_id.clone() },
+                    }));
+                }
                 match &ev {
                     Event::TextDelta(d) => app.emit(AppEvent::TextDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
                     Event::ReasoningDelta(d) => app.emit(AppEvent::ReasoningDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
@@ -1310,6 +1334,14 @@ async fn step_once(
 
 /// Run one request to completion and collect its text.
 pub(crate) async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
+    complete_request_with(req, cancel, |_| {}).await
+}
+
+pub(crate) async fn complete_request_with(
+    req: Request,
+    cancel: Option<CancellationToken>,
+    mut on_delta: impl FnMut(&str),
+) -> Result<(String, Usage)> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(provider::stream(req, tx));
     let mut text = String::new();
@@ -1318,7 +1350,10 @@ pub(crate) async fn complete_request(req: Request, cancel: Option<CancellationTo
     loop {
         tokio::select! {
             ev = rx.recv() => match ev {
-                Some(Event::TextDelta(t)) => text.push_str(&t),
+                Some(Event::TextDelta(t)) => {
+                    text.push_str(&t);
+                    on_delta(&t);
+                }
                 Some(Event::Usage(u)) => usage = u,
                 Some(_) => {}
                 None => break,
@@ -1426,7 +1461,16 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
                 req.options = extra.clone();
             }
         }
-        match complete_request(req, Some(cancel)).await {
+        let delta_session = sid.clone();
+        match complete_request_with(req, Some(cancel), |delta| {
+            app.plugins.emit(serde_json::json!({
+                "id": crate::util::id("evt"),
+                "type": "session.compaction.delta",
+                "properties": { "sessionID": delta_session, "text": delta },
+            }));
+        })
+        .await
+        {
             Ok(value) => value,
             Err(error) => {
                 *handle.cancel.lock().unwrap() = None;
@@ -1473,6 +1517,21 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
             "reason": reason,
             "model": model_hook_json(sel),
             "text": summary.trim(),
+            "cost": cost(&sel.model, &usage),
+            "tokens": {
+                "input": usage.input,
+                "output": usage.output,
+                "reasoning": usage.reasoning,
+                "cache": { "read": usage.cache_read, "write": usage.cache_write },
+            },
+        },
+    }));
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.usage.recorded",
+        "properties": {
+            "sessionID": sid.clone(),
+            "source": "compaction",
             "cost": cost(&sel.model, &usage),
             "tokens": {
                 "input": usage.input,
@@ -1564,8 +1623,8 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
             }),
         )
         .await;
-    let text = if let Some(result) = title_event.get("result").and_then(Value::as_str) {
-        result.to_string()
+    let (text, usage) = if let Some(result) = title_event.get("result").and_then(Value::as_str) {
+        (result.to_string(), Usage::default())
     } else {
         if let Some(list) = title_event.get("system").and_then(Value::as_array) {
             req.system = list
@@ -1594,8 +1653,23 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
                 req.options = extra.clone();
             }
         }
-        complete_request(req, None).await?.0
+        complete_request(req, None).await?
     };
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.usage.recorded",
+        "properties": {
+            "sessionID": handle.id(),
+            "source": "title",
+            "cost": cost(&sel.model, &usage),
+            "tokens": {
+                "input": usage.input,
+                "output": usage.output,
+                "reasoning": usage.reasoning,
+                "cache": { "read": usage.cache_read, "write": usage.cache_write },
+            },
+        },
+    }));
     let title = text
         .lines()
         .map(|l| l.trim())

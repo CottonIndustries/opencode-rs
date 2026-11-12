@@ -1448,6 +1448,22 @@ async fn plugin_generate(
         }
     }
     let (text, usage) = crate::engine::complete_request(req, None).await?;
+    let cost = crate::engine::cost(&sel.model, &usage);
+    app.plugins.emit(json!({
+        "id": crate::util::id("evt"),
+        "type": "session.usage.recorded",
+        "properties": {
+            "sessionID": session_id,
+            "source": "generate",
+            "cost": cost,
+            "tokens": {
+                "input": usage.input,
+                "output": usage.output,
+                "reasoning": usage.reasoning,
+                "cache": { "read": usage.cache_read, "write": usage.cache_write },
+            },
+        },
+    }));
     Ok(json!({
         "text": text,
         "cost": crate::engine::cost(&sel.model, &usage),
