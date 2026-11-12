@@ -710,6 +710,39 @@ mod tests {
         apply_messages_hook(&mut messages, &changed);
         assert_eq!(messages[0].text(), "goodbye");
     }
+
+    #[test]
+    fn empty_plugin_state_removes_everything() {
+        let config = crate::config::Config::default();
+        let agents = crate::agent::load(&config, &[]);
+        assert!(!agents.is_empty());
+        let applied = apply_state(
+            &json!({
+                "agents": [],
+                "providers": [],
+                "mcp": [],
+                "skills": [],
+                "commands": [],
+            }),
+            &config,
+            &Default::default(),
+            &agents,
+            &Default::default(),
+        );
+        assert!(applied.agents.is_empty());
+        assert!(applied.providers.is_empty());
+        assert!(applied.mcp.is_empty());
+        assert!(applied.skills.is_empty());
+    }
+
+    #[test]
+    fn session_messages_use_v2_shapes() {
+        let messages = vec![crate::session::Message::user_text("hello")];
+        let value = session_messages_json(&messages);
+        assert_eq!(value[0]["type"], "user");
+        assert_eq!(value[0]["text"], "hello");
+        assert_eq!(value[0]["content"], Value::Null);
+    }
 }
 
 impl Manager {
