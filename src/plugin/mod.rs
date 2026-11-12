@@ -1686,7 +1686,17 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             Ok(handle.with(|s| session_messages_json(&s.messages)))
         }
-        "session.instructions" => Ok(json!([])),
+        "session.instructions" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.instructions requires sessionID"))?;
+            let handle = app.session(&id)?;
+            Ok(handle.with(|session| {
+                json!(session
+                    .instruction_entries
+                    .iter()
+                    .map(|(key, value)| json!({ "key": key, "value": value }))
+                    .collect::<Vec<_>>())
+            }))
+        }
         "session.instructions.entry.list" => {
             let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.list requires sessionID"))?;
             let handle = app.session(&id)?;
@@ -2084,6 +2094,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let model = first.get("model").cloned();
             plugin_generate(app, "plugin", Some(app.default_agent()), None, prompt, model).await
         }
+        // The Rust client keeps provider keys in `auth.json` rather than a
+        // multi-credential integration store. Activation is therefore already
+        // implied by the provider credential selected through `auth`.
+        "credential.activate" => Ok(Value::Null),
+        // There is no persistent PTY store in the Rust client; report no
+        // output instead of failing a plugin that probes it.
+        "experimental.terminal.read" => Ok(Value::Null),
         _ => Err(anyhow!("plugin client: unsupported method {path}")),
     }
 }
