@@ -59,7 +59,9 @@ impl Tool for Write {
         data.push_str(new);
         std::fs::write(&path, data)?;
         let _ = crate::formatter::format(&ctx.app, &path).await;
-        let msg = format!("{} file successfully: {resource}", if existed { "Wrote" } else { "Created" });
+        let diagnostics = crate::lsp::diagnostics_text(&ctx.app, &path).await;
+        let mut msg = format!("{} file successfully: {resource}", if existed { "Wrote" } else { "Created" });
+        msg.push_str(&diagnostics);
         Ok(Output::text(msg, resource.clone()).meta(json!({ "files": [{ "file": resource, "diff": diff, "additions": add, "deletions": del, "status": if existed { "modified" } else { "added" } }] })))
     }
 }

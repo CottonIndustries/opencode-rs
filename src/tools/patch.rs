@@ -281,6 +281,7 @@ impl Tool for Patch {
         ctx.ask("edit", &resources, &["*".into()], format!("Apply patch to {}", resources.join(", ")), json!({ "filepath": resources.join(", "), "diff": diff_all })).await?;
 
         let mut applied = Vec::new();
+        let mut diagnostics = String::new();
         for p in &prepared {
             let res: Result<()> = (|| {
                 match p.kind {
@@ -305,10 +306,12 @@ impl Tool for Patch {
             }
             let target = p.dest.as_ref().unwrap_or(&p.target);
             let _ = crate::formatter::format(&ctx.app, target).await;
+            diagnostics.push_str(&crate::lsp::diagnostics_text(&ctx.app, target).await);
             applied.push((p.kind, shown));
         }
         let mut lines = vec!["Success. Updated the following files:".to_string()];
         lines.extend(applied.iter().map(|(k, n)| format!("{k} {n}")));
+        lines.push(diagnostics);
         Ok(Output::text(lines.join("\n"), format!("{} file(s)", applied.len())).meta(json!({ "files": files })))
     }
 }

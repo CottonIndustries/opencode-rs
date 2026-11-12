@@ -13,6 +13,7 @@ mod event_store;
 mod formatter;
 mod forms;
 mod http;
+mod lsp;
 mod mcp;
 mod mcp_oauth;
 mod models;

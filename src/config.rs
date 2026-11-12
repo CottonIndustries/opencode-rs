@@ -33,6 +33,7 @@ pub struct Config {
     pub skills: Vec<String>,
     pub websearch: Option<WebSearchConfig>,
     pub formatter: Option<Value>,
+    pub lsp: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
