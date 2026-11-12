@@ -22,6 +22,7 @@ if yours live elsewhere.
 | `opencode [dir]` / `opencode mini` | Interactive TUI (`-m provider/model`, `--agent`, `-c`, `-s <id>`, `--fork`, `--prompt`) |
 | `opencode run [message..]` | Non-interactive run. `-m provider/model#variant`, `--agent`, `-c`, `-s`, `--fork`, `-f file`, `--title`, `--thinking`, `--format json`, `--auto-approve`. Piped stdin is appended to the message. A leading `/command` expands that command. |
 | `opencode acp [--login]` | Agent Client Protocol server on stdio for editors such as Zed (`--login` runs `auth login`) |
+| `opencode serve [--hostname H] [--port P] [--password P] [--dir D]` | Local HTTP API and SSE event feed. Basic auth is enabled when a password is set or `OPENCODE_SERVER_PASSWORD` is present. |
 | `opencode models [provider] [--verbose] [--refresh]` | List models from providers with credentials |
 | `opencode auth list\|login\|logout` | Manage API keys (`<data>/auth.json`) |
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
@@ -39,7 +40,9 @@ if yours live elsewhere.
   (encrypted reasoning round-trip), OpenAI-compatible Chat Completions (OpenRouter,
   Groq, DeepSeek, xAI, local servers, `interleaved` reasoning fields) and Gemini
   (thought signatures). Retries with backoff on 429/5xx (not on quota errors).
-  `#variant` selects reasoning effort/budget.
+  `#variant` selects reasoning effort/budget. OpenAI Responses can use the
+  WebSocket transport (`provider.<id>.options.transport: "websocket"`) with the
+  same BoringSSL/Bun HTTP stack; a failed handshake falls back to HTTP/SSE.
 - **OpenCode Zen free tier**: with no OpenCode key, the `opencode` provider uses the
   anonymous `public` key and lists only free models. Model requests match the TypeScript
   client: `User-Agent: opencode/latest/2.1.4/cli`, `x-opencode-client: cli` (or
@@ -57,7 +60,7 @@ if yours live elsewhere.
 - **Config**: `opencode.json`/`.jsonc` (global, `OPENCODE_CONFIG`, project chain,
   `.opencode/`, `OPENCODE_CONFIG_CONTENT`), `{env:}`/`{file:}` substitution,
   custom providers/models, `agent`, `command`, `permission`, `mcp`, `tools`,
-  `instructions`, `skills`, `compaction`, `experimental.todo`.
+  `instructions`, `skills`, `compaction`, `formatter`, `experimental.todo`.
 - **Agents**: `build`, `general`, `explore` (+ hidden `title`, `summary`,
   `compaction`) and custom agents from config or `agent/*.md`.
 - **Tools** with the original descriptions and schemas: `shell` (Git Bash /
@@ -103,9 +106,11 @@ if yours live elsewhere.
   - Runtime hooks: `session.prompt`, `session.context`, `session.headers`,
     `session.compaction`, `session.compacting` (V1), `session.autocontinue`
     (V1), `session.title`, `session.text.complete`, `session.model.resolve`,
-    `session.model.request`, `session.experimental.idle`, `tool.execute.before`,
-    `tool.execute.after`, `tool.definition` (V1), `shell.create.before`,
-    `permission.evaluate`, and event subscriptions.
+    `session.model.request`, `session.experimental.idle`,
+    `experimental.ws.handshake`, `experimental.ws.send`,
+    `experimental.ws.receive`, `tool.execute.before`, `tool.execute.after`,
+    `tool.definition` (V1), `shell.create.before`, `permission.evaluate`, and
+    event subscriptions.
   - Custom tools (Zod, Effect Schema, Standard Schema or JSON Schema inputs)
     with `ctx.ask`, `ctx.metadata`/`ctx.progress`, abort signals, and plugin
     commands.
@@ -126,17 +131,16 @@ Sessions are stored as JSON in `~/.local/share/opencode/storage/session/<project
 ## Not ported
 
 Things in the original that depend on its hosted services or on domains this
-port does not implement: the `serve` HTTP/web server, `pair`, `service`,
-`github`, `upgrade`, OAuth logins (Claude Pro/Max, ChatGPT, Copilot device
-flow), LSP diagnostics, post-edit formatters, snapshots/undo, the browser and
-worktree tools, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need
-an OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
+port does not implement: `pair`, `service`, `github`, `upgrade`, OAuth logins
+(Claude Pro/Max, ChatGPT, Copilot device flow), LSP diagnostics, Code Mode,
+schedules, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need an
+OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
 splitter instead of tree-sitter.
 
-Plugin domains with no corresponding Rust feature stay in the plugin host as
-in-memory registries: integrations/credentials, artifacts, external VCS and
-worktree strategies, RPC endpoints, and `aisdk` SDK/language hooks. They load
-and transform, but this port does not consume them.
+Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
+RPC endpoints are available through the API and plugin host. Integrations and
+credentials are handled by plugins; `aisdk` SDK/language hooks pass options
+through, but a plugin-returned model object cannot replace the Rust provider.
 
 ## Tests
 
