@@ -1671,10 +1671,28 @@ function renderShellValue(value: Json): string {
 
 // ---------------------------------------------------------------- api builder
 
-function callRPC(method: string, params?: Json): Promise<Json> {
+function abortError(): Error {
+  const error = new Error("request aborted")
+  error.name = "AbortError"
+  return error
+}
+
+function aborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal.aborted) return reject(abortError())
+    signal.addEventListener("abort", () => reject(abortError()), { once: true })
+  })
+}
+
+function callRPC(method: string, params?: Json, options?: Json): Promise<Json> {
   // The provisional Rust App is attached before initialize, so setup can read
   // live registries and sessions while transform state is still being built.
-  return request("client.call", { path: method, args: params === undefined ? [] : [params] })
+  const result = request("client.call", {
+    path: method,
+    args: params === undefined ? [] : [params],
+    options: options ?? undefined,
+  })
+  return options?.signal ? Promise.race([result, aborted(options.signal)]) : result
 }
 
 function api(local: Json, mode: PluginMode, prefix: string, envelope = true): Json {
@@ -1935,7 +1953,7 @@ function makeDomains(plugin: PluginRecord): Json {
     },
     connection: {
       active: lazy(async (integrationID: string) => integrationConnectionList(integrationID)[0]),
-      resolve: lazy(async (connection: Json) => integrationResolveConnection(connection)),
+      resolve: lazy((connection: Json) => integrationResolveConnection(connection)),
       status: lazy(async (input: Json) => integrationConnectionStatus(input)),
     },
   })
@@ -2084,15 +2102,15 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     mode === "effect"
       ? (...args: Json[]) => Effect.tryPromise({ try: () => fn(...args), catch: (error: unknown) => error })
       : fn
-  const call = (method: string) => lazy(async (input: Json) => callRPC(method, input))
+  const call = (method: string) => lazy(async (input: Json, options?: Json) => callRPC(method, input, options))
   const voidCall = (method: string) =>
-    lazy(async (input: Json) => {
-      await callRPC(method, input)
+    lazy(async (input: Json, options?: Json) => {
+      await callRPC(method, input, options)
       return undefined
     })
   const paged = (method: string) =>
-    lazy(async (input: Json) => {
-      const value = await callRPC(method, input)
+    lazy(async (input: Json, options?: Json) => {
+      const value = await callRPC(method, input, options)
       if (value && Array.isArray(value.data)) return value
       return { data: Array.isArray(value) ? value : [], cursor: {} }
     })
@@ -2115,8 +2133,8 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     command: voidCall("session.command"),
     compact: call("session.compact"),
     synthetic: call("session.synthetic"),
-    interrupt: lazy(async (input: Json) => {
-      const result = await callRPC("session.interrupt", input)
+    interrupt: lazy(async (input: Json, options?: Json) => {
+      const result = await callRPC("session.interrupt", input, options)
       return { interrupted: result?.interrupted === true }
     }),
     update: voidCall("session.update"),
@@ -2510,14 +2528,36 @@ function integrationCommandCancel(input: Json) {
   attempt.message = "Authentication cancelled"
 }
 
-function integrationResolveConnection(connection: Json): Json | undefined {
+async function integrationResolveConnection(connection: Json): Promise<Json | undefined> {
   if (!connection) return undefined
   if (connection.type === "env") {
     const value = typeof connection.name === "string" ? Deno.env.get(connection.name) : undefined
     return value ? { type: "key", key: value } : undefined
   }
   const credential = credentials.get(connection.id)
-  return credential?.value
+  if (!credential) return undefined
+  const value = credential.value
+  if (value?.type !== "oauth") return value
+  const expires = typeof value.expires === "number" ? value.expires : 0
+  if (!expires || expires > Date.now() + 60_000) return value
+  const registration = integrationMethods.get(credential.integrationID)?.get(value.methodID)
+  if (typeof registration?.refresh !== "function") return value
+  try {
+    const refreshed = await settle(registration.refresh(value))
+    credential.value = refreshed
+    credential.time = { ...(credential.time ?? {}), updated: Date.now() }
+    saveStoredCredentials()
+    syncCredentialAuth(credential)
+    void emitEvent({
+      id: `credential_updated_${Date.now()}`,
+      type: "credential.updated",
+      properties: { integrationID: credential.integrationID, credentialID: credential.id },
+    })
+    return refreshed
+  } catch (error) {
+    log("error", `credential refresh failed: ${String(error)}`)
+    return value
+  }
 }
 
 function integrationConnectionStatus(input: Json) {
