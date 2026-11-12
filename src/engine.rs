@@ -130,7 +130,7 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
         return Ok(());
     }
     app.emit(AppEvent::Busy { session: session_id.to_string(), busy: true });
-    let mut result = Ok(());
+    let mut result: Result<bool> = Ok(false);
     let mut pending = Some((msg, opts));
     loop {
         if let Some((msg, opts)) = pending.take() {
@@ -165,7 +165,7 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     // V2 experimental.idle runs before the session settles. It may admit
     // synthetic input through ctx.session.synthetic(), which starts a new turn.
     // It does not run after a failed or interrupted turn.
-    if result.is_ok() {
+    if matches!(&result, Ok(false)) {
         let _ = app
             .plugins
             .trigger(
@@ -189,7 +189,27 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     if !busy {
         app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
     }
-    result
+    match &result {
+        Ok(false) => app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.execution.succeeded",
+            "properties": { "sessionID": session_id },
+        })),
+        Ok(true) => app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.execution.interrupted",
+            "properties": { "sessionID": session_id, "reason": "user" },
+        })),
+        Err(error) => app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.execution.failed",
+            "properties": {
+                "sessionID": session_id,
+                "error": { "type": "unknown", "message": error.to_string() },
+            },
+        })),
+    }
+    result.map(|_| ())
 }
 
 const PLAN_LEAVE: &str = "<system-reminder>\nYou are NO LONGER in Plan mode. The previous Plan restrictions no longer apply. Any Plan mode instructions from earlier in this conversation are no longer active.\n</system-reminder>";
@@ -269,7 +289,7 @@ pub async fn notify_with_id(app: Arc<App>, session_id: String, text: String, id:
     let _ = prompt(app, &session_id, msg, opts).await;
 }
 
-async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: PromptOptions) -> Result<()> {
+async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: PromptOptions) -> Result<bool> {
     let agent_id = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).unwrap_or_else(|| app.default_agent());
     let agent = app.agent(&agent_id)?.clone();
     let session_model = handle.with(|s| s.model.clone());
@@ -498,12 +518,13 @@ struct StepResult {
     aborted: bool,
 }
 
-async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selection) -> Result<()> {
+async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selection) -> Result<bool> {
     let sid = handle.id();
     let registry = tools::registry(&app, &agent, &sel.model).await;
     let max_steps = agent.steps;
     let mut step = 0usize;
     let mut length_retries = 0;
+    let mut interrupted = false;
     loop {
         // steering: fold queued user messages into the conversation
         let queued: Vec<(Message, PromptOptions)> = handle.queue.lock().unwrap().drain(..).collect();
@@ -524,6 +545,7 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
         let res = step_once(&app, &handle, &agent, &sel, &active_tools, &registry, last).await?;
         app.emit(AppEvent::StepFinished { session: sid.clone() });
         if res.aborted || res.rejected {
+            interrupted = true;
             break;
         }
         // automatic compaction near the context limit (skipped right after a
@@ -564,7 +586,7 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     }
     handle.save();
     app.emit(AppEvent::Updated { session: sid });
-    Ok(())
+    Ok(interrupted)
 }
 
 pub(crate) fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, agent: &Agent, sel: &Selection, kind: &str) {
