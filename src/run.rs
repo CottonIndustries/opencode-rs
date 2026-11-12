@@ -117,7 +117,11 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
             plugin_command = Some((name.to_string(), cmd_args.trim().to_string()));
             text.clear();
         } else if let Some(cmd) = app.commands().get(name) {
-            text = crate::command::render(cmd, cmd_args.trim(), &app.directory, &app.worktree);
+            text = if cmd.mcp_prompt.is_some() {
+                crate::command::render_mcp(&app, cmd, cmd_args.trim()).await
+            } else {
+                crate::command::render(cmd, cmd_args.trim(), &app.directory, &app.worktree)
+            };
         }
     }
     if text.trim().is_empty() && args.files.is_empty() && plugin_command.is_none() {

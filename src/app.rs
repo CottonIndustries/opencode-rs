@@ -280,6 +280,7 @@ impl App {
             );
             *app.plugin_base.lock().unwrap() = Some(base);
             app.plugins.attach(&app);
+            app.load_mcp_prompts().await;
             return Ok(app);
         }
 
@@ -299,7 +300,48 @@ impl App {
         );
         *app.plugin_base.lock().unwrap() = Some(base);
         app.plugins.attach(&app);
+        app.load_mcp_prompts().await;
         Ok(app)
+    }
+
+    /// Register MCP prompts as slash commands. Best effort: a server that is
+    /// offline at startup simply contributes no commands.
+    pub async fn load_mcp_prompts(&self) {
+        if self.mcp.configured() == 0 {
+            return;
+        }
+        let Ok(prompts) = self.mcp.prompts().await else { return };
+        let mut commands = self.commands.write().unwrap();
+        for prompt in prompts {
+            let (Some(server), Some(name)) = (
+                prompt.get("server").and_then(serde_json::Value::as_str),
+                prompt.get("name").and_then(serde_json::Value::as_str),
+            ) else {
+                continue;
+            };
+            let arguments = prompt
+                .get("arguments")
+                .and_then(serde_json::Value::as_array)
+                .map(|arguments| {
+                    arguments
+                        .iter()
+                        .filter_map(|argument| argument.get("name").and_then(serde_json::Value::as_str).map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let command_name = crate::command::mcp_command_name(server, name);
+            commands.insert(
+                command_name.clone(),
+                crate::command::Command {
+                    name: command_name,
+                    description: prompt.get("description").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    template: String::new(),
+                    agent: None,
+                    model: None,
+                    mcp_prompt: Some((server.to_string(), name.to_string(), arguments)),
+                },
+            );
+        }
     }
 
     /// Apply a transformed plugin state after startup (transform `reload()`).

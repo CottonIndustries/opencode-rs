@@ -101,6 +101,42 @@ impl Client {
         Ok(resp.get("result").cloned().unwrap_or(Value::Null))
     }
 
+    async fn paginate(&self, method: &str, key: &str) -> Result<Vec<Value>> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(cursor) => json!({ "cursor": cursor }),
+                None => json!({}),
+            };
+            let result = self.request(method, params).await?;
+            out.extend(result.get(key).and_then(Value::as_array).cloned().unwrap_or_default());
+            cursor = result.get("nextCursor").and_then(Value::as_str).map(String::from);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn resources(&self) -> Result<(Vec<Value>, Vec<Value>)> {
+        let resources = self.paginate("resources/list", "resources").await?;
+        let templates = self.paginate("resources/templates/list", "resourceTemplates").await?;
+        Ok((resources, templates))
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Value> {
+        self.request("resources/read", json!({ "uri": uri })).await
+    }
+
+    async fn prompts(&self) -> Result<Vec<Value>> {
+        self.paginate("prompts/list", "prompts").await
+    }
+
+    async fn prompt(&self, name: &str, arguments: Value) -> Result<Value> {
+        self.request("prompts/get", json!({ "name": name, "arguments": arguments })).await
+    }
+
     async fn notify(&self, method: &str) -> Result<()> {
         let msg = json!({ "jsonrpc": "2.0", "method": method });
         match &self.transport {
@@ -258,6 +294,7 @@ pub struct Manager {
     configs: std::sync::RwLock<BTreeMap<String, McpConfig>>,
     dir: PathBuf,
     tools: std::sync::Mutex<Option<Vec<Arc<dyn Tool>>>>,
+    clients: Mutex<BTreeMap<String, Arc<Client>>>,
     status: Mutex<BTreeMap<String, Status>>,
 }
 
@@ -271,6 +308,7 @@ impl Manager {
             configs: std::sync::RwLock::new(configs),
             dir,
             tools: std::sync::Mutex::new(None),
+            clients: Mutex::new(BTreeMap::new()),
             status: Mutex::new(BTreeMap::new()),
         }
     }
@@ -282,6 +320,7 @@ impl Manager {
         }
         *self.configs.write().unwrap() = configs;
         *self.tools.lock().unwrap() = None;
+        self.clients.lock().unwrap().clear();
         self.status.lock().unwrap().clear();
     }
 
@@ -300,6 +339,7 @@ impl Manager {
         for (name, res) in futures::future::join_all(futs).await {
             match res {
                 Ok((client, tools)) => {
+                    self.clients.lock().unwrap().insert(name.clone(), client.clone());
                     self.status.lock().unwrap().insert(name.clone(), Status::Connected { tools: tools.len() });
                     for t in tools {
                         let tool = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
@@ -313,9 +353,11 @@ impl Manager {
                     }
                 }
                 Err(None) => {
+                    self.clients.lock().unwrap().remove(&name);
                     self.status.lock().unwrap().insert(name, Status::Disabled);
                 }
                 Err(Some(e)) => {
+                    self.clients.lock().unwrap().remove(&name);
                     self.status.lock().unwrap().insert(name, Status::Failed(e.to_string()));
                 }
             }
@@ -331,6 +373,58 @@ impl Manager {
 
     pub fn configured(&self) -> usize {
         self.configs.read().unwrap().len()
+    }
+
+    pub fn server_names(&self) -> Vec<String> {
+        self.configs.read().unwrap().keys().cloned().collect()
+    }
+
+    async fn connected(&self) -> BTreeMap<String, Arc<Client>> {
+        self.tools().await;
+        self.clients.lock().unwrap().clone()
+    }
+
+    pub async fn resource_catalog(&self, server: Option<&str>) -> Result<Value> {
+        let clients = self.connected().await;
+        let mut resources = Vec::new();
+        let mut templates = Vec::new();
+        for (name, client) in clients {
+            if server.is_some_and(|server| server != name.as_str()) {
+                continue;
+            }
+            let (mut listed, mut templated) = client.resources().await?;
+            for item in listed.iter_mut().chain(templated.iter_mut()) {
+                item["server"] = json!(name);
+            }
+            resources.extend(listed);
+            templates.extend(templated);
+        }
+        Ok(json!({ "resources": resources, "templates": templates }))
+    }
+
+    pub async fn read_resource(&self, server: &str, uri: &str) -> Result<Option<Value>> {
+        let clients = self.connected().await;
+        let Some(client) = clients.get(server) else { return Ok(None) };
+        Ok(Some(client.read_resource(uri).await?))
+    }
+
+    pub async fn prompts(&self) -> Result<Vec<Value>> {
+        let clients = self.connected().await;
+        let mut prompts = Vec::new();
+        for (name, client) in clients {
+            let mut listed = client.prompts().await?;
+            for item in listed.iter_mut() {
+                item["server"] = json!(name);
+            }
+            prompts.extend(listed);
+        }
+        Ok(prompts)
+    }
+
+    pub async fn prompt(&self, server: &str, name: &str, arguments: Value) -> Result<Option<Value>> {
+        let clients = self.connected().await;
+        let Some(client) = clients.get(server) else { return Ok(None) };
+        Ok(Some(client.prompt(name, arguments).await?))
     }
 
     /// Configured servers with their status so far (`None` while still connecting).

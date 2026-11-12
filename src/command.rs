@@ -11,13 +11,15 @@ pub struct Command {
     pub template: String,
     pub agent: Option<String>,
     pub model: Option<String>,
+    /// MCP prompt backing this command, with its declared argument names.
+    pub mcp_prompt: Option<(String, String, Vec<String>)>,
 }
 
 pub fn load(config: &Config, dirs: &[PathBuf]) -> BTreeMap<String, Command> {
     let mut out = BTreeMap::new();
     out.insert(
         "init".into(),
-        Command { name: "init".into(), description: "guided AGENTS.md setup".into(), template: crate::prompt::INITIALIZE.into(), agent: None, model: None },
+        Command { name: "init".into(), description: "guided AGENTS.md setup".into(), template: crate::prompt::INITIALIZE.into(), agent: None, model: None, mcp_prompt: None },
     );
     out.insert(
         "review".into(),
@@ -27,6 +29,7 @@ pub fn load(config: &Config, dirs: &[PathBuf]) -> BTreeMap<String, Command> {
             template: crate::prompt::REVIEW.into(),
             agent: None,
             model: None,
+            mcp_prompt: None,
         },
     );
     for dir in dirs {
@@ -49,6 +52,7 @@ pub fn load(config: &Config, dirs: &[PathBuf]) -> BTreeMap<String, Command> {
                         template: body.trim().to_string(),
                         agent: s("agent"),
                         model: s("model"),
+                        mcp_prompt: None,
                     },
                 );
             }
@@ -63,6 +67,7 @@ pub fn load(config: &Config, dirs: &[PathBuf]) -> BTreeMap<String, Command> {
                 template: c.template.clone(),
                 agent: c.agent.clone(),
                 model: c.model.clone(),
+                mcp_prompt: None,
             },
         );
     }
@@ -75,6 +80,58 @@ fn shell_output(cmd: &str, cwd: &Path) -> String {
         Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim_end().to_string(),
         Err(e) => format!("(failed to run `{cmd}`: {e})"),
     }
+}
+
+/// Expand an MCP prompt command into the text sent as the prompt.
+pub async fn render_mcp(app: &crate::app::App, cmd: &Command, args: &str) -> String {
+    let Some((server, prompt, arguments)) = &cmd.mcp_prompt else {
+        return render(cmd, args, &app.directory, &app.worktree);
+    };
+    let tokens = regex::Regex::new(r#"(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)"#)
+        .unwrap()
+        .find_iter(args)
+        .map(|token| token.as_str().trim_matches(['"', '\'']).to_string())
+        .collect::<Vec<_>>();
+    let values = arguments
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), serde_json::json!(tokens.get(index).cloned().unwrap_or_default())))
+        .collect::<serde_json::Map<_, _>>();
+    let result = match app.mcp.prompt(server, prompt, serde_json::Value::Object(values)).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return format!("MCP prompt not found: {server}:{prompt}"),
+        Err(error) => return format!("MCP prompt {server}:{prompt} failed: {error:#}"),
+    };
+    result
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .filter_map(|message| message.get("content"))
+                .map(|content| match content {
+                    serde_json::Value::String(text) => text.clone(),
+                    value if value.get("type").and_then(serde_json::Value::as_str) == Some("text") => {
+                        value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
+                    }
+                    _ => String::new(),
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn sanitize(value: &str) -> String {
+    value.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
+}
+
+/// `server:prompt`, as MCP prompt commands are addressed.
+pub fn mcp_command_name(server: &str, prompt: &str) -> String {
+    format!("{}:{}", sanitize(server), sanitize(prompt))
 }
 
 /// Expand `$ARGUMENTS`, `$1..$9`, `${path}` and `` !`cmd` `` in a command template.

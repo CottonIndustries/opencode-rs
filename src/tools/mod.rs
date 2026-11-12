@@ -4,6 +4,7 @@ pub mod artifact;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod mcp_resource;
 pub mod patch;
 pub mod question;
 pub mod read;
@@ -287,6 +288,10 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
     ];
     if websearch::configured(&app.config).is_some() || app.plugins.has_websearch() {
         tools.push(Arc::new(websearch::WebSearch));
+    }
+    if app.mcp.configured() > 0 {
+        tools.push(Arc::new(mcp_resource::ListResources));
+        tools.push(Arc::new(mcp_resource::ReadResource));
     }
     if app.config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));

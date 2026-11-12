@@ -1074,6 +1074,30 @@ impl Ui {
                     });
                     return;
                 }
+                if cmd.mcp_prompt.is_some() {
+                    self.clear_prompt();
+                    self.enter_session();
+                    self.scroll = 0;
+                    let app = self.app.clone();
+                    let sid = self.sid();
+                    let args = args.trim().to_string();
+                    let agent = self.agent.clone();
+                    let model = self.model.clone();
+                    let variant = self.variant.clone();
+                    tokio::spawn(async move {
+                        let text = crate::command::render_mcp(&app, &cmd, &args).await;
+                        let mut msg = Message::user_text(text.clone());
+                        msg.parts.extend(crate::run::expand_mentions(&app, &text));
+                        let opts = PromptOptions {
+                            agent: cmd.agent.clone().or(Some(agent)),
+                            model: cmd.model.clone().or(model),
+                            variant,
+                            delivery: None,
+                        };
+                        let _ = crate::engine::prompt(app, &sid, msg, opts).await;
+                    });
+                    return;
+                }
                 let rendered = crate::command::render(&cmd, args.trim(), &self.app.directory, &self.app.worktree);
                 self.send(rendered, Some(&cmd));
                 return;
