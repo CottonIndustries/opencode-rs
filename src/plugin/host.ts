@@ -1742,7 +1742,13 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     update: voidCall("session.update"),
     move: voidCall("session.move"),
     context: call("session.context"),
-    instructions: call("session.instructions"),
+    instructions: {
+      entry: {
+        list: call("session.instructions.entry.list"),
+        put: voidCall("session.instructions.entry.put"),
+        remove: voidCall("session.instructions.entry.remove"),
+      },
+    },
     wait: voidCall("session.wait"),
     status: call("session.status"),
     hook: (name: string, callback: Function, options?: Json) =>

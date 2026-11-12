@@ -1515,6 +1515,34 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             Ok(handle.with(|s| session_messages_json(&s.messages)))
         }
         "session.instructions" => Ok(json!([])),
+        "session.instructions.entry.list" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.list requires sessionID"))?;
+            let handle = app.session(&id)?;
+            Ok(handle.with(|session| {
+                json!(session
+                    .instruction_entries
+                    .iter()
+                    .map(|(key, value)| json!({ "key": key, "value": value }))
+                    .collect::<Vec<_>>())
+            }))
+        }
+        "session.instructions.entry.put" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.put requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let key = body.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
+            let value = body.get("value").cloned().unwrap_or(Value::Null);
+            handle.with(|session| session.instruction_entries.insert(key, value));
+            handle.save();
+            Ok(Value::Null)
+        }
+        "session.instructions.entry.remove" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.remove requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let key = body.get("key").and_then(Value::as_str).unwrap_or_default();
+            handle.with(|session| session.instruction_entries.remove(key));
+            handle.save();
+            Ok(Value::Null)
+        }
         "session.switchAgent" => {
             let id = session_id().ok_or_else(|| anyhow!("session.switchAgent requires sessionID"))?;
             let handle = app.session(&id)?;

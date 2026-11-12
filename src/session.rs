@@ -206,6 +206,8 @@ pub struct Session {
     pub metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub instruction_entries: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 pub const DEFAULT_TITLE_PREFIX: &str = "New session - ";
@@ -230,6 +232,7 @@ impl Session {
             loaded_instructions: vec![],
             metadata: None,
             archived: false,
+            instruction_entries: Default::default(),
         }
     }
     pub fn has_default_title(&self) -> bool {
