@@ -38,16 +38,62 @@ pub struct Config {
 #[serde(default)]
 pub struct Experimental {
     pub todo: bool,
+    #[serde(alias = "background_compaction")]
+    pub background_compaction: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keep {
+    pub tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Compaction {
     pub auto: bool,
+    pub keep: Option<Keep>,
+    /// A percentage such as "20%" or a token count kept free below the window.
+    pub buffer: Option<Value>,
 }
 impl Default for Compaction {
     fn default() -> Self {
-        Compaction { auto: true }
+        Compaction { auto: true, keep: None, buffer: None }
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    #[test]
+    fn buffer_accepts_percent_and_tokens() {
+        let mut compaction = Compaction::default();
+        assert!((compaction.threshold(100_000) - 0.85).abs() < f64::EPSILON);
+        compaction.buffer = Some(serde_json::json!("20%"));
+        assert!((compaction.threshold(100_000) - 0.8).abs() < f64::EPSILON);
+        compaction.buffer = Some(serde_json::json!(30_000));
+        assert!((compaction.threshold(100_000) - 0.7).abs() < f64::EPSILON);
+    }
+}
+
+impl Compaction {
+    pub fn threshold(&self, context: u64) -> f64 {
+        if context == 0 {
+            return 0.85;
+        }
+        match &self.buffer {
+            Some(Value::String(value)) => value
+                .strip_suffix('%')
+                .and_then(|value| value.parse::<f64>().ok())
+                .map(|percent| (1.0 - percent / 100.0).clamp(0.01, 0.99))
+                .unwrap_or(0.85),
+            Some(Value::Number(value)) => value
+                .as_u64()
+                .map(|tokens| ((context.saturating_sub(tokens)) as f64 / context as f64).clamp(0.01, 0.99))
+                .unwrap_or(0.85),
+            _ => 0.85,
+        }
     }
 }
 

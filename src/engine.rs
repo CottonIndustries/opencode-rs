@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub const REJECTED: &str = "The user rejected permission to use this tool. Stop and wait for the user's next instruction; do not retry.";
-const COMPACT_THRESHOLD: f64 = 0.85;
 
 pub const COMPACTION_TEMPLATE: &str = "You MUST use this format for your response (you may omit sections that aren't applicable). Do not include the <template> tags in your response.
 <template>
@@ -690,7 +689,8 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
         if app.config.compaction.auto
             && !fresh_checkpoint
             && sel.model.context > 0
-            && res.usage.total_context() as f64 >= sel.model.context as f64 * COMPACT_THRESHOLD
+            && res.usage.total_context() as f64
+                >= sel.model.context as f64 * app.config.compaction.threshold(sel.model.context)
         {
             let continuing = res.tool_calls > 0;
             if let Err(e) = compact(&app, &handle, &agent, &sel, &registry, continuing).await {
