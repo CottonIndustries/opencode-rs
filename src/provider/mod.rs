@@ -258,7 +258,34 @@ pub async fn post(
         if !retryable || attempt >= 6 {
             return Err(anyhow!(msg));
         }
-        let delay = wait.map(|s| s * 1000).unwrap_or(2000 * 2u64.pow(attempt - 1)).min(60_000);
+        let mut delay = wait.map(|s| s * 1000).unwrap_or(2000 * 2u64.pow(attempt - 1)).min(60_000);
+        if let Some(hooks) = hooks {
+            let event = hooks
+                .app
+                .plugins
+                .trigger(
+                    "session",
+                    "retry",
+                    serde_json::json!({
+                        "sessionID": hooks.session_id,
+                        "agent": hooks.agent,
+                        "model": hooks.model,
+                        "kind": hooks.kind,
+                        "error": { "type": "unknown", "message": msg },
+                        "attempt": attempt,
+                        "decision": { "retry": true, "delay": delay },
+                    }),
+                )
+                .await;
+            if let Some(decision) = event.get("decision") {
+                if decision.get("retry").and_then(Value::as_bool) == Some(false) {
+                    return Err(anyhow!(msg));
+                }
+                if let Some(next) = decision.get("delay").and_then(Value::as_u64) {
+                    delay = next.min(60_000);
+                }
+            }
+        }
         let _ = tx.send(Event::Retry(format!("{msg} — retrying in {}s (attempt {attempt})", delay / 1000)));
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
