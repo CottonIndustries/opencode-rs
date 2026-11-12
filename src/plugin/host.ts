@@ -1556,9 +1556,11 @@ function makeDomains(plugin: PluginRecord): Json {
   const skill = local("skills", "skill")
   const tool = domain("tools", "tool", "tool", false)
   const mcp = local("mcp", "mcp", {
-    list: sync(() =>
-      apiResponse([...registry.mcp.keys()].map((name) => ({ name, status: { status: "pending" } }))),
-    ),
+    list: lazy(async () => {
+      const result = await callRPC("mcp.list")
+      if (Array.isArray(result)) return apiResponse(result)
+      return apiResponse([...registry.mcp.keys()].map((name) => ({ name, status: { status: "pending" } })))
+    }),
   })
   const provider = local("providers", "provider", {
     list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
