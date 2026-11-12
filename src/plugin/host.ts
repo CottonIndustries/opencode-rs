@@ -1178,9 +1178,31 @@ async function executePluginTool(params: Json): Promise<Json> {
       abort: controller.signal,
       metadata: (input: Json) => {
         notify("tool.metadata", { callID: params.callID, ...input })
+        void emitEvent({
+          id: `tool_progress_${Date.now()}`,
+          type: "session.tool.progress",
+          properties: {
+            sessionID: params.context?.sessionID,
+            assistantMessageID: params.context?.messageID,
+            id: params.callID,
+            name: params.name,
+            metadata: input?.metadata ?? input,
+          },
+        })
       },
       progress: (update: Json) => {
         notify("tool.metadata", { callID: params.callID, metadata: update })
+        void emitEvent({
+          id: `tool_progress_${Date.now()}`,
+          type: "session.tool.progress",
+          properties: {
+            sessionID: params.context?.sessionID,
+            assistantMessageID: params.context?.messageID,
+            id: params.callID,
+            name: params.name,
+            metadata: update,
+          },
+        })
         return tool.plugin?.mode === "effect" ? Effect.sync(() => {}) : Promise.resolve()
       },
       ask: (input: Json) => {
