@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod media;
 pub mod google;
+pub mod oauth;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod ws_transport;
@@ -146,7 +147,8 @@ pub fn max_output(model: &Model) -> u64 {
     lim.min(std::env::var("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(OUTPUT_TOKEN_MAX))
 }
 
-pub async fn stream(req: Request, tx: Tx) -> Result<()> {
+pub async fn stream(mut req: Request, tx: Tx) -> Result<()> {
+    oauth::refresh(&mut req.provider).await;
     match req.provider.protocol_for(&req.model)? {
         Protocol::Anthropic => anthropic::stream(req, tx).await,
         Protocol::OpenAIChat => openai_chat::stream(req, tx).await,

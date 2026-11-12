@@ -419,6 +419,7 @@ pub fn providers(config: &Config) -> BTreeMap<String, Provider> {
         if provider.models.is_empty() && provider.media_models.is_empty() {
             continue;
         }
+        crate::provider::oauth::apply(&mut provider);
         out.insert(id, provider);
     }
     out

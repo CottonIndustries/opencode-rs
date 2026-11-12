@@ -102,6 +102,9 @@ pub async fn auth_login(provider: Option<String>, key: Option<String>) -> Result
     if provider.is_empty() {
         return Err(anyhow!("no provider given"));
     }
+    if key.is_none() && matches!(provider.as_str(), "openai" | "chatgpt" | "github-copilot" | "copilot") {
+        return crate::provider::oauth::login(&provider).await;
+    }
     if catalog.get(&provider).is_none() {
         eprintln!("Note: {provider} is not in the models.dev catalog; configure it under \"provider\" in opencode.json.");
     }
