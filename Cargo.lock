@@ -2763,6 +2763,7 @@ dependencies = [
  "ipnet",
  "libc",
  "lru 0.18.5",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "serde",

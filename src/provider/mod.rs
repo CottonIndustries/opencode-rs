@@ -1,6 +1,7 @@
 //! Provider-neutral streaming interface over the supported wire protocols.
 
 pub mod anthropic;
+pub mod media;
 pub mod google;
 pub mod openai_chat;
 pub mod openai_responses;
