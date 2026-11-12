@@ -1494,6 +1494,7 @@ async fn plugin_generate(
     session_model: Option<String>,
     prompt: String,
     model: Option<Value>,
+    contextful: bool,
 ) -> Result<Value> {
     let agent_id = agent_id.unwrap_or_else(|| app.default_agent());
     let agent = app.agent(&agent_id).or_else(|_| app.agent(&app.default_agent()))?;
@@ -1514,26 +1515,57 @@ async fn plugin_generate(
     let opts = crate::app::PromptOptions { model: model_ref, variant, ..Default::default() };
     let sel = crate::engine::select_model(app, &agent, &opts, session_model.as_deref())?;
     let mut system: Vec<String> = Vec::new();
-    let mut messages = vec![crate::session::Message::user_text(prompt)];
-    let event = app
-        .plugins
-        .trigger(
-            "session",
-            "generate",
-            json!({
-                "sessionID": session_id,
-                "agent": agent.id,
-                "model": crate::engine::model_hook_json(&sel),
-                "system": [],
-                "messages": messages_for_hook(session_id, &messages),
-                "tools": {},
-                "options": {
-                    "maxTokens": crate::provider::max_output(&sel.model),
-                    "maxOutputTokens": crate::provider::max_output(&sel.model),
-                },
-            }),
-        )
-        .await;
+    let mut messages;
+    let mut specs: Vec<crate::provider::ToolSpec> = Vec::new();
+    if contextful {
+        let handle = app.session(session_id)?;
+        let registry = crate::tools::registry(app, &agent, &sel.model).await;
+        let names: Vec<String> = registry.iter().map(|tool| tool.name().to_string()).collect();
+        system = crate::prompt::system(app, &agent, &sel.model, &names).await;
+        let entries: Vec<String> = handle.with(|session| {
+            session
+                .instruction_entries
+                .values()
+                .filter_map(|value| {
+                    value
+                        .as_str()
+                        .map(String::from)
+                        .or_else(|| value.get("text").and_then(Value::as_str).map(String::from))
+                })
+                .collect()
+        });
+        system.extend(entries);
+        messages = handle.with(|session| session.active_messages().to_vec());
+        messages.push(crate::session::Message::user_text(prompt));
+        specs = registry.iter().map(|tool| crate::tools::spec(tool.as_ref())).collect();
+    } else {
+        messages = vec![crate::session::Message::user_text(prompt)];
+    }
+    let event = if contextful {
+        app.plugins
+            .trigger(
+                "session",
+                "generate",
+                json!({
+                    "sessionID": session_id,
+                    "agent": agent.id,
+                    "model": crate::engine::model_hook_json(&sel),
+                    "system": system.iter().map(|text| json!({ "type": "text", "text": text })).collect::<Vec<_>>(),
+                    "messages": messages_for_hook(session_id, &messages),
+                    "tools": specs.iter().map(|spec| (spec.name.clone(), json!({
+                        "description": spec.description,
+                        "input": spec.schema,
+                    }))).collect::<serde_json::Map<String, Value>>(),
+                    "options": {
+                        "maxTokens": crate::provider::max_output(&sel.model),
+                        "maxOutputTokens": crate::provider::max_output(&sel.model),
+                    },
+                }),
+            )
+            .await
+    } else {
+        Value::Null
+    };
     if let Some(list) = event.get("system").and_then(Value::as_array) {
         system = list
             .iter()
@@ -1544,7 +1576,7 @@ async fn plugin_generate(
         apply_messages_hook(&mut messages, list);
     }
     let session = crate::provider::SessionRef { id: session_id.to_string(), parent_id: None, project: app.project.clone() };
-    let mut req = crate::engine::build_request(&sel, &agent, system, messages, vec![], &session);
+    let mut req = crate::engine::build_request(&sel, &agent, system, messages, specs, &session);
     crate::engine::attach_hooks(app, &mut req, session_id, &agent, &sel, "generate");
     crate::engine::apply_aisdk_hooks(app, &mut req, &sel).await;
     if let Some(options) = event.get("options") {
@@ -2746,7 +2778,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
             let session_agent = handle.with(|session| session.agent.clone());
             let session_model = handle.with(|session| session.model.clone());
-            plugin_generate(app, &id, session_agent, session_model, prompt, None).await
+            plugin_generate(app, &id, session_agent, session_model, prompt, None, true).await
         }
         "session.move" => {
             let id = session_id().ok_or_else(|| anyhow!("session.move requires sessionID"))?;
@@ -3211,7 +3243,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "generate.text" => {
             let prompt = first.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
             let model = first.get("model").cloned();
-            plugin_generate(app, "plugin", Some(app.default_agent()), None, prompt, model).await
+            plugin_generate(app, "plugin", Some(app.default_agent()), None, prompt, model, false).await
         }
         "generate.image" | "experimental.generate.image" => {
             let reference = generate_ref(&first).ok_or_else(|| anyhow!("generate.image requires a model"))?;
