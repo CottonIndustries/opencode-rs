@@ -133,6 +133,15 @@ enum Cmd {
         #[arg(long)]
         login: bool,
     },
+    /// Create a single-use pairing link for a running server
+    Pair {
+        /// Server base URL
+        #[arg(long, default_value = "http://127.0.0.1:4096")]
+        url: String,
+        /// Server password (or OPENCODE_SERVER_PASSWORD)
+        #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
+        password: Option<String>,
+    },
     /// Start the local HTTP API and event feed
     Serve {
         /// Interface to bind
@@ -296,6 +305,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Acp { login: true }) => cli::auth_login(None, None).await,
         Some(Cmd::Acp { login: false }) => acp::serve().await,
+        Some(Cmd::Pair { url, password }) => cli::pair(&url, password).await,
         Some(Cmd::Serve { hostname, port, password, dir }) => {
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
             server::serve(app, server::Options { hostname, port, password }).await

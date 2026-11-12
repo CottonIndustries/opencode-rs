@@ -2,7 +2,8 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -18,12 +19,15 @@ pub async fn serve(app: Arc<App>, options: Options) -> Result<()> {
     let listener = TcpListener::bind((options.hostname.as_str(), options.port)).await?;
     let address = listener.local_addr()?;
     eprintln!("opencode server listening on http://{address}");
+    let pairing: Arc<Mutex<HashMap<String, i64>>> = Arc::new(Mutex::new(HashMap::new()));
     loop {
         let (stream, _) = listener.accept().await?;
         let app = app.clone();
         let password = options.password.clone();
+        let pairing = pairing.clone();
+        let port = address.port();
         tokio::spawn(async move {
-            let _ = handle(stream, app, password).await;
+            let _ = handle(stream, app, password, pairing, port).await;
         });
     }
 }
@@ -32,6 +36,8 @@ struct Request {
     method: String,
     path: String,
     authorization: Option<String>,
+    cookie: Option<String>,
+    accept: Option<String>,
     websocket_key: Option<String>,
     upgrade: bool,
     body: Value,
@@ -61,6 +67,8 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let path = parts.next().unwrap_or("/").to_string();
     let mut content_length = 0usize;
     let mut authorization = None;
+    let mut cookie = None;
+    let mut accept = None;
     let mut websocket_key = None;
     let mut upgrade = false;
     for line in lines {
@@ -70,6 +78,12 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             }
             if name.eq_ignore_ascii_case("authorization") {
                 authorization = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("cookie") {
+                cookie = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("accept") {
+                accept = Some(value.trim().to_string());
             }
             if name.eq_ignore_ascii_case("sec-websocket-key") {
                 websocket_key = Some(value.trim().to_string());
@@ -93,34 +107,139 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, authorization, websocket_key, upgrade, body }))
+    Ok(Some(Request { method, path, authorization, cookie, accept, websocket_key, upgrade, body }))
 }
 
-fn authorized(request: &Request, password: &str) -> bool {
+fn authorized(request: &Request, password: &str, port: u16) -> bool {
     use base64::Engine;
-    let Some(header) = &request.authorization else { return false };
-    let Some(token) = header.strip_prefix("Basic ").or_else(|| header.strip_prefix("basic ")) else {
-        return false;
-    };
-    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(token.trim()) else {
-        return false;
-    };
-    let Ok(decoded) = String::from_utf8(decoded) else { return false };
-    decoded.split_once(':').is_some_and(|(username, candidate)| username == "opencode" && candidate == password)
+    if let Some(header) = &request.authorization {
+        if let Some(token) = header.strip_prefix("Basic ").or_else(|| header.strip_prefix("basic ")) {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(token.trim()) {
+                if let Ok(decoded) = String::from_utf8(decoded) {
+                    if decoded.split_once(':').is_some_and(|(username, candidate)| username == "opencode" && (candidate == password || verify_session(candidate, password))) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let Some(cookie) = &request.cookie else { return false };
+    let name = format!("opencode_session_{port}=");
+    cookie
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix(&name))
+        .is_some_and(|token| verify_session(token, password))
 }
 
-async fn handle(mut stream: TcpStream, app: Arc<App>, password: Option<String>) -> Result<()> {
+fn session_cookie(port: u16) -> String {
+    format!("opencode_session_{port}")
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&sha2::Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Vec::with_capacity(64 + data.len());
+    let mut outer = Vec::with_capacity(64 + 32);
+    for byte in &block {
+        inner.push(byte ^ 0x36);
+        outer.push(byte ^ 0x5c);
+    }
+    inner.extend_from_slice(data);
+    outer.extend_from_slice(&sha2::Sha256::digest(&inner));
+    sha2::Sha256::digest(&outer).into()
+}
+
+fn session_token(password: &str, expires: i64) -> String {
+    use base64::Engine;
+    let payload = expires.to_string();
+    let signature = hmac_sha256(password.as_bytes(), format!("opencode-session-v1{payload}").as_bytes());
+    format!("{payload}.{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature))
+}
+
+fn verify_session(token: &str, password: &str) -> bool {
+    use base64::Engine;
+    let Some((expires, signature)) = token.split_once('.') else { return false };
+    let Ok(expires) = expires.parse::<i64>() else { return false };
+    if expires * 1000 <= crate::util::now_ms() {
+        return false;
+    }
+    let expected = session_token(password, expires);
+    let expected = expected.split_once('.').map(|(_, signature)| signature).unwrap_or_default();
+    if expected.len() != signature.len() {
+        return false;
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(expected).ok()
+        == base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature).ok()
+}
+
+fn pairing_code() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn issue_pairing(pairing: &Mutex<HashMap<String, i64>>) -> Value {
+    let code = pairing_code();
+    pairing.lock().unwrap().insert(code.clone(), crate::util::now_ms() + 300_000);
+    json!({ "code": code, "expires_in": 300 })
+}
+
+fn consume_pairing(pairing: &Mutex<HashMap<String, i64>>, code: &str) -> bool {
+    let now = crate::util::now_ms();
+    let mut pairing = pairing.lock().unwrap();
+    pairing.retain(|_, expires| *expires > now);
+    pairing.remove(code).is_some()
+}
+
+async fn handle(
+    mut stream: TcpStream,
+    app: Arc<App>,
+    password: Option<String>,
+    pairing: Arc<Mutex<HashMap<String, i64>>>,
+    port: u16,
+) -> Result<()> {
     let Some(request) = read_request(&mut stream).await? else { return Ok(()) };
     if request.method == "OPTIONS" {
         write_response(&mut stream, 204, Value::Null).await?;
         return Ok(());
     }
-    if let Some(password) = password.filter(|password| !password.is_empty()) {
-        if !authorized(&request, &password) {
+    let password = password.filter(|password| !password.is_empty());
+    if let Some(code) = request.path.strip_prefix("/auth/connect/") {
+        let valid = password.is_some() && consume_pairing(&pairing, code);
+        if !valid {
+            let body = json!({ "error": { "message": "This pairing link expired or was already used. Run `opencode pair` to get a new one." } });
+            write_status(&mut stream, 401, "Unauthorized", body, None).await?;
+            return Ok(());
+        }
+        let token = session_token(password.as_deref().unwrap_or_default(), (crate::util::now_ms() / 1000) + 30 * 24 * 60 * 60);
+        if request.accept.as_deref().is_some_and(|accept| accept.contains("text/html")) {
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: /\r\nSet-Cookie: {name}={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                name = session_cookie(port),
+            );
+            stream.write_all(response.as_bytes()).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+        return write_response(&mut stream, 200, json!({ "token": token })).await;
+    }
+    if let Some(password) = password {
+        if !authorized(&request, &password, port) {
             let body = json!({ "error": { "message": "Authentication required" } });
             write_status(&mut stream, 401, "Unauthorized", body, Some("Basic realm=\"Secure Area\"")).await?;
             return Ok(());
         }
+    }
+    if request.method == "POST" && request.path == "/api/pair" {
+        return write_response(&mut stream, 200, issue_pairing(&pairing)).await;
     }
     if request.upgrade {
         if let Some(id) = pty_connect_id(&request.path) {
@@ -666,6 +785,23 @@ mod tests {
     #[test]
     fn websocket_accept_matches_rfc_example() {
         assert_eq!(websocket_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    #[test]
+    fn session_tokens_are_signed_and_scoped() {
+        let expires = crate::util::now_ms() / 1000 + 60;
+        let token = session_token("secret", expires);
+        assert!(verify_session(&token, "secret"));
+        assert!(!verify_session(&token, "other"));
+        assert!(!verify_session("not-a-token", "secret"));
+    }
+
+    #[test]
+    fn pairing_codes_are_single_use() {
+        let pairing = Mutex::new(HashMap::new());
+        let code = issue_pairing(&pairing)["code"].as_str().unwrap().to_string();
+        assert!(consume_pairing(&pairing, &code));
+        assert!(!consume_pairing(&pairing, &code));
     }
 
     #[test]

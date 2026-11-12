@@ -317,6 +317,28 @@ pub async fn stats(days: Option<i64>, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+pub async fn pair(url: &str, password: Option<String>) -> Result<()> {
+    use base64::Engine;
+    let mut request = crate::http::client()
+        .post(format!("{}/api/pair", url.trim_end_matches('/')))
+        .header("accept", "application/json");
+    if let Some(password) = password.filter(|password| !password.is_empty()) {
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
+        request = request.header("authorization", format!("Basic {token}"));
+    }
+    let response = crate::http::send(request).await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("pairing failed: HTTP {}", response.status().as_u16()));
+    }
+    let value = response.json::<serde_json::Value>().await?;
+    let code = value
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("pairing response had no code"))?;
+    println!("{}/auth/connect/{code}", url.trim_end_matches('/'));
+    Ok(())
+}
+
 pub async fn mcp_list() -> Result<()> {
     let app = App::init(cwd()).await?;
     if app.mcp.configured() == 0 {
