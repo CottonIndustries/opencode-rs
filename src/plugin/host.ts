@@ -396,6 +396,19 @@ function scheduleStateChanged() {
     stateChangeScheduled = false
     if (initializing) return
     notify("state.changed", { state: domainSnapshot() })
+    for (const type of [
+      "agent.updated",
+      "model.updated",
+      "provider.updated",
+      "skill.updated",
+      "command.updated",
+      "reference.updated",
+      "integration.updated",
+      "websearch.updated",
+      "plugin.updated",
+    ]) {
+      void emitEvent({ id: `${type}_${Date.now()}`, type, properties: {} })
+    }
   })
 }
 
