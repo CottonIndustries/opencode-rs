@@ -1671,11 +1671,49 @@ function makeDomains(plugin: PluginRecord): Json {
       return apiResponse(result)
     }),
   })
-  const worktree = local("worktrees", "worktree", {}, false)
-  const vcs = local("vcs", "vcs")
+  const vcsBase = local("vcs", "vcs", {}, false)
+  const vcsDefinition = () => [...registry.vcs.values()].at(-1)
+  const vcsCall = (method: string, envelope: boolean) =>
+    lazy(async (input: Json) => {
+      const definition = vcsDefinition()
+      const handler = definition?.[method]
+      if (typeof handler !== "function") throw new Error(`no vcs provider registered for ${method}`)
+      const result = await settle(handler(input, { signal: new AbortController().signal }))
+      return envelope ? apiResponse(result) : result
+    })
+  const vcs: Json = {
+    ...vcsBase,
+    init: vcsCall("init", false),
+    get: vcsCall("info", true),
+    base: vcsCall("base", true),
+    status: vcsCall("status", true),
+    diff: vcsCall("diff", true),
+    branch: { list: vcsCall("branches", true) },
+  }
   const reference = local("references", "reference")
   const integration = local("integrations", "integration")
   const artifact = local("artifacts", "artifact")
+  const worktreeBase = local("worktrees", "worktree", {}, false)
+  const worktreeDefinition = () => [...registry.worktrees.values()].at(-1)
+  const worktree: Json = {
+    ...worktreeBase,
+    list: lazy(async (input: Json) => {
+      const definition = worktreeDefinition()
+      if (typeof definition?.list !== "function") return []
+      return settle(definition.list(input?.sourceDirectory ?? input?.directory ?? directory, { signal: new AbortController().signal }))
+    }),
+    create: lazy(async (input: Json) => {
+      const definition = worktreeDefinition()
+      if (typeof definition?.create !== "function") throw new Error("no worktree provider registered")
+      return settle(definition.create(input, { signal: new AbortController().signal }))
+    }),
+    remove: lazy(async (input: Json) => {
+      const definition = worktreeDefinition()
+      if (typeof definition?.remove !== "function") throw new Error("no worktree provider registered")
+      await settle(definition.remove(input, { signal: new AbortController().signal }))
+      return undefined
+    }),
+  }
   const pluginApi: Json = { list: lazy(async () => apiResponse(pluginList())) }
   const rpc: Json = {
     register: (definition: Json, handlers: Json) => {
