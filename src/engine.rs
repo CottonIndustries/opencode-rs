@@ -357,16 +357,19 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
 fn emit_message(app: &App, handle: &Handle, session_id: &str, message_id: &str) {
     let message = handle.with(|s| s.messages.iter().find(|m| m.id == message_id).cloned());
     if let Some(message) = message {
-        if let Some(info) = crate::plugin::messages_for_hook(session_id, &[message])
+        if let Some(item) = crate::plugin::messages_for_hook(session_id, &[message])
             .as_array()
             .and_then(|items| items.first())
-            .and_then(|item| item.get("info"))
             .cloned()
         {
             app.plugins.emit(serde_json::json!({
                 "id": crate::util::id("evt"),
                 "type": "message.updated",
-                "properties": { "sessionID": session_id, "info": info }
+                "properties": {
+                    "sessionID": session_id,
+                    "info": item.get("info").cloned().unwrap_or(serde_json::Value::Null),
+                    "parts": item.get("parts").cloned().unwrap_or(serde_json::json!([])),
+                }
             }));
         }
     }
@@ -817,8 +820,8 @@ async fn step_once(
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
                 match &ev {
-                    Event::TextDelta(d) => app.emit(AppEvent::TextDelta { session: sid.clone(), delta: d.clone() }),
-                    Event::ReasoningDelta(d) => app.emit(AppEvent::ReasoningDelta { session: sid.clone(), delta: d.clone() }),
+                    Event::TextDelta(d) => app.emit(AppEvent::TextDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
+                    Event::ReasoningDelta(d) => app.emit(AppEvent::ReasoningDelta { session: sid.clone(), message_id: msg_id.clone(), delta: d.clone() }),
                     Event::Retry(m) => app.emit(AppEvent::Retry { session: sid.clone(), message: m.clone() }),
                     _ => app.emit(AppEvent::Updated { session: sid.clone() }),
                 }
@@ -964,7 +967,7 @@ async fn step_once(
         async move {
             let mut input = input;
             set_state(&call_id, ToolState::Running);
-            app.emit(AppEvent::ToolStarted { session: sid.clone(), id: call_id.clone(), name: name.clone(), input: input.clone() });
+            app.emit(AppEvent::ToolStarted { session: sid.clone(), message_id: message_id.clone(), id: call_id.clone(), name: name.clone(), input: input.clone() });
             let before = app
                 .plugins
                 .trigger(
@@ -984,6 +987,7 @@ async fn step_once(
                 let state = ToolState::Error { error: error.to_string() };
                 app.emit(AppEvent::ToolFinished {
                     session: sid.clone(),
+                    message_id: message_id.clone(),
                     id: call_id.clone(),
                     name: name.clone(),
                     title: String::new(),
@@ -1077,7 +1081,7 @@ async fn step_once(
                         text.push_str("\n\n");
                         text.push_str(&c);
                     }
-                    app.emit(AppEvent::ToolFinished { session: sid.clone(), id: call_id.clone(), name: name.clone(), title: out.title.clone(), output: text.clone(), error: None, metadata: out.metadata.clone() });
+                    app.emit(AppEvent::ToolFinished { session: sid.clone(), message_id: message_id.clone(), id: call_id.clone(), name: name.clone(), title: out.title.clone(), output: text.clone(), error: None, metadata: out.metadata.clone() });
                     ToolState::Completed { output: text, title: out.title, metadata: out.metadata, attachments: out.attachments }
                 }
                 Err(e) => {
@@ -1102,7 +1106,7 @@ async fn step_once(
                             }),
                         )
                         .await;
-                    app.emit(AppEvent::ToolFinished { session: sid.clone(), id: call_id.clone(), name: name.clone(), title: String::new(), output: String::new(), error: Some(msg.clone()), metadata: serde_json::Value::Null });
+                    app.emit(AppEvent::ToolFinished { session: sid.clone(), message_id: message_id.clone(), id: call_id.clone(), name: name.clone(), title: String::new(), output: String::new(), error: Some(msg.clone()), metadata: serde_json::Value::Null });
                     ToolState::Error { error: msg }
                 }
             };

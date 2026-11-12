@@ -17,10 +17,10 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Updated { session: String },
-    TextDelta { session: String, delta: String },
-    ReasoningDelta { session: String, delta: String },
-    ToolStarted { session: String, id: String, name: String, input: serde_json::Value },
-    ToolFinished { session: String, id: String, name: String, title: String, output: String, error: Option<String>, metadata: serde_json::Value },
+    TextDelta { session: String, message_id: String, delta: String },
+    ReasoningDelta { session: String, message_id: String, delta: String },
+    ToolStarted { session: String, message_id: String, id: String, name: String, input: serde_json::Value },
+    ToolFinished { session: String, message_id: String, id: String, name: String, title: String, output: String, error: Option<String>, metadata: serde_json::Value },
     StepFinished { session: String },
     Busy { session: String, busy: bool },
     Error { session: String, message: String },
@@ -620,25 +620,27 @@ fn plugin_event(ev: &AppEvent) -> serde_json::Value {
         AppEvent::Updated { session } => json!({
             "id": id(), "type": "session.updated", "properties": { "sessionID": session }
         }),
-        AppEvent::TextDelta { session, delta } => json!({
+        AppEvent::TextDelta { session, message_id, delta } => json!({
             "id": id(), "type": "message.part.updated", "properties": {
-                "sessionID": session, "delta": delta, "part": { "type": "text", "text": delta }
+                "sessionID": session, "assistantMessageID": message_id, "delta": delta,
+                "part": { "type": "text", "text": delta }
             }
         }),
-        AppEvent::ReasoningDelta { session, delta } => json!({
+        AppEvent::ReasoningDelta { session, message_id, delta } => json!({
             "id": id(), "type": "message.part.updated", "properties": {
-                "sessionID": session, "delta": delta, "part": { "type": "reasoning", "text": delta }
+                "sessionID": session, "assistantMessageID": message_id, "delta": delta,
+                "part": { "type": "reasoning", "text": delta }
             }
         }),
-        AppEvent::ToolStarted { session, id: call, name, input } => json!({
+        AppEvent::ToolStarted { session, message_id, id: call, name, input } => json!({
             "id": id(), "type": "message.part.updated", "properties": {
-                "sessionID": session, "callID": call,
+                "sessionID": session, "assistantMessageID": message_id, "callID": call,
                 "part": { "type": "tool", "tool": name, "callID": call, "state": { "status": "running", "input": input } }
             }
         }),
-        AppEvent::ToolFinished { session, id: call, name, title, output, error, metadata } => json!({
+        AppEvent::ToolFinished { session, message_id, id: call, name, title, output, error, metadata } => json!({
             "id": id(), "type": "message.part.updated", "properties": {
-                "sessionID": session, "callID": call,
+                "sessionID": session, "assistantMessageID": message_id, "callID": call,
                 "part": { "type": "tool", "tool": name, "callID": call, "state": if let Some(error) = error {
                     json!({ "status": "error", "error": error })
                 } else {

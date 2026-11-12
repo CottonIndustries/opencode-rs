@@ -864,8 +864,21 @@ function toV2Event(event: Json): Json {
       model: info.model,
       version,
     }
+  } else if (event.type === "session.error") {
+    type = "session.execution.failed"
+    data = {
+      sessionID: properties.sessionID,
+      error: properties.error ?? { type: "unknown", message: properties.message ?? "" },
+    }
   } else if (event.type === "message.updated") {
+    const info = properties.info ?? {}
+    const content = toV2Messages([{ info, parts: properties.parts ?? [] }])[0]?.content ?? []
     type = "session.message.content.updated"
+    data = {
+      sessionID: properties.sessionID ?? info.sessionID,
+      messageID: info.id,
+      content,
+    }
   } else if (event.type === "session.retry") {
     type = "session.retry.scheduled"
     data = {
@@ -894,6 +907,70 @@ function toV2Event(event: Json): Json {
   return { id: event.id ?? `evt_${Date.now()}`, created: event.created ?? properties.created ?? Date.now(), type, data }
 }
 
+const activeStreams = new Map<string, { text: boolean; reasoning: boolean }>()
+
+function streamEvents(v2: Json): Json[] {
+  const data = v2.data ?? {}
+  if (v2.type === "session.text.delta" || v2.type === "session.reasoning.delta") {
+    const key = `${data.sessionID}:${data.assistantMessageID}`
+    const state = activeStreams.get(key) ?? { text: false, reasoning: false }
+    const kind = v2.type === "session.text.delta" ? "text" : "reasoning"
+    const out: Json[] = []
+    if (!state[kind]) {
+      state[kind] = true
+      activeStreams.set(key, state)
+      out.push({
+        id: `${v2.id}_${kind}_started`,
+        created: v2.created,
+        type: `session.${kind}.started`,
+        data: { sessionID: data.sessionID, assistantMessageID: data.assistantMessageID, ordinal: data.ordinal ?? 0 },
+      })
+    }
+    out.push(v2)
+    return out
+  }
+  if (v2.type === "session.message.content.updated") {
+    const out = [v2]
+    const prefix = `${data.sessionID}:`
+    const text = (Array.isArray(data.content) ? data.content : [])
+      .filter((part: Json) => part?.type === "text")
+      .map((part: Json) => part.text ?? "")
+      .join("")
+    const reasoning = (Array.isArray(data.content) ? data.content : [])
+      .filter((part: Json) => part?.type === "reasoning")
+      .map((part: Json) => part.text ?? "")
+      .join("")
+    for (const [key, state] of activeStreams) {
+      if (!key.startsWith(prefix)) continue
+      if (state.text) {
+        out.push({
+          id: `${v2.id}_text_ended`,
+          created: v2.created,
+          type: "session.text.ended",
+          data: { sessionID: data.sessionID, assistantMessageID: data.messageID, ordinal: 0, text },
+        })
+      }
+      if (state.reasoning) {
+        out.push({
+          id: `${v2.id}_reasoning_ended`,
+          created: v2.created,
+          type: "session.reasoning.ended",
+          data: { sessionID: data.sessionID, assistantMessageID: data.messageID, ordinal: 0, text: reasoning },
+        })
+      }
+      activeStreams.delete(key)
+    }
+    return out
+  }
+  if (v2.type === "session.idle") {
+    return [
+      { id: `${v2.id}_status`, created: v2.created, type: "session.status", data: { sessionID: data.sessionID, status: { type: "idle" } } },
+      v2,
+    ]
+  }
+  return [v2]
+}
+
 async function emitEvent(event: Json) {
   for (const plugin of plugins) {
     const handler = plugin.hooks?.event
@@ -905,12 +982,13 @@ async function emitEvent(event: Json) {
       log("error", `plugin ${plugin.id} event hook failed: ${String(error)}`)
     }
   }
-  const v2 = toV2Event(event)
-  for (const subscriber of subscribers) {
-    if (subscriber.done) continue
-    if (subscriber.types && !subscriber.types.has(v2.type)) continue
-    subscriber.queue.push(v2)
-    subscriber.wake?.()
+  for (const v2 of streamEvents(toV2Event(event))) {
+    for (const subscriber of subscribers) {
+      if (subscriber.done) continue
+      if (subscriber.types && !subscriber.types.has(v2.type)) continue
+      subscriber.queue.push(v2)
+      subscriber.wake?.()
+    }
   }
 }
 
