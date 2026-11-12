@@ -789,6 +789,18 @@ mod tests {
     }
 
     #[test]
+    fn compaction_messages_use_v2_shapes() {
+        let mut message = crate::session::Message::new(crate::session::Role::User);
+        message.parts.push(crate::session::Part::Compaction { summary: "summary".into() });
+        message.usage.input = 10;
+        let value = session_messages_json(&[message]);
+        assert_eq!(value[0]["type"], "compaction");
+        assert_eq!(value[0]["status"], "completed");
+        assert_eq!(value[0]["summary"], "summary");
+        assert_eq!(value[0]["tokens"]["input"], 10);
+    }
+
+    #[test]
     fn session_messages_use_v2_shapes() {
         let messages = vec![crate::session::Message::user_text("hello")];
         let value = session_messages_json(&messages);
@@ -3092,6 +3104,26 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
         .iter()
         .map(|message| match message.role {
             Role::User => {
+                if let Some(summary) = message.parts.iter().find_map(|part| match part {
+                    Part::Compaction { summary } => Some(summary),
+                    _ => None,
+                }) {
+                    return json!({
+                        "id": message.id,
+                        "time": { "created": message.time },
+                        "type": "compaction",
+                        "status": "completed",
+                        "reason": "auto",
+                        "summary": summary,
+                        "cost": message.cost,
+                        "tokens": {
+                            "input": message.usage.input,
+                            "output": message.usage.output,
+                            "reasoning": message.usage.reasoning,
+                            "cache": { "read": message.usage.cache_read, "write": message.usage.cache_write },
+                        },
+                    });
+                }
                 let text = message
                     .parts
                     .iter()
@@ -3141,7 +3173,10 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                             "name": name,
                             "input": input,
                             "state": match state {
-                                ToolState::Pending | ToolState::Running => json!({
+                                ToolState::Pending => json!({
+                                    "status": "streaming", "input": input.to_string(),
+                                }),
+                                ToolState::Running => json!({
                                     "status": "running", "input": input, "metadata": {},
                                 }),
                                 ToolState::Completed { output, metadata, attachments, .. } => {
@@ -3189,6 +3224,12 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                 });
                 if let Some(metadata) = &message.metadata {
                     value["metadata"] = metadata.clone();
+                }
+                if let Some(finish) = &message.finish {
+                    value["finish"] = json!(finish);
+                }
+                if let Some(error) = &message.error {
+                    value["error"] = json!({ "type": "unknown", "message": error });
                 }
                 value
             }
