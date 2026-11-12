@@ -1112,7 +1112,6 @@ function subscribeEvents(options?: { types?: string[]; signal?: AbortSignal }): 
   return {
     async *[Symbol.asyncIterator]() {
       try {
-        yield { id: "evt_connected", created: Date.now(), type: "server.connected", data: {} }
         while (!subscriber.done) {
           if (!subscriber.queue.length) {
             await new Promise<void>((resolve) => {
