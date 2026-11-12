@@ -129,6 +129,7 @@ pub struct App {
     pub ask_mode: Mutex<AskMode>,
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
     pending_requests: Mutex<HashMap<String, permission::Request>>,
+    tool_progress: Mutex<HashMap<String, serde_json::Value>>,
     sessions: Mutex<HashMap<String, Arc<Handle>>>,
 }
 
@@ -175,6 +176,7 @@ impl App {
             ask_mode: Mutex::new(AskMode::Interactive),
             pending: Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
+            tool_progress: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -574,6 +576,31 @@ impl App {
 
     pub fn pending_permissions(&self) -> Vec<permission::Request> {
         self.pending_requests.lock().unwrap().values().cloned().collect()
+    }
+
+    pub fn record_tool_progress(&self, call_id: &str, metadata: serde_json::Value) {
+        if call_id.is_empty() || metadata.is_null() {
+            return;
+        }
+        let mut progress = self.tool_progress.lock().unwrap();
+        match (progress.get_mut(call_id), metadata) {
+            (Some(existing), serde_json::Value::Object(next)) => {
+                if let Some(target) = existing.as_object_mut() {
+                    for (key, value) in next {
+                        target.insert(key, value);
+                    }
+                } else {
+                    *existing = serde_json::Value::Object(next);
+                }
+            }
+            (_, next) => {
+                progress.insert(call_id.to_string(), next);
+            }
+        }
+    }
+
+    pub fn take_tool_progress(&self, call_id: &str) -> Option<serde_json::Value> {
+        self.tool_progress.lock().unwrap().remove(call_id)
     }
 
     pub fn reject_all_pending(&self, session_id: &str) {

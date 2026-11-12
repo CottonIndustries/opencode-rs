@@ -1026,6 +1026,15 @@ async fn step_once(
             };
             let state = match result {
                 Ok(mut out) => {
+                    if let Some(progress) = app.take_tool_progress(&call_id) {
+                        if let (Some(target), Some(source)) = (out.metadata.as_object_mut(), progress.as_object()) {
+                            for (key, value) in source {
+                                target.insert(key.clone(), value.clone());
+                            }
+                        } else {
+                            out.metadata = progress;
+                        }
+                    }
                     let after = app
                         .plugins
                         .trigger(
@@ -1072,6 +1081,7 @@ async fn step_once(
                     ToolState::Completed { output: text, title: out.title, metadata: out.metadata, attachments: out.attachments }
                 }
                 Err(e) => {
+                    app.take_tool_progress(&call_id);
                     let msg = e.to_string();
                     if msg == REJECTED {
                         rejected.store(true, Ordering::SeqCst);

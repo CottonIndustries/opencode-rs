@@ -1147,12 +1147,29 @@ async fn start(
                         });
                     }
                     Some("notification") => {
-                        if message.get("method").and_then(Value::as_str) == Some("state.changed") {
-                            let current = app.lock().unwrap().as_ref().and_then(Weak::upgrade);
-                            if let Some(app) = current {
-                                if let Some(state) = message.pointer("/params/state") {
-                                    app.apply_plugin_state(state);
+                        let current = app.lock().unwrap().as_ref().and_then(Weak::upgrade);
+                        if let Some(app) = current {
+                            match message.get("method").and_then(Value::as_str) {
+                                Some("state.changed") => {
+                                    if let Some(state) = message.pointer("/params/state") {
+                                        app.apply_plugin_state(state);
+                                    }
                                 }
+                                Some("tool.metadata") => {
+                                    let call_id = message.pointer("/params/callID").and_then(Value::as_str).unwrap_or_default();
+                                    let metadata = message
+                                        .pointer("/params/metadata")
+                                        .cloned()
+                                        .unwrap_or_else(|| {
+                                            let mut value = message.get("params").cloned().unwrap_or(Value::Null);
+                                            if let Some(map) = value.as_object_mut() {
+                                                map.remove("callID");
+                                            }
+                                            value
+                                        });
+                                    app.record_tool_progress(call_id, metadata);
+                                }
+                                _ => {}
                             }
                         }
                     }
