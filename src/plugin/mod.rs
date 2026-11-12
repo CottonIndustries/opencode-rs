@@ -1567,7 +1567,18 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.create" => {
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
-            let handle = app.create_session(parent);
+            let explicit = body.get("id").and_then(Value::as_str).map(String::from);
+            let (handle, created) = match explicit {
+                Some(id) => match app.session(&id) {
+                    Ok(handle) => (handle, false),
+                    Err(_) => {
+                        let handle = app.new_session(parent);
+                        handle.with(|session| session.id = id);
+                        (handle, true)
+                    }
+                },
+                None => (app.new_session(parent), true),
+            };
             handle.with(|session| {
                 if let Some(directory) = body.pointer("/location/directory").and_then(Value::as_str) {
                     let directory = std::path::PathBuf::from(directory);
@@ -1605,6 +1616,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             });
             handle.save();
             let session = handle.with(|s| s.clone());
+            if created {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.created",
+                    "properties": { "info": session_json(&session) }
+                }));
+            }
             if let Some(title) = body.get("title").and_then(Value::as_str) {
                 app.plugins.emit(json!({
                     "id": crate::util::id("evt"),
