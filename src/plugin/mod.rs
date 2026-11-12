@@ -1861,11 +1861,15 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "delivery": "steer",
             }))
         }
-        "permission.list" => Ok(json!(app
-            .pending_permissions()
-            .iter()
-            .map(permission_json)
-            .collect::<Vec<_>>())),
+        "permission.list" => {
+            let filter = first.get("sessionID").and_then(Value::as_str);
+            Ok(json!(app
+                .pending_permissions()
+                .iter()
+                .filter(|request| filter.is_none_or(|session| request.session_id == session))
+                .map(permission_json)
+                .collect::<Vec<_>>()))
+        }
         "permission.get" => {
             let id = arg("requestID").or_else(|| arg("id")).unwrap_or_default();
             Ok(app

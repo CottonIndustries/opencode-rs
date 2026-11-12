@@ -1529,7 +1529,10 @@ function makeDomains(plugin: PluginRecord): Json {
         })
       }
       if (!("get" in extras)) {
-        base.get = sync((id: string) => {
+        base.get = sync((input: Json) => {
+          const id = typeof input === "string"
+            ? input
+            : input?.id ?? input?.name ?? input?.agentID ?? input?.providerID ?? input?.skillID ?? input?.commandID
           const value = target.get(id)
           return envelope ? apiResponse(value) : value
         })
@@ -1545,7 +1548,10 @@ function makeDomains(plugin: PluginRecord): Json {
 
   const agent = local("agents", "agent", {
     list: sync(() => apiResponse([...registry.agents.values()])),
-    get: sync((id: string) => apiResponse(registry.agents.get(id))),
+    get: sync((input: Json) => {
+      const id = typeof input === "string" ? input : input?.agentID ?? input?.id
+      return apiResponse(registry.agents.get(id))
+    }),
   })
   const commandTarget = registry.commands
   const command = local("commands", "command", {
@@ -1564,7 +1570,10 @@ function makeDomains(plugin: PluginRecord): Json {
   })
   const provider = local("providers", "provider", {
     list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
-    get: sync((id: string) => apiResponse(registry.providers.get(id)?.provider)),
+    get: sync((input: Json) => {
+      const id = typeof input === "string" ? input : input?.providerID ?? input?.id
+      return apiResponse(registry.providers.get(id)?.provider)
+    }),
   })
   const modelBase: Json = {
     transform: (callback: Function) => registration(registerTransform(plugin, "model", callback)),
