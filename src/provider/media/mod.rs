@@ -140,6 +140,9 @@ pub enum ImageProtocol {
 pub enum DecisionProtocol {
     OpenAi,
     Cloudflare,
+    /// TypeSafe System One, used by typesafe-ai, opencode, digitalocean,
+    /// baseten and openrouter.
+    SystemOne,
 }
 
 pub fn image_protocol(provider: &Provider) -> Result<ImageProtocol> {
@@ -189,8 +192,14 @@ pub fn decision_protocol(provider: &Provider) -> Result<DecisionProtocol> {
     if id.starts_with("cloudflare") {
         return Ok(DecisionProtocol::Cloudflare);
     }
+    if matches!(
+        id.as_str(),
+        "typesafe-ai" | "opencode" | "digitalocean" | "baseten" | "openrouter"
+    ) {
+        return Ok(DecisionProtocol::SystemOne);
+    }
     let npm = provider.npm.to_ascii_lowercase();
-    if matches!(id.as_str(), "openai" | "openrouter" | "vercel-ai-gateway")
+    if matches!(id.as_str(), "openai" | "vercel-ai-gateway")
         || id.starts_with("azure")
         || npm.contains("openai")
         || npm.contains("openrouter")
@@ -251,11 +260,15 @@ pub fn decision_base_url(provider: &Provider, model: &Model, protocol: DecisionP
         .unwrap_or_else(|| match protocol {
             DecisionProtocol::OpenAi => "https://api.openai.com/v1".into(),
             DecisionProtocol::Cloudflare => "https://api.cloudflare.com/client/v4".into(),
+            DecisionProtocol::SystemOne => "https://api.typesafe.ai/v1".into(),
         });
     let url = url.trim_end_matches('/').to_string();
     match protocol {
         DecisionProtocol::Cloudflare if url.ends_with("/ai/v1") => {
             format!("{}/run", url.trim_end_matches("/v1"))
+        }
+        DecisionProtocol::SystemOne if !url.ends_with("/systemone") => {
+            format!("{url}/systemone")
         }
         _ => url,
     }
