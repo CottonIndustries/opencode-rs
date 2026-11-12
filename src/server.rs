@@ -571,13 +571,23 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             session_call(app, "session.skill", id, request.body.clone()).await
         }
         ("PATCH", ["api", "experimental", "config"]) => {
-            let mut config = serde_json::to_value(&app.config)?;
-            if let (Some(target), Some(patch)) = (config.as_object_mut(), request.body.as_object()) {
+            let file = crate::paths::get().config.join("opencode.json");
+            let mut document = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .unwrap_or_else(|| json!({}));
+            if let (Some(target), Some(patch)) = (document.as_object_mut(), request.body.as_object()) {
                 for (key, value) in patch {
                     target.insert(key.clone(), value.clone());
                 }
+            } else {
+                return Err(anyhow!("configuration patch must be an object"));
             }
-            Ok(json!({ "data": config }))
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, serde_json::to_vec_pretty(&document)?)?;
+            Ok(json!({ "data": null }))
         }
         ("GET", ["api", "session", id]) => {
             let handle = app.session(id)?;
