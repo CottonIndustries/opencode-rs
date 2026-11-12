@@ -152,6 +152,32 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Strip a UTF-8 BOM, reporting whether one was present.
+/// Decode subprocess output, honoring UTF-16 with a BOM or NUL-heavy output
+/// from Windows PowerShell.
+pub fn decode_output(bytes: &[u8]) -> String {
+    let utf16 = |data: &[u8], big_endian: bool| {
+        let units: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|pair| if big_endian { u16::from_be_bytes([pair[0], pair[1]]) } else { u16::from_le_bytes([pair[0], pair[1]]) })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return utf16(&bytes[2..], false);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return utf16(&bytes[2..], true);
+    }
+    if bytes.len() >= 4 {
+        let odd_nuls = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+        let pairs = bytes.len() / 2;
+        if odd_nuls * 4 > pairs * 3 {
+            return utf16(bytes, false);
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 pub fn strip_bom(s: &str) -> (&str, bool) {
     match s.strip_prefix('\u{feff}') {
         Some(rest) => (rest, true),

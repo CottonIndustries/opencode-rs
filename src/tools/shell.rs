@@ -236,7 +236,7 @@ async fn run(kind: &ShellKind, command: &str, cwd: &PathBuf, timeout_ms: u64, ca
     for r in readers {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), r).await;
     }
-    let output = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+    let output = crate::util::decode_output(&buf.lock().unwrap());
     Ok(RunResult { output, exit: status.and_then(|s| s.code()), timed_out, cancelled })
 }
 

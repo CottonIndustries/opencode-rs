@@ -1240,8 +1240,8 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
             }
             let output = cmd.output().await?;
             Ok(json!({
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
+                "stdout": crate::util::decode_output(&output.stdout),
+                "stderr": crate::util::decode_output(&output.stderr),
                 "exitCode": output.status.code().unwrap_or(-1),
             }))
         }
