@@ -2168,8 +2168,13 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
         "projectID": crate::session::project_id(&session.directory),
         "title": session.title,
         "metadata": session.metadata,
-        "cost": 0.0,
-        "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+        "cost": session.cost,
+        "tokens": {
+            "input": session.tokens.input,
+            "output": session.tokens.output,
+            "reasoning": session.tokens.reasoning,
+            "cache": { "read": session.tokens.cache_read, "write": session.tokens.cache_write },
+        },
         "time": {
             "created": session.time_created,
             "updated": session.time_updated,

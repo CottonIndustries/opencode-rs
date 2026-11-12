@@ -208,6 +208,10 @@ pub struct Session {
     pub archived: bool,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub instruction_entries: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub cost_total: f64,
+    #[serde(default)]
+    pub tokens_total: Usage,
 }
 
 pub const DEFAULT_TITLE_PREFIX: &str = "New session - ";
@@ -233,6 +237,8 @@ impl Session {
             metadata: None,
             archived: false,
             instruction_entries: Default::default(),
+            cost_total: 0.0,
+            tokens_total: Usage::default(),
         }
     }
     pub fn has_default_title(&self) -> bool {
@@ -395,6 +401,8 @@ pub struct Summary {
     pub directory: PathBuf,
     pub metadata: Option<serde_json::Value>,
     pub archived: bool,
+    pub cost: f64,
+    pub tokens: Usage,
 }
 
 /// Lightweight listing, newest first.
@@ -412,6 +420,10 @@ pub fn list(project: &str) -> Vec<Summary> {
         metadata: Option<serde_json::Value>,
         #[serde(default)]
         archived: bool,
+        #[serde(default)]
+        cost_total: f64,
+        #[serde(default)]
+        tokens_total: Usage,
     }
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir(project)) {
@@ -431,6 +443,8 @@ pub fn list(project: &str) -> Vec<Summary> {
                         directory: h.directory,
                         metadata: h.metadata,
                         archived: h.archived,
+                        cost: h.cost_total,
+                        tokens: h.tokens_total,
                     });
                 }
             }

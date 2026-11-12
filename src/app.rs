@@ -86,6 +86,9 @@ impl Handle {
     pub fn save(&self) {
         let mut s = self.session.lock().unwrap();
         s.time_updated = crate::util::now_ms();
+        let (tokens, cost) = s.usage_total();
+        s.tokens_total = tokens;
+        s.cost_total = cost;
         if let Err(e) = session::save(&s) {
             eprintln!("failed to save session: {e}");
         }
