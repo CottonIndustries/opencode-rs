@@ -41,6 +41,7 @@ struct Request {
     websocket_key: Option<String>,
     upgrade: bool,
     body: Value,
+    raw_body: Vec<u8>,
 }
 
 async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
@@ -102,12 +103,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    let body = if body.is_empty() {
+    let raw_body = body;
+    let body = if raw_body.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&body).unwrap_or(Value::Null)
+        serde_json::from_slice(&raw_body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, authorization, cookie, accept, websocket_key, upgrade, body }))
+    Ok(Some(Request { method, path, authorization, cookie, accept, websocket_key, upgrade, body, raw_body }))
 }
 
 fn authorized(request: &Request, password: &str, port: u16) -> bool {
@@ -252,6 +254,16 @@ async fn handle(
         return event_feed(stream, app).await;
     }
     let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+    if request.method == "GET" {
+        if let Some(raw) = parsed.path().strip_prefix("/api/fs/read/") {
+            let path = decode_path(raw);
+            return fs_read(stream, &app, &path).await;
+        }
+    }
+    if request.method == "POST" && parsed.path() == "/api/experimental/fs/write" {
+        let path = query_value(&parsed, "path").unwrap_or_default();
+        return fs_write(stream, &request, &path).await;
+    }
     let segments: Vec<String> = parsed
         .path_segments()
         .map(|segments| segments.map(String::from).collect())
@@ -297,6 +309,107 @@ async fn write_status(
     Ok(())
 }
 
+fn decode_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                out.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn query_value(parsed: &url::Url, key: &str) -> Option<String> {
+    parsed
+        .query_pairs()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+}
+
+fn fs_target(root: &std::path::Path, path: &str) -> std::path::PathBuf {
+    if path.is_empty() {
+        return root.to_path_buf();
+    }
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+async fn fs_read(mut stream: TcpStream, app: &App, path: &str) -> Result<()> {
+    let root = std::fs::canonicalize(&app.directory).unwrap_or_else(|_| app.directory.clone());
+    let requested = if std::path::Path::new(path).is_absolute() {
+        std::path::PathBuf::from(path)
+    } else {
+        app.directory.join(path)
+    };
+    let resolved = match std::fs::canonicalize(&requested) {
+        Ok(path) if path.starts_with(&root) => path,
+        _ => {
+            write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "File not found" } }), None).await?;
+            return Ok(());
+        }
+    };
+    let bytes = match std::fs::read(&resolved) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "File not found" } }), None).await?;
+            return Ok(());
+        }
+    };
+    let content_type = mime_guess::from_path(&resolved).first_or_octet_stream().to_string();
+    write_bytes(&mut stream, 200, "OK", &content_type, &bytes).await
+}
+
+async fn fs_write(mut stream: TcpStream, request: &Request, path: &str) -> Result<()> {
+    if path.is_empty() {
+        write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "path is required" } }), None).await?;
+        return Ok(());
+    }
+    let target = std::path::PathBuf::from(path);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&target, &request.raw_body)?;
+    write_response(&mut stream, 200, json!({ "data": { "path": target.to_string_lossy() } })).await
+}
+
+async fn write_bytes(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result<Value> {
     let method = request.method.as_str();
     let path: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -310,6 +423,63 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             }
         })),
         ("GET", ["api", "config"]) => Ok(json!({ "data": serde_json::to_value(&app.config)? })),
+        ("GET", ["api", "fs", "list"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let path = query_value(&parsed, "path").unwrap_or_default();
+            let root = std::fs::canonicalize(&app.directory).unwrap_or_else(|_| app.directory.clone());
+            let target = fs_target(&root, &path);
+            let mut entries = Vec::new();
+            if let Ok(read) = std::fs::read_dir(&target) {
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    let relative = path.strip_prefix(&root).unwrap_or(&path);
+                    entries.push(json!({
+                        "path": relative.to_string_lossy().replace('\\', "/"),
+                        "type": if path.is_dir() { "directory" } else { "file" },
+                    }));
+                }
+            }
+            entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+            Ok(json!({ "data": entries }))
+        }
+        ("GET", ["api", "fs", "find"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let query = query_value(&parsed, "query").unwrap_or_default().to_lowercase();
+            let kind = query_value(&parsed, "type");
+            let limit = query_value(&parsed, "limit").and_then(|value| value.parse::<usize>().ok()).unwrap_or(100);
+            let root = std::fs::canonicalize(&app.directory).unwrap_or_else(|_| app.directory.clone());
+            let mut entries = Vec::new();
+            let mut stack = vec![root.clone()];
+            while let Some(dir) = stack.pop() {
+                if entries.len() >= limit {
+                    break;
+                }
+                let Ok(read) = std::fs::read_dir(&dir) else { continue };
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    let is_dir = path.is_dir();
+                    let relative = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                    if is_dir {
+                        stack.push(path.clone());
+                    }
+                    if !query.is_empty() && !relative.to_lowercase().contains(&query) {
+                        continue;
+                    }
+                    if kind.as_deref().is_some_and(|kind| kind != if is_dir { "directory" } else { "file" }) {
+                        continue;
+                    }
+                    entries.push(json!({ "path": relative, "type": if is_dir { "directory" } else { "file" } }));
+                    if entries.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+            Ok(json!({ "data": entries }))
+        }
+        ("POST", ["api", "experimental", "fs", "watch"]) | ("DELETE", ["api", "experimental", "fs", "watch"]) => {
+            Ok(Value::Null)
+        }
         ("GET", ["api", "agent"]) => Ok(json!({
             "data": app.agents().values().map(crate::plugin::agent_json).collect::<Vec<_>>()
         })),
