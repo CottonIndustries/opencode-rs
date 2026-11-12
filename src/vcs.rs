@@ -196,7 +196,7 @@ fn split_patch(text: &str) -> Vec<(String, String)> {
     out
 }
 
-fn parse_patch(input: &str) -> Value {
+pub(crate) fn parse_patch(input: &str) -> Value {
     let mut entries: Vec<Value> = split_patch(input)
         .into_iter()
         .filter(|(file, _)| !file.is_empty())
@@ -229,7 +229,7 @@ fn parse_patch(input: &str) -> Value {
     Value::Array(entries)
 }
 
-fn untracked_patches(dir: &Path) -> Vec<Value> {
+pub(crate) fn untracked_patches(dir: &Path) -> Vec<Value> {
     let Ok(output) = git(dir, &["ls-files", "--others", "--exclude-standard", "-z"]) else {
         return Vec::new();
     };

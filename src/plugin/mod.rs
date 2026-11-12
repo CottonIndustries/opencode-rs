@@ -2339,6 +2339,19 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             let from = arg("from");
             let to = arg("to");
+            let snapshots = handle.with(|session| {
+                let snapshot = |id: Option<&str>| {
+                    id.and_then(|id| session.messages.iter().find(|message| message.id == id))
+                        .or_else(|| session.messages.iter().rev().find(|message| message.role == crate::session::Role::User))
+                        .and_then(|message| message.snapshot.clone())
+                };
+                (snapshot(from.as_deref()), snapshot(to.as_deref()))
+            });
+            if let Some(from) = snapshots.0 {
+                if let Ok(diffs) = crate::snapshot::diff(&app.worktree, &from, snapshots.1.as_deref()) {
+                    return Ok(json!(diffs));
+                }
+            }
             let messages = handle.with(|session| {
                 let mut start = session
                     .messages
@@ -2486,7 +2499,17 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 }
                 Ok(())
             })?;
+            let snapshot = handle.with(|session| {
+                session
+                    .messages
+                    .iter()
+                    .find(|message| message.id == message_id)
+                    .and_then(|message| message.snapshot.clone())
+            });
             let files = if first.get("files").and_then(Value::as_bool).unwrap_or(true) {
+                let snapshot_diff = snapshot
+                    .as_deref()
+                    .and_then(|snapshot| crate::snapshot::diff(&app.worktree, snapshot, None).ok());
                 let messages = handle.with(|session| {
                     session
                         .messages
@@ -2495,7 +2518,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                         .map(|index| session.messages[index + 1..].to_vec())
                         .unwrap_or_default()
                 });
-                Some(json!(file_diffs(&messages)))
+                Some(json!(snapshot_diff.unwrap_or_else(|| file_diffs(&messages))))
             } else {
                 None
             };
@@ -2503,13 +2526,6 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(files) = files {
                 revert["files"] = files;
             }
-            let snapshot = handle.with(|session| {
-                session
-                    .messages
-                    .iter()
-                    .find(|message| message.id == message_id)
-                    .and_then(|message| message.snapshot.clone())
-            });
             if let Some(snapshot) = snapshot {
                 revert["snapshot"] = json!(snapshot);
             }

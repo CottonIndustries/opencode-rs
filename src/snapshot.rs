@@ -145,6 +145,37 @@ pub fn remove(id: &str) {
     let _ = std::fs::remove_dir_all(storage().join(id));
 }
 
+/// Diff a captured snapshot against another snapshot or the working tree.
+pub fn diff(directory: &Path, from: &str, to: Option<&str>) -> Result<Vec<Value>> {
+    let (from_meta, _) = load(from)?;
+    let from_ref = from_meta
+        .get("patch")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("snapshot has no git reference"))?;
+    let mut args: Vec<String> = vec!["diff".into(), "--no-ext-diff".into(), "--unified=3".into(), from_ref.into()];
+    if let Some(to) = to {
+        let (to_meta, _) = load(to)?;
+        let to_ref = to_meta
+            .get("patch")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("snapshot has no git reference"))?;
+        args.push(to_ref.into());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = git(directory, &refs).unwrap_or_default();
+    let mut entries = crate::vcs::parse_patch(&output);
+    if to.is_none() {
+        if let Value::Array(items) = &mut entries {
+            items.extend(crate::vcs::untracked_patches(directory));
+        }
+    }
+    let mut values = entries.as_array().cloned().unwrap_or_default();
+    values.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
