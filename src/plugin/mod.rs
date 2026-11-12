@@ -1914,7 +1914,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.abort" | "session.interrupt" => {
             let id = session_id().ok_or_else(|| anyhow!("session.abort requires sessionID"))?;
             let handle = app.session(&id)?;
-            handle.abort();
+            for inbox_id in handle.abort() {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.inbox.cancelled",
+                    "properties": { "sessionID": id.clone(), "inboxID": inbox_id }
+                }));
+            }
             Ok(json!(true))
         }
         "session.prompt" => {

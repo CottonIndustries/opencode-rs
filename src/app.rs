@@ -93,11 +93,14 @@ impl Handle {
             eprintln!("failed to save session: {e}");
         }
     }
-    pub fn abort(&self) {
+    pub fn abort(&self) -> Vec<String> {
         if let Some(c) = self.cancel.lock().unwrap().as_ref() {
             c.cancel();
         }
-        self.queue.lock().unwrap().clear();
+        let mut queue = self.queue.lock().unwrap();
+        let cancelled = queue.iter().map(|(message, _)| message.id.clone()).collect();
+        queue.clear();
+        cancelled
     }
 }
 
