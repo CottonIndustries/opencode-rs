@@ -115,7 +115,7 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       await eventQueue
       return {}
     case "state.reload":
-      rebuild(params.domain)
+      await reloadDomain(params.domain)
       return domainSnapshot()
     case "shutdown":
       await shutdown()
@@ -262,6 +262,7 @@ type Registry = {
 
 let websearchDefault: string | false | undefined
 let vcsDefault: string | undefined
+const namespaces = new Map<string, Json>()
 const integrationMethods = new Map<string, Map<string, Json>>()
 const credentials = new Map<string, Json>()
 const integrationAttempts = new Map<string, Json>()
@@ -282,7 +283,7 @@ const registry: Registry = {
   vcs: new Map(),
 }
 
-const initialState: Json = config.state ?? {}
+let initialState: Json = config.state ?? {}
 const abortControllers = new Map<string, AbortController>()
 let initializing = true
 
@@ -393,6 +394,12 @@ function scheduleStateChanged() {
     if (initializing) return
     notify("state.changed", { state: domainSnapshot() })
   })
+}
+
+async function reloadDomain(domain?: string) {
+  const fresh = await request("client.call", { path: "state.snapshot", args: [] }).catch(() => undefined)
+  if (fresh) initialState = fresh
+  rebuild(domain)
 }
 
 function rebuild(domain?: string) {
@@ -531,7 +538,10 @@ function editorFor(domain: string): Json {
       return {
         list: () => [...tools.values()],
         get: (id: string) => tools.get(id),
-        namespace: (_namespace: Json) => {},
+        namespace: (definition: Json) => {
+          const name = definition?.name
+          if (typeof name === "string") namespaces.set(name, definition)
+        },
         add: (tool: Json) => {
           const id = tool.id ?? tool.name
           tools.set(id, { ...tool, id, name: tool.name ?? id, source: "custom" })
@@ -772,6 +782,21 @@ function toV2Messages(messages: Json): Json[] {
           name: part.tool,
           input: part.state?.input ?? part.input ?? {},
         })
+        if (part.state?.status === "completed") {
+          content.push({
+            type: "tool-result",
+            id: part.callID,
+            name: part.tool,
+            result: { type: "text", value: part.state.output ?? "" },
+          })
+        } else if (part.state?.status === "error") {
+          content.push({
+            type: "tool-result",
+            id: part.callID,
+            name: part.tool,
+            result: { type: "error", value: part.state.error ?? "" },
+          })
+        }
       }
     }
     return { role, content }
@@ -785,8 +810,10 @@ function applyV2Messages(event: Json, messages: Json[]) {
     const content = Array.isArray(messages[index]?.content) ? messages[index].content : []
     const texts = content.filter((part: Json) => part?.type === "text")
     const reasoning = content.filter((part: Json) => part?.type === "reasoning")
+    const results = content.filter((part: Json) => part?.type === "tool-result")
     let textIndex = 0
     let reasoningIndex = 0
+    let resultIndex = 0
     for (const part of parts) {
       if (part.type === "text" && textIndex < texts.length) {
         part.text = texts[textIndex].text
@@ -794,6 +821,10 @@ function applyV2Messages(event: Json, messages: Json[]) {
       } else if (part.type === "reasoning" && reasoningIndex < reasoning.length) {
         part.text = reasoning[reasoningIndex].text
         reasoningIndex++
+      } else if (part.type === "tool" && resultIndex < results.length) {
+        const result = results[resultIndex++]?.result
+        if (result?.type === "text") part.state.output = result.value
+        else if (result?.type === "error") part.state.error = String(result.value)
       }
     }
   }
@@ -837,6 +868,7 @@ const sessionTitles = new Map<string, string>()
 const sessionMetadata = new Map<string, Json>()
 
 function toV2Event(event: Json): Json | null {
+  if (event.type === "session.usage.recorded") return null
   const properties = event.properties ?? event.data ?? {}
   let type = event.type
   let data = properties
@@ -1692,7 +1724,7 @@ function makeDomains(plugin: PluginRecord): Json {
     const base: Json = {
       ...extras,
       transform: (callback: Function) => registration(registerTransform(plugin, domain, callback)),
-      reload: () => effect(() => rebuild(domain)),
+      reload: () => effect(() => reloadDomain(domain)),
     }
     if (target instanceof Map) {
       if (!("list" in extras)) {
@@ -1754,7 +1786,7 @@ function makeDomains(plugin: PluginRecord): Json {
   })
   const modelBase: Json = {
     transform: (callback: Function) => registration(registerTransform(plugin, "model", callback)),
-    reload: () => effect(() => rebuild("model")),
+    reload: () => effect(() => reloadDomain("model")),
     list: (input?: Json) =>
       sync((input?: Json) => {
         const providerID = typeof input === "string" ? input : input?.providerID
@@ -2001,7 +2033,15 @@ function makeDomains(plugin: PluginRecord): Json {
     },
     rpcBase,
   )
-  const generate: Json = { text: lazy((input: Json) => callRPC("generate.text", input)) }
+  const generate: Json = {
+    text: lazy((input: Json) => callRPC("generate.text", input)),
+    image: lazy(async () => {
+      throw new Error("image generation is not supported by this client")
+    }),
+    decisions: lazy(async () => {
+      throw new Error("decision generation is not supported by this client")
+    }),
+  }
   const experimental: Json = {
     terminal: { read: lazy((input: Json) => callRPC("experimental.terminal.read", input)) },
     generate,
@@ -2136,8 +2176,10 @@ async function storageGet(key: string): Promise<Json> {
 }
 
 async function storageSet(key: string, value: Json): Promise<void> {
+  const encoded = JSON.stringify(value)
+  if (encoded === undefined) throw new Error(`storage value for ${key} is not JSON`)
   await Deno.mkdir(storageDir, { recursive: true })
-  await Deno.writeTextFile(storageFile(key), JSON.stringify(value))
+  await Deno.writeTextFile(storageFile(key), encoded)
 }
 
 async function storageRemove(key: string): Promise<void> {
@@ -2514,6 +2556,7 @@ function domainSnapshot(): Json {
       plugin: typeof item.execute === "function",
     })),
     skills: [...registry.skills.values()],
+    namespaces: [...namespaces.values()],
     tools: toolList(),
     providers: [...registry.providers.values()].map((item) => ({
       info: item.provider,

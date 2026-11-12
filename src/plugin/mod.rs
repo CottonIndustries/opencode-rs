@@ -1656,6 +1656,26 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             .or_else(|| first.pointer("/path/sessionID").and_then(Value::as_str).map(String::from))
     };
     match path {
+        "state.snapshot" => {
+            let mut value = snapshot(
+                &app.config,
+                &app.providers(),
+                &app.agents(),
+                &app.skills(),
+                &app.commands(),
+                &app.directory,
+                &app.worktree,
+                &app.project,
+            );
+            value["defaultAgent"] = json!(app.default_agent());
+            value["defaultModel"] = app
+                .default_model()
+                .as_deref()
+                .and_then(crate::models::parse_ref)
+                .map(|(provider_id, id, variant)| json!({ "providerID": provider_id, "id": id, "variant": variant }))
+                .unwrap_or(Value::Null);
+            Ok(value)
+        }
         "app.log" => {
             let message = body
                 .get("message")
