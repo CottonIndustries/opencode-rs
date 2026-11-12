@@ -788,7 +788,7 @@ async function trigger(domain: string, name: string, event: Json): Promise<Json>
   return event
 }
 
-function toV2Event(event: Json): Json {
+function toV2Event(event: Json): Json | null {
   const properties = event.properties ?? event.data ?? {}
   let type = event.type
   let data = properties
@@ -837,6 +837,8 @@ function toV2Event(event: Json): Json {
         type = "session.tool.called"
         data = { ...base, input: part.state?.input ?? {} }
       }
+    } else {
+      return null
     }
   } else if (event.type === "session.idle") {
     data = { sessionID: properties.sessionID }
@@ -847,9 +849,11 @@ function toV2Event(event: Json): Json {
     if (typeof info.title === "string") {
       type = "session.renamed"
       data = { sessionID: properties.sessionID ?? info.id, title: info.title }
-    } else {
+    } else if (info.metadata !== undefined) {
       type = "session.metadata.updated"
-      data = { sessionID: properties.sessionID ?? info.id, metadata: info.metadata ?? {} }
+      data = { sessionID: properties.sessionID ?? info.id, metadata: info.metadata }
+    } else {
+      return null
     }
   } else if (event.type === "session.created") {
     const info = properties.info ?? {}
@@ -903,6 +907,8 @@ function toV2Event(event: Json): Json {
       requestID: properties.requestID,
       reply: properties.reply ?? "once",
     }
+  } else if (event.type === "server.notice") {
+    return null
   }
   return { id: event.id ?? `evt_${Date.now()}`, created: event.created ?? properties.created ?? Date.now(), type, data }
 }
@@ -982,7 +988,9 @@ async function emitEvent(event: Json) {
       log("error", `plugin ${plugin.id} event hook failed: ${String(error)}`)
     }
   }
-  for (const v2 of streamEvents(toV2Event(event))) {
+  const converted = toV2Event(event)
+  if (!converted) return
+  for (const v2 of streamEvents(converted)) {
     for (const subscriber of subscribers) {
       if (subscriber.done) continue
       if (subscriber.types && !subscriber.types.has(v2.type)) continue
