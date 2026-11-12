@@ -8,6 +8,7 @@ mod cli;
 mod command;
 mod config;
 mod engine;
+mod forms;
 mod http;
 mod mcp;
 mod models;

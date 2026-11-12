@@ -3,6 +3,7 @@
 
 pub mod dialog;
 pub mod draw;
+pub mod forms;
 pub mod highlight;
 pub mod keymap;
 pub mod markdown;
@@ -199,6 +200,7 @@ struct Ui {
     dialog: Option<Dialog>,
     permissions: VecDeque<permission::Request>,
     perm: PermUi,
+    form: forms::FormUi,
     toasts: VecDeque<Toast>,
     scroll: usize,
     expanded: HashSet<String>,
@@ -348,6 +350,7 @@ impl Ui {
             dialog: None,
             permissions: VecDeque::new(),
             perm: PermUi::default(),
+            form: forms::FormUi::default(),
             toasts: VecDeque::new(),
             scroll: 0,
             expanded: HashSet::new(),
@@ -1662,6 +1665,10 @@ impl Ui {
             self.permission_key(&k, &ev);
             return;
         }
+        if self.pending_form().is_some() {
+            self.form_key(&k, &ev);
+            return;
+        }
         if let Some(a) = self.auto.as_mut() {
             let n = a.options.len();
             let km = &self.keys;
@@ -1867,6 +1874,50 @@ impl Ui {
         }
     }
 
+    fn pending_form(&self) -> Option<crate::forms::Form> {
+        self.app.forms.list(&self.sid()).into_iter().next()
+    }
+
+    fn form_key(&mut self, k: &Key, ev: &KeyEvent) {
+        let Some(form) = self.pending_form() else { return };
+        self.form.sync(&form);
+        if k.name == "escape" || (k.ctrl && k.name == "c") {
+            if let Err(e) = self.app.forms.cancel(&form.id) {
+                self.toast(Variant::Error, None, e.to_string());
+            }
+            self.form = forms::FormUi::default();
+            return;
+        }
+        if k.name == "return" {
+            match self.form.answer() {
+                Ok(answer) => match self.app.forms.reply(&form.id, answer) {
+                    Ok(_) => self.form = forms::FormUi::default(),
+                    Err(e) => self.toast(Variant::Error, None, e.to_string()),
+                },
+                Err(e) => self.toast(Variant::Error, None, e),
+            }
+            return;
+        }
+        if k.name == "tab" {
+            self.form.next(if k.shift { -1 } else { 1 });
+            return;
+        }
+        if k.name == "down" && !k.ctrl && !k.alt {
+            self.form.next(1);
+            return;
+        }
+        if k.name == "up" && !k.ctrl && !k.alt {
+            self.form.next(-1);
+            return;
+        }
+        if k.name == "space" && !k.ctrl && !k.alt && self.form.toggle() {
+            return;
+        }
+        if let Some(editor) = self.form.editor() {
+            edit_key(editor, k, ev, &self.keys, false);
+        }
+    }
+
     fn permission_options(req: &permission::Request) -> Vec<(&'static str, Reply)> {
         if req.save.is_empty() {
             vec![("Allow once", Reply::Once), ("Reject", Reply::Reject)]
@@ -1937,6 +1988,9 @@ impl Ui {
     fn on_mouse(&mut self, m: event::MouseEvent) {
         let (x, y) = (m.column, m.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if self.dialog.is_none() && self.permissions.is_empty() && self.pending_form().is_some() {
+            return;
+        }
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
@@ -2046,6 +2100,13 @@ impl Ui {
         if !self.permissions.is_empty() {
             return;
         }
+        if let Some(form) = self.pending_form() {
+            self.form.sync(&form);
+            if let Some(editor) = self.form.editor() {
+                editor.insert(text.lines().next().unwrap_or(""));
+            }
+            return;
+        }
         match prompt::paste_summary(&text) {
             Some(label) if self.settings.str("prompt.paste") != Some("full") => {
                 self.editor.insert(&format!("{label} "));
@@ -2102,6 +2163,22 @@ impl Ui {
             Route::Home => self.draw_home(buf, body, &t),
             Route::Session => self.draw_session(buf, body, &t),
         };
+        let pending = self.pending_form();
+        match &pending {
+            Some(form) => self.form.sync(form),
+            None => {
+                if !self.form.id.is_empty() {
+                    self.form = forms::FormUi::default();
+                }
+            }
+        }
+        if self.dialog.is_none() && self.permissions.is_empty() {
+            if let Some(form) = &pending {
+                if let Some(position) = self.form.draw(buf, area, &t, form) {
+                    cursor = Some(position);
+                }
+            }
+        }
         self.draw_toast(buf, area, &t);
         if let Some(d) = self.dialog.as_mut() {
             let d_t = &t.dialog;
@@ -3081,6 +3158,10 @@ impl Ui {
                 }
                 _ = tick.tick() => {
                     let animating = self.handle.is_busy() || !self.shells.is_empty() || self.tabs.iter().any(|t| self.app.session(t).map(|h| h.is_busy()).unwrap_or(false));
+                    let form = self.pending_form().map(|form| form.id).unwrap_or_default();
+                    if form != self.form.id {
+                        dirty = true;
+                    }
                     if self.leader.is_some_and(|l| l.elapsed() >= LEADER_TIMEOUT) {
                         self.leader = None;
                         dirty = true;
