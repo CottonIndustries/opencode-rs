@@ -1750,6 +1750,10 @@ function makeSessionDomain(plugin: PluginRecord): Json {
   const base: Json = {
     list: paged("session.list"),
     messages: paged("session.messages"),
+    message: {
+      list: paged("session.message.list"),
+      get: call("session.message.get"),
+    },
     create: call("session.create"),
     get: call("session.get"),
     remove: voidCall("session.remove"),

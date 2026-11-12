@@ -1530,6 +1530,47 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }
             Ok(json!({ "done": true }))
         }
+        "session.message.list" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.message.list requires sessionID"))?;
+            let handle = app.session(&id)?;
+            Ok(handle.with(|s| {
+                let mut messages: Vec<&crate::session::Message> = s.messages.iter().collect();
+                if let Some(kind) = first.get("type").and_then(Value::as_str) {
+                    messages.retain(|message| match kind {
+                        "user" => message.role == crate::session::Role::User,
+                        "assistant" => message.role == crate::session::Role::Assistant,
+                        _ => true,
+                    });
+                }
+                if first.get("order").and_then(Value::as_str) == Some("desc") {
+                    messages.reverse();
+                }
+                if let Some(limit) = first.get("limit").and_then(Value::as_u64) {
+                    messages.truncate(limit as usize);
+                }
+                json!({
+                    "data": session_messages_json(&messages.iter().map(|m| (*m).clone()).collect::<Vec<_>>()),
+                    "cursor": {},
+                })
+            }))
+        }
+        "session.message.get" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.message.get requires sessionID"))?;
+            let message_id = first
+                .get("messageID")
+                .or_else(|| first.get("id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("session.message.get requires messageID"))?;
+            let handle = app.session(&id)?;
+            let message = handle.with(|s| s.messages.iter().find(|m| m.id == message_id).cloned());
+            match message {
+                Some(message) => {
+                    let value = session_messages_json(std::slice::from_ref(&message));
+                    Ok(value.as_array().and_then(|items| items.first()).cloned().unwrap_or(Value::Null))
+                }
+                None => Err(anyhow!("message not found: {message_id}")),
+            }
+        }
         "session.context" => {
             let id = session_id().ok_or_else(|| anyhow!("session.context requires sessionID"))?;
             let handle = app.session(&id)?;
