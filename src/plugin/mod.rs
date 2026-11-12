@@ -23,6 +23,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const DENO_VERSION: &str = "2.9.8";
+
+/// Cancellation tokens for in-flight `client.call` requests, keyed by the
+/// request id allocated by the Deno host when a plugin passes an AbortSignal.
+static CLIENT_CANCELS: std::sync::OnceLock<Mutex<HashMap<String, CancellationToken>>> =
+    std::sync::OnceLock::new();
+
+fn client_cancels() -> &'static Mutex<HashMap<String, CancellationToken>> {
+    CLIENT_CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 const HOST_TS: &str = include_str!("host.ts");
 const PLUGIN_API_VERSION: &str = "2.2.7";
 const V1_PLUGIN_API_VERSION: &str = "1.19.5";
@@ -1253,7 +1262,27 @@ async fn start(
                             let id = message.get("id").cloned().unwrap_or(Value::Null);
                             let method = message.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
                             let params = message.get("params").cloned().unwrap_or(Value::Null);
-                            let response = match host_call(&method, params, &app).await {
+                            let cancel_id = params
+                                .pointer("/options/cancelID")
+                                .and_then(Value::as_str)
+                                .map(String::from);
+                            let token = cancel_id.as_ref().map(|cancel_id| {
+                                let token = CancellationToken::new();
+                                client_cancels().lock().unwrap().insert(cancel_id.clone(), token.clone());
+                                token
+                            });
+                            let result = if let Some(token) = token.clone() {
+                                tokio::select! {
+                                    result = host_call(&method, params, &app) => result,
+                                    _ = token.cancelled() => Err(anyhow!("plugin request aborted")),
+                                }
+                            } else {
+                                host_call(&method, params, &app).await
+                            };
+                            if let Some(cancel_id) = cancel_id {
+                                client_cancels().lock().unwrap().remove(&cancel_id);
+                            }
+                            let response = match result {
                                 Ok(result) => json!({ "type": "response", "id": id, "ok": true, "result": result }),
                                 Err(error) => json!({
                                     "type": "response",
@@ -1287,6 +1316,12 @@ async fn start(
                                             value
                                         });
                                     app.record_tool_progress(call_id, metadata);
+                                }
+                                Some("client.cancel") => {
+                                    let cancel_id = message.pointer("/params/cancelID").and_then(Value::as_str);
+                                    if let Some(token) = cancel_id.and_then(|id| client_cancels().lock().unwrap().get(id).cloned()) {
+                                        token.cancel();
+                                    }
                                 }
                                 _ => {}
                             }

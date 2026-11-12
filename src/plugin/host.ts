@@ -1827,12 +1827,18 @@ function aborted(signal: AbortSignal): Promise<never> {
 function callRPC(method: string, params?: Json, options?: Json): Promise<Json> {
   // The provisional Rust App is attached before initialize, so setup can read
   // live registries and sessions while transform state is still being built.
+  const cancelID = options?.signal ? crypto.randomUUID() : undefined
   const result = request("client.call", {
     path: method,
     args: params === undefined ? [] : [params],
-    options: options ?? undefined,
+    options: cancelID ? { ...options, cancelID } : options,
   })
-  return options?.signal ? Promise.race([result, aborted(options.signal)]) : result
+  if (!options?.signal || !cancelID) return result
+  const cancel = () => notify("client.cancel", { cancelID })
+  options.signal.addEventListener("abort", cancel, { once: true })
+  return Promise.race([result, aborted(options.signal)]).finally(() => {
+    options.signal.removeEventListener("abort", cancel)
+  })
 }
 
 function api(local: Json, mode: PluginMode, prefix: string, envelope = true): Json {
