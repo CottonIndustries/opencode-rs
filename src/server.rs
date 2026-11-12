@@ -783,6 +783,50 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let terminal = crate::plugin::pty::manager().create(id, command, &args, &cwd, &env, cols, rows)?;
             Ok(json!({ "data": terminal }))
         }
+        ("POST", ["api", "pty", id, "connect-token"]) => {
+            Ok(json!({ "data": { "ticket": format!("{id}.{}", crate::util::id("ticket")), "expires_in": 60 } }))
+        }
+        ("GET", ["api", "experimental", "persistent-pty"]) => {
+            Ok(json!({ "data": crate::plugin::pty::manager().list() }))
+        }
+        ("POST", ["api", "experimental", "persistent-pty", "shutdown"]) => {
+            let manager = crate::plugin::pty::manager();
+            for terminal in manager.list() {
+                if let Some(id) = terminal.get("ptyID").and_then(Value::as_str) {
+                    manager.kill(id);
+                }
+            }
+            Ok(Value::Null)
+        }
+        ("POST", ["api", "experimental", "persistent-pty", "handoff"]) => {
+            Ok(json!({ "handoff": Value::Null }))
+        }
+        ("GET", ["api", "experimental", "persistent-pty", id]) => {
+            let terminal = crate::plugin::pty::manager()
+                .list()
+                .into_iter()
+                .find(|terminal| terminal.get("ptyID").and_then(Value::as_str) == Some(*id))
+                .ok_or_else(|| anyhow!("terminal not found: {id}"))?;
+            Ok(json!({ "data": terminal }))
+        }
+        ("PUT", ["api", "experimental", "persistent-pty", id]) => {
+            if let Some(size) = request.body.get("size") {
+                let cols = size.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+                let rows = size.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
+                crate::plugin::pty::manager().resize(id, cols, rows)?;
+            }
+            Ok(json!({ "data": crate::plugin::pty::manager().read(id) }))
+        }
+        ("GET", ["api", "experimental", "persistent-pty", id, "snapshot"]) => {
+            Ok(json!({ "data": crate::plugin::pty::manager().read(id) }))
+        }
+        ("DELETE", ["api", "experimental", "persistent-pty", id]) => {
+            crate::plugin::pty::manager().kill(id);
+            Ok(Value::Null)
+        }
+        ("POST", ["api", "experimental", "persistent-pty", id, "connect-token"]) => {
+            Ok(json!({ "data": { "ticket": format!("{id}.{}", crate::util::id("ticket")), "expires_in": 60 } }))
+        }
         ("GET", ["api", "experimental", "session", id, "terminal", "read"]) => {
             app.session(id)?;
             Ok(json!({ "data": crate::plugin::pty::manager().read(id) }))
