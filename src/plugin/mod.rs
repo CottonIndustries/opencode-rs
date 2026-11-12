@@ -3735,7 +3735,7 @@ pub fn snapshot(
                     "name": provider.name,
                     "activation": "auto",
                     "package": provider.npm,
-                    "settings": {},
+                    "settings": provider_settings(provider),
                     "headers": provider.options.headers,
                     "body": {},
                 },
@@ -3795,6 +3795,17 @@ pub fn snapshot(
         "worktree": worktree.to_string_lossy(),
         "project": project,
     })
+}
+
+pub(crate) fn provider_settings(provider: &crate::models::Provider) -> Value {
+    let mut settings = serde_json::Map::new();
+    if let Some(base_url) = &provider.options.base_url {
+        settings.insert("baseURL".into(), json!(base_url));
+    }
+    for (key, value) in &provider.options.extra {
+        settings.insert(key.clone(), value.clone());
+    }
+    Value::Object(settings)
 }
 
 pub(crate) fn model_json(model: &crate::models::Model) -> Value {
@@ -4046,8 +4057,9 @@ pub fn apply_state(
                 }
             }
         }
-        if let Some(body) = info.get("body").and_then(Value::as_object) {
-            for (key, value) in body {
+        for source in [info.get("settings"), info.get("body")].into_iter().flatten() {
+            let Some(values) = source.as_object() else { continue };
+            for (key, value) in values {
                 if key == "baseURL" {
                     if let Some(url) = value.as_str() {
                         options.base_url = Some(url.to_string());
