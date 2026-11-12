@@ -39,8 +39,6 @@ pub struct Config {
 #[serde(default)]
 pub struct Experimental {
     pub todo: bool,
-    #[serde(alias = "background_compaction")]
-    pub background_compaction: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
