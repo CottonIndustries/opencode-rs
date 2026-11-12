@@ -2117,12 +2117,8 @@ function makeDomains(plugin: PluginRecord): Json {
   )
   const generate: Json = {
     text: lazy((input: Json) => callRPC("generate.text", input)),
-    image: lazy(async () => {
-      throw new Error("image generation is not supported by this client")
-    }),
-    decisions: lazy(async () => {
-      throw new Error("decision generation is not supported by this client")
-    }),
+    image: lazy((input: Json) => callRPC("generate.image", input)),
+    decisions: lazy((input: Json) => callRPC("generate.decisions", input)),
   }
   const experimental: Json = {
     terminal: { read: lazy((input: Json) => callRPC("experimental.terminal.read", input)) },

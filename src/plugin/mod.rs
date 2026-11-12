@@ -9,6 +9,7 @@
 //! cache. When it is missing, a pinned official release is downloaded on first
 //! use.
 
+#[allow(dead_code)]
 mod pty;
 
 use anyhow::{anyhow, Context, Result};
@@ -1678,6 +1679,24 @@ fn file_diffs(messages: &[crate::session::Message]) -> Vec<Value> {
     files.into_values().collect()
 }
 
+fn generate_ref(input: &Value) -> Option<String> {
+    let model = input.get("model")?;
+    if let Some(reference) = model.as_str() {
+        return Some(reference.to_string());
+    }
+    let provider = model.get("providerID").and_then(Value::as_str)?;
+    let id = model
+        .get("id")
+        .or_else(|| model.get("modelID"))
+        .and_then(Value::as_str)?;
+    let mut reference = format!("{provider}/{id}");
+    if let Some(variant) = model.get("variant").and_then(Value::as_str) {
+        reference.push('#');
+        reference.push_str(variant);
+    }
+    Some(reference)
+}
+
 async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
     let first = args.first().cloned().unwrap_or(Value::Null);
     let arg = |key: &str| first.get(key).and_then(Value::as_str).map(String::from);
@@ -3141,6 +3160,24 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let model = first.get("model").cloned();
             plugin_generate(app, "plugin", Some(app.default_agent()), None, prompt, model).await
         }
+        "generate.image" | "experimental.generate.image" => {
+            let reference = generate_ref(&first).ok_or_else(|| anyhow!("generate.image requires a model"))?;
+            let resolved = crate::models::resolve_media(
+                &app.providers(),
+                &reference,
+                crate::models::ModelKind::Image,
+            )?;
+            crate::provider::media::generate_image(&resolved.provider, &resolved.model, &first).await
+        }
+        "generate.decisions" | "experimental.generate.decisions" => {
+            let reference = generate_ref(&first).ok_or_else(|| anyhow!("generate.decisions requires a model"))?;
+            let resolved = crate::models::resolve_media(
+                &app.providers(),
+                &reference,
+                crate::models::ModelKind::Decision,
+            )?;
+            crate::provider::media::generate_decisions(&resolved.provider, &resolved.model, &first).await
+        }
         // The Rust client keeps provider keys in `auth.json` rather than a
         // multi-credential integration store. Activation is therefore already
         // implied by the provider credential selected through `auth`.
@@ -3823,6 +3860,7 @@ pub fn apply_state(
                     }),
                 options,
                 models,
+                media_models: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -4047,6 +4085,7 @@ fn model_from_value(provider_id: &str, value: &Value, base: Option<&crate::model
     Some(crate::models::Model {
         id: id.to_string(),
         provider_id: provider_id.to_string(),
+        kind: crate::models::ModelKind::Chat,
         name: value.get("name").and_then(Value::as_str).unwrap_or(id).to_string(),
         family: value.get("family").and_then(Value::as_str).unwrap_or_default().to_string(),
         reasoning: base.map(|m| m.reasoning).unwrap_or(false),
@@ -4068,6 +4107,7 @@ fn model_from_value(provider_id: &str, value: &Value, base: Option<&crate::model
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
             .unwrap_or_else(|| vec!["text".into()]),
+        output_modalities: vec!["text".into()],
         interleaved_field: base.and_then(|m| m.interleaved_field.clone()),
         release_date: base.map(|m| m.release_date.clone()).unwrap_or_default(),
         status: value.get("status").and_then(Value::as_str).map(String::from),
