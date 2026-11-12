@@ -2911,6 +2911,8 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(metadata) = body.get("metadata") {
                 message.metadata = Some(metadata.clone());
             }
+            message.agents = body.get("agents").cloned();
+            message.skills = body.get("skills").cloned();
             for file in files {
                 message.parts.push(crate::session::Part::File(file));
             }
@@ -3375,6 +3377,12 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
                 });
                 if let Some(metadata) = &message.metadata {
                     value["metadata"] = metadata.clone();
+                }
+                if let Some(agents) = &message.agents {
+                    value["agents"] = agents.clone();
+                }
+                if let Some(skills) = &message.skills {
+                    value["skills"] = skills.clone();
                 }
                 if !files.is_empty() {
                     value["files"] = json!(files);

@@ -344,7 +344,7 @@ pub async fn notify_with_id(
     let _ = prompt(app, &session_id, msg, opts).await;
 }
 
-async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: PromptOptions) -> Result<bool> {
+async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, mut opts: PromptOptions) -> Result<bool> {
     let agent_id = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).unwrap_or_else(|| app.default_agent());
     let agent = app.agent(&agent_id)?.clone();
     let session_model = handle.with(|s| s.model.clone());
@@ -410,11 +410,11 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
                 })),
                 _ => None,
             }).collect::<Vec<_>>(),
-            "agents": [],
-            "skills": [],
+            "agents": msg.agents.clone().unwrap_or_else(|| serde_json::json!([])),
+            "skills": msg.skills.clone().unwrap_or_else(|| serde_json::json!([])),
         },
-        "metadata": {},
-        "delivery": "steer",
+        "metadata": msg.metadata.clone().unwrap_or_else(|| serde_json::json!({})),
+        "delivery": opts.delivery.clone().unwrap_or_else(|| "steer".into()),
         "agent": agent.id,
         "model": { "providerID": sel.provider.id, "modelID": sel.model.id, "variant": sel.variant },
     });
@@ -423,6 +423,18 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         prompt_event["parts"] = first.get("parts").cloned().unwrap_or(Value::Null);
     }
     let prompt_event = app.plugins.trigger("session", "prompt", prompt_event).await;
+    if let Some(metadata) = prompt_event.get("metadata") {
+        msg.metadata = (!metadata.is_null()).then(|| metadata.clone());
+    }
+    if let Some(delivery) = prompt_event.get("delivery").and_then(Value::as_str) {
+        opts.delivery = Some(delivery.to_string());
+    }
+    if let Some(agents) = prompt_event.pointer("/prompt/agents") {
+        msg.agents = (!agents.is_null()).then(|| agents.clone());
+    }
+    if let Some(skills) = prompt_event.pointer("/prompt/skills") {
+        msg.skills = (!skills.is_null()).then(|| skills.clone());
+    }
     let prompt_text = prompt_event
         .pointer("/prompt/text")
         .and_then(Value::as_str)
