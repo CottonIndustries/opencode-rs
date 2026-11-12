@@ -225,6 +225,57 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             handle.abort();
             Ok(json!({ "data": true }))
         }
+        ("POST", ["api", "session", id, "compact"]) => {
+            let app = app.clone();
+            let session = (*id).to_string();
+            tokio::spawn(async move {
+                let _ = crate::engine::compact_session(app, &session).await;
+            });
+            Ok(json!({ "data": null }))
+        }
+        ("POST", ["api", "session", id, "fork"]) => {
+            let handle = app.session(id)?;
+            let forked = handle.with(|session| crate::session::fork(session));
+            crate::session::save(&forked)?;
+            Ok(json!({ "data": crate::plugin::session_json(&forked) }))
+        }
+        ("GET", ["api", "session", id, "diff"]) => {
+            let handle = app.session(id)?;
+            let from = handle.with(|session| {
+                session
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == crate::session::Role::User)
+                    .and_then(|message| message.snapshot.clone())
+            });
+            let diffs = from
+                .as_deref()
+                .and_then(|from| crate::snapshot::diff(&app.worktree, from, None).ok())
+                .unwrap_or_default();
+            Ok(json!({ "data": diffs }))
+        }
+        ("POST", ["api", "session", id, "revert"]) => {
+            let handle = app.session(id)?;
+            let message_id = request.body.get("messageID").and_then(Value::as_str).unwrap_or_default();
+            let snapshot = handle.with(|session| {
+                session
+                    .messages
+                    .iter()
+                    .find(|message| message.id == message_id)
+                    .and_then(|message| message.snapshot.clone())
+            });
+            if let Some(snapshot) = snapshot {
+                crate::snapshot::restore(&app.worktree, &snapshot)?;
+            }
+            handle.with(|session| {
+                if let Some(index) = session.messages.iter().position(|message| message.id == message_id) {
+                    session.messages.truncate(index + 1);
+                }
+            });
+            handle.save();
+            Ok(json!({ "data": null }))
+        }
         ("GET", ["api", "session", id, "log"]) => {
             let after = request.body.get("after").and_then(Value::as_u64);
             let events = crate::event_store::read(Some(id), after, None);
