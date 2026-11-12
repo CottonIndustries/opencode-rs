@@ -207,6 +207,11 @@ fn plan_reminder(agent: &str, history: &[Message]) -> Option<String> {
 
 /// Deliver a background notification (finished shell/subagent) to a session.
 pub async fn notify(app: Arc<App>, session_id: String, text: String) {
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.synthetic",
+        "properties": { "sessionID": session_id.clone(), "text": text.clone() },
+    }));
     let mut msg = Message::new(Role::User);
     msg.parts.push(Part::Text { text, synthetic: true });
     let opts = app
