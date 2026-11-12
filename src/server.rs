@@ -336,9 +336,79 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let session = handle.with(|session| session.clone());
             Ok(json!({ "data": crate::plugin::session_json(&session) }))
         }
-        ("GET", ["api", "session", "active"]) => Ok(json!({
-            "data": app.active_session_ids(),
-        })),
+        ("GET", ["api", "session", "active"]) => {
+            let active = app
+                .session_statuses()
+                .into_iter()
+                .filter(|(_, busy, _)| *busy)
+                .map(|(id, _, retry)| {
+                    let value = match retry {
+                        Some(retry) => json!({ "status": "retry", "retry": retry }),
+                        None => json!({ "status": "busy" }),
+                    };
+                    (id, value)
+                })
+                .collect::<serde_json::Map<String, Value>>();
+            Ok(json!({ "data": active }))
+        }
+        ("GET", ["api", "experimental", "session", "stats"]) => Ok(json!({ "data": session_stats(app) })),
+        ("GET", ["api", "experimental", "session", id, "export"]) => {
+            let handle = app.session(id)?;
+            let session = handle.with(|session| session.clone());
+            Ok(json!({
+                "data": {
+                    "info": crate::plugin::session_json(&session),
+                    "messages": crate::plugin::session_messages_json(&session.messages),
+                }
+            }))
+        }
+        ("POST", ["api", "experimental", "session", "import"]) => {
+            let info = request.body.get("info").cloned().unwrap_or_else(|| request.body.clone());
+            let id = info.get("id").and_then(Value::as_str).map(String::from);
+            let handle = match id.and_then(|id| app.session(&id).ok()) {
+                Some(handle) => handle,
+                None => {
+                    let handle = app.new_session(info.get("parentID").and_then(Value::as_str).map(String::from));
+                    handle.with(|session| {
+                        if let Some(id) = info.get("id").and_then(Value::as_str) {
+                            session.id = id.to_string();
+                        }
+                        if let Some(title) = info.get("title").and_then(Value::as_str) {
+                            session.title = title.to_string();
+                        }
+                    });
+                    handle
+                }
+            };
+            if let Some(messages) = request.body.get("messages").and_then(Value::as_array) {
+                let imported: Vec<crate::session::Message> = messages
+                    .iter()
+                    .filter_map(|message| serde_json::from_value(message.clone()).ok())
+                    .collect();
+                handle.with(|session| session.messages.extend(imported));
+            }
+            handle.save();
+            let session = handle.with(|session| session.clone());
+            Ok(json!({ "data": crate::plugin::session_json(&session) }))
+        }
+        ("GET", ["api", "experimental", "session", id, "log"]) => {
+            session_call(app, "session.log", id, json!({})).await
+        }
+        ("POST", ["api", "experimental", "session", id, "wait"]) => {
+            session_call(app, "session.wait", id, request.body.clone()).await
+        }
+        ("POST", ["api", "experimental", "session", id, "skill"]) => {
+            session_call(app, "session.skill", id, request.body.clone()).await
+        }
+        ("PATCH", ["api", "experimental", "config"]) => {
+            let mut config = serde_json::to_value(&app.config)?;
+            if let (Some(target), Some(patch)) = (config.as_object_mut(), request.body.as_object()) {
+                for (key, value) in patch {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            Ok(json!({ "data": config }))
+        }
         ("GET", ["api", "session", id]) => {
             let handle = app.session(id)?;
             let session = handle.with(|session| session.clone());
@@ -829,6 +899,43 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
     }
+}
+
+fn session_stats(app: &App) -> Value {
+    let sessions = crate::session::list(&app.project);
+    let mut tokens = crate::session::Usage::default();
+    let mut cost = 0.0;
+    let mut days: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut subagents = 0;
+    for session in &sessions {
+        tokens.add(&session.tokens);
+        cost += session.cost;
+        if session.parent_id.is_some() {
+            subagents += 1;
+        }
+        let day = (session.time_updated / 86_400_000).to_string();
+        *days.entry(day).or_default() += 1;
+    }
+    let now = crate::util::now_ms();
+    json!({
+        "range": { "from": 0, "to": now },
+        "sessions": sessions.len(),
+        "subagents": subagents,
+        "prompts": sessions.len(),
+        "steps": 0,
+        "tokens": {
+            "input": tokens.input,
+            "output": tokens.output,
+            "reasoning": tokens.reasoning,
+            "cache": { "read": tokens.cache_read, "write": tokens.cache_write },
+        },
+        "cost": cost,
+        "tools": { "mode": "summary", "totals": { "calls": 0, "succeeded": 0, "failed": 0, "unfinished": 0 } },
+        "activeDays": days.len(),
+        "streak": 0,
+        "activity": days.into_iter().map(|(date, steps)| json!({ "date": date, "steps": steps })).collect::<Vec<_>>(),
+        "models": [],
+    })
 }
 
 async fn session_call(app: &Arc<App>, method: &str, id: &str, mut body: Value) -> Result<Value> {
