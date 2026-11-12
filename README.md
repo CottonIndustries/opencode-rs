@@ -22,12 +22,14 @@ if yours live elsewhere.
 | `opencode [dir]` / `opencode mini` | Interactive TUI (`-m provider/model`, `--agent`, `-c`, `-s <id>`, `--fork`, `--prompt`) |
 | `opencode run [message..]` | Non-interactive run. `-m provider/model#variant`, `--agent`, `-c`, `-s`, `--fork`, `-f file`, `--title`, `--thinking`, `--format json`, `--auto-approve`. Piped stdin is appended to the message. A leading `/command` expands that command. |
 | `opencode acp [--login]` | Agent Client Protocol server on stdio for editors such as Zed (`--login` runs `auth login`) |
-| `opencode serve [--hostname H] [--port P] [--password P] [--dir D]` | Local HTTP API and SSE event feed. Basic auth is enabled when a password is set or `OPENCODE_SERVER_PASSWORD` is present. |
+| `opencode serve [--hostname H] [--port P] [--password P] [--dir D]` | Local HTTP API, SSE event feed, and WebSocket PTY streaming (`/api/pty/:id/connect`). Basic auth is enabled when a password is set or `OPENCODE_SERVER_PASSWORD` is present. |
 | `opencode models [provider] [--verbose] [--refresh]` | List models from providers with credentials |
 | `opencode auth list\|login\|logout` | Manage API keys (`<data>/auth.json`) |
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
 | `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
 | `opencode mcp list` | MCP server status |
+| `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth |
+| `opencode pair [--url U]` | Create a single-use pairing link for a running server (`/auth/connect/:code`) |
 | `opencode debug paths\|config\|agents\|skills\|prompt\|plugins` | Troubleshooting (`plugins` also lists plugin tools) |
 | `opencode debug plugin-tool <name> [json]` | Execute a plugin tool with the given input |
 
@@ -65,7 +67,8 @@ if yours live elsewhere.
 - **Config**: `opencode.json`/`.jsonc` (global, `OPENCODE_CONFIG`, project chain,
   `.opencode/`, `OPENCODE_CONFIG_CONTENT`), `{env:}`/`{file:}` substitution,
   custom providers/models, `agent`, `command`, `permission`, `mcp`, `tools`,
-  `instructions`, `skills`, `compaction`, `formatter`, `experimental.todo`.
+  `instructions`, `skills`, `lsp`, `compaction`, `formatter`,
+  `experimental.todo`, `experimental.schedules` and `experimental.codemode`.
 - **Agents**: `build`, `general`, `explore` (+ hidden `title`, `summary`,
   `compaction`) and custom agents from config or `agent/*.md`.
 - **Tools** with the original descriptions and schemas: `shell` (Git Bash /
@@ -75,8 +78,13 @@ if yours live elsewhere.
   tolerant matching, CRLF and BOM preservation), `patch` (used instead of
   edit/write for GPT models), `glob`, `grep` (gitignore-aware; omitted for
   Claude/GPT as upstream does), `webfetch`, `websearch` (Exa/Tavily/Parallel/Firecrawl
-  keys), `todowrite`, `subagent` (foreground/background child sessions),
-  `skill`, and MCP tools (stdio and streamable HTTP).
+  keys), `todowrite`, `question`, `subagent` (foreground/background child
+  sessions), `skill`, artifacts, and MCP tools (stdio and streamable HTTP,
+  including resources and prompt commands). With `experimental.schedules`, the
+  `schedule_*` tools wake a session on a delay, time, interval, cron, or a shell
+  condition. With `experimental.codemode`, the `execute` tool runs JavaScript in
+  Deno with `tools.*` calls back into the session tool registry. LSP servers
+  from `lsp` report diagnostics after edits.
 - **Permissions**: last-match-wins rules (`allow`/`ask`/`deny`), external
   directory checks, `.env` protection, per-session "always" approvals.
 - **Engine**: streaming agent loop, parallel tool execution, steering (messages
@@ -136,11 +144,13 @@ Sessions are stored as JSON in `~/.local/share/opencode/storage/session/<project
 ## Not ported
 
 Things in the original that depend on its hosted services or on domains this
-port does not implement: `pair`, `service`, `github`, `upgrade`, OAuth logins
-(Claude Pro/Max, ChatGPT, Copilot device flow), LSP diagnostics, Code Mode,
-schedules, the `question` tool, and MCP OAuth. Bedrock/Vertex/Azure need an
-OpenAI-compatible `baseURL`. Shell permission parsing uses a quote-aware
-splitter instead of tree-sitter.
+port does not implement: `service`, `github`, `upgrade`, and Claude Pro/Max
+OAuth (ChatGPT and GitHub Copilot device login are available through
+`opencode auth login`). Bedrock/Vertex/Azure need an OpenAI-compatible
+`baseURL`. Shell permission parsing uses a quote-aware splitter instead of
+tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
+upstream bytecode VM; snapshots, the `search` helper and static tool
+authorization are not part of it.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
 RPC endpoints are available through the API and plugin host. Integrations and
