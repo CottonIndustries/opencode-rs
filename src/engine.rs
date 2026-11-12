@@ -114,8 +114,12 @@ pub fn cost(model: &Model, u: &Usage) -> f64 {
 
 /// Send a user message; if the session is busy the message is queued and
 /// picked up at the next step (steering).
-pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptOptions) -> Result<()> {
+pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, opts: PromptOptions) -> Result<()> {
     let handle = app.session(session_id)?;
+    let synthetic = msg.parts.iter().any(|part| matches!(part, Part::Text { synthetic: true, .. }));
+    if !synthetic && msg.snapshot.is_none() {
+        msg.snapshot = crate::snapshot::capture(&app.worktree).map(|snapshot| snapshot.id);
+    }
     app.plugins.emit(serde_json::json!({
         "id": crate::util::id("evt"),
         "type": "session.inbox.enqueued",

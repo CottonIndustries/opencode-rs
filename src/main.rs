@@ -20,6 +20,7 @@ mod prompt;
 mod provider;
 mod run;
 mod session;
+mod snapshot;
 mod state;
 mod tools;
 mod tui;

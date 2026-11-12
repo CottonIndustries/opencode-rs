@@ -2503,6 +2503,16 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(files) = files {
                 revert["files"] = files;
             }
+            let snapshot = handle.with(|session| {
+                session
+                    .messages
+                    .iter()
+                    .find(|message| message.id == message_id)
+                    .and_then(|message| message.snapshot.clone())
+            });
+            if let Some(snapshot) = snapshot {
+                revert["snapshot"] = json!(snapshot);
+            }
             handle.with(|session| session.revert = Some(revert.clone()));
             handle.save();
             app.plugins.emit(json!({
@@ -2533,6 +2543,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let Some(message_id) = revert.get("messageID").and_then(Value::as_str).map(String::from) else {
                 return Ok(Value::Null);
             };
+            if let Some(snapshot) = revert.get("snapshot").and_then(Value::as_str) {
+                crate::snapshot::restore(&app.worktree, snapshot)?;
+            }
             handle.with(|session| {
                 if let Some(index) = session.messages.iter().position(|message| message.id == message_id) {
                     session.messages.truncate(index + 1);

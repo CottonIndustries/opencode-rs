@@ -139,6 +139,8 @@ pub struct Message {
     pub agents: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
 }
 
 impl Message {
@@ -158,6 +160,7 @@ impl Message {
             metadata: None,
             agents: None,
             skills: None,
+            snapshot: None,
         }
     }
     pub fn user_text(text: impl Into<String>) -> Self {
