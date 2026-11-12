@@ -241,9 +241,9 @@ impl Tool for McpTool {
 }
 
 pub struct Manager {
-    configs: BTreeMap<String, McpConfig>,
+    configs: std::sync::RwLock<BTreeMap<String, McpConfig>>,
     dir: PathBuf,
-    tools: tokio::sync::OnceCell<Vec<Arc<dyn Tool>>>,
+    tools: std::sync::Mutex<Option<Vec<Arc<dyn Tool>>>>,
     status: Mutex<BTreeMap<String, Status>>,
 }
 
@@ -253,46 +253,61 @@ fn sanitize(s: &str) -> String {
 
 impl Manager {
     pub fn new(configs: BTreeMap<String, McpConfig>, dir: PathBuf) -> Self {
-        Manager { configs, dir, tools: tokio::sync::OnceCell::new(), status: Mutex::new(BTreeMap::new()) }
+        Manager {
+            configs: std::sync::RwLock::new(configs),
+            dir,
+            tools: std::sync::Mutex::new(None),
+            status: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Replace the server set, reconnecting lazily on the next tool lookup.
+    pub fn reconfigure(&self, configs: BTreeMap<String, McpConfig>) {
+        if *self.configs.read().unwrap() == configs {
+            return;
+        }
+        *self.configs.write().unwrap() = configs;
+        *self.tools.lock().unwrap() = None;
+        self.status.lock().unwrap().clear();
     }
 
     pub async fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools
-            .get_or_init(|| async {
-                let mut all: Vec<Arc<dyn Tool>> = Vec::new();
-                let futs = self.configs.iter().map(|(name, cfg)| async move {
-                    if cfg.enabled == Some(false) {
-                        return (name.clone(), Err(None));
-                    }
-                    (name.clone(), connect(name, cfg, &self.dir).await.map_err(Some))
-                });
-                for (name, res) in futures::future::join_all(futs).await {
-                    match res {
-                        Ok((client, tools)) => {
-                            self.status.lock().unwrap().insert(name.clone(), Status::Connected { tools: tools.len() });
-                            for t in tools {
-                                let tool = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                all.push(Arc::new(McpTool {
-                                    client: client.clone(),
-                                    full_name: format!("{}_{}", sanitize(&name), sanitize(&tool)),
-                                    description: t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
-                                    schema: t.get("inputSchema").cloned().unwrap_or(json!({ "type": "object", "properties": {} })),
-                                    tool,
-                                }));
-                            }
-                        }
-                        Err(None) => {
-                            self.status.lock().unwrap().insert(name, Status::Disabled);
-                        }
-                        Err(Some(e)) => {
-                            self.status.lock().unwrap().insert(name, Status::Failed(e.to_string()));
-                        }
+        if let Some(tools) = self.tools.lock().unwrap().clone() {
+            return tools;
+        }
+        let configs = self.configs.read().unwrap().clone();
+        let mut all: Vec<Arc<dyn Tool>> = Vec::new();
+        let futs = configs.iter().map(|(name, cfg)| async move {
+            if cfg.enabled == Some(false) {
+                return (name.clone(), Err(None));
+            }
+            (name.clone(), connect(name, cfg, &self.dir).await.map_err(Some))
+        });
+        for (name, res) in futures::future::join_all(futs).await {
+            match res {
+                Ok((client, tools)) => {
+                    self.status.lock().unwrap().insert(name.clone(), Status::Connected { tools: tools.len() });
+                    for t in tools {
+                        let tool = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                        all.push(Arc::new(McpTool {
+                            client: client.clone(),
+                            full_name: format!("{}_{}", sanitize(&name), sanitize(&tool)),
+                            description: t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                            schema: t.get("inputSchema").cloned().unwrap_or(json!({ "type": "object", "properties": {} })),
+                            tool,
+                        }));
                     }
                 }
-                all
-            })
-            .await
-            .clone()
+                Err(None) => {
+                    self.status.lock().unwrap().insert(name, Status::Disabled);
+                }
+                Err(Some(e)) => {
+                    self.status.lock().unwrap().insert(name, Status::Failed(e.to_string()));
+                }
+            }
+        }
+        *self.tools.lock().unwrap() = Some(all.clone());
+        all
     }
 
     pub async fn status(&self) -> BTreeMap<String, Status> {
@@ -301,12 +316,12 @@ impl Manager {
     }
 
     pub fn configured(&self) -> usize {
-        self.configs.len()
+        self.configs.read().unwrap().len()
     }
 
     /// Configured servers with their status so far (`None` while still connecting).
     pub fn snapshot(&self) -> Vec<(String, Option<Status>)> {
         let st = self.status.lock().unwrap();
-        self.configs.keys().map(|n| (n.clone(), st.get(n).cloned())).collect()
+        self.configs.read().unwrap().keys().map(|n| (n.clone(), st.get(n).cloned())).collect()
     }
 }

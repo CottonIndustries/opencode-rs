@@ -279,6 +279,7 @@ impl App {
         *self.plugin_commands.write().unwrap() = applied.plugin_commands;
         *self.plugin_default_agent.write().unwrap() = applied.default_agent;
         *self.plugin_default_model.write().unwrap() = applied.default_model;
+        self.mcp.reconfigure(applied.mcp);
     }
 
     /// Start a turn in the background (plugin/client requests are admitted,

@@ -114,7 +114,7 @@ pub struct CommandConfig {
     pub subtask: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct McpConfig {
     #[serde(rename = "type")]
