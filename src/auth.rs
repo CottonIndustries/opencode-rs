@@ -21,6 +21,8 @@ pub enum Credential {
         account_id: Option<String>,
         #[serde(default, rename = "enterpriseUrl", skip_serializing_if = "Option::is_none")]
         enterprise_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
     },
     Wellknown {
         key: String,

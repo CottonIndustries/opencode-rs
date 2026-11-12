@@ -39,6 +39,7 @@ pub struct Client {
     transport: Transport,
     next: AtomicU64,
     timeout: std::time::Duration,
+    protocol: String,
 }
 
 impl Client {
@@ -61,7 +62,7 @@ impl Client {
                     .post(url)
                     .header("Accept", "application/json, text/event-stream")
                     .header("Content-Type", "application/json")
-                    .header("MCP-Protocol-Version", PROTOCOL)
+                    .header("MCP-Protocol-Version", &self.protocol)
                     .timeout(self.timeout)
                     .json(&msg);
                 for (k, v) in headers {
@@ -185,7 +186,11 @@ async fn connect(name: &str, cfg: &McpConfig, dir: &PathBuf) -> Result<(Arc<Clie
     let kind = cfg.kind.clone().unwrap_or_else(|| if cfg.url.is_some() { "remote".into() } else { "local".into() });
     let transport = if kind == "remote" {
         let url = cfg.url.clone().ok_or_else(|| anyhow!("remote MCP server {name} has no url"))?;
-        Transport::Http { url, headers: cfg.headers.clone(), session: Mutex::new(None) }
+        let mut headers = cfg.headers.clone();
+        if let Ok(Some(token)) = crate::mcp_oauth::access_token(name, cfg).await {
+            headers.insert("authorization".into(), format!("Bearer {token}"));
+        }
+        Transport::Http { url, headers, session: Mutex::new(None) }
     } else {
         let (prog, args) = cfg.command.split_first().ok_or_else(|| anyhow!("local MCP server {name} has no command"))?;
         let mut cmd = spawn_command(prog);
@@ -215,9 +220,10 @@ async fn connect(name: &str, cfg: &McpConfig, dir: &PathBuf) -> Result<(Arc<Clie
         });
         Transport::Stdio { stdin: tokio::sync::Mutex::new(stdin), pending, _child: child }
     };
-    let client = Arc::new(Client { name: name.to_string(), transport, next: AtomicU64::new(1), timeout });
+    let protocol = cfg.protocol.clone().unwrap_or_else(|| PROTOCOL.to_string());
+    let client = Arc::new(Client { name: name.to_string(), transport, next: AtomicU64::new(1), timeout, protocol: protocol.clone() });
     client
-        .request("initialize", json!({ "protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": { "name": "opencode", "version": crate::VERSION } }))
+        .request("initialize", json!({ "protocolVersion": protocol, "capabilities": {}, "clientInfo": { "name": "opencode", "version": crate::VERSION } }))
         .await?;
     client.notify("notifications/initialized").await?;
     let mut tools = Vec::new();

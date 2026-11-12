@@ -1471,6 +1471,7 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
                         expires: oauth.get("expires").and_then(Value::as_i64).unwrap_or(0),
                         account_id: oauth.get("accountId").and_then(Value::as_str).map(String::from),
                         enterprise_url: oauth.get("enterpriseUrl").and_then(Value::as_str).map(String::from),
+                        metadata: oauth.get("metadata").cloned().filter(|value| !value.is_null()),
                     },
                 )?;
             }

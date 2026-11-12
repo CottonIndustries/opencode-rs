@@ -321,11 +321,32 @@ pub async fn mcp_list() -> Result<()> {
         return Ok(());
     }
     for (name, st) in app.mcp.status().await {
+        let auth = if crate::mcp_oauth::logged_in(&name) { "  oauth" } else { "" };
         match st {
-            crate::mcp::Status::Connected { tools } => println!("✓ {name}  connected ({tools} tools)"),
-            crate::mcp::Status::Disabled => println!("○ {name}  disabled"),
-            crate::mcp::Status::Failed(e) => println!("✗ {name}  failed: {e}"),
+            crate::mcp::Status::Connected { tools } => println!("✓ {name}  connected ({tools} tools){auth}"),
+            crate::mcp::Status::Disabled => println!("○ {name}  disabled{auth}"),
+            crate::mcp::Status::Failed(e) => println!("✗ {name}  failed: {e}{auth}"),
         }
+    }
+    Ok(())
+}
+
+pub async fn mcp_auth(name: &str) -> Result<()> {
+    let directory = cwd();
+    let loaded = crate::config::load(&directory, &directory)?;
+    let config = loaded
+        .config
+        .mcp
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("MCP server not configured: {name}"))?;
+    crate::mcp_oauth::authorize(name, config).await
+}
+
+pub fn mcp_logout(name: &str) -> Result<()> {
+    if crate::mcp_oauth::logout(name)? {
+        println!("Removed OAuth credentials for {name}");
+    } else {
+        println!("No OAuth credentials stored for {name}");
     }
     Ok(())
 }
