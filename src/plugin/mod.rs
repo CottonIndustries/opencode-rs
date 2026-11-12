@@ -3319,7 +3319,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
     }
 }
 
-fn agent_json(agent: &crate::agent::Agent) -> Value {
+pub(crate) fn agent_json(agent: &crate::agent::Agent) -> Value {
     json!({
         "id": agent.id,
         "name": agent.name,
@@ -3548,7 +3548,7 @@ fn session_messages_json(messages: &[crate::session::Message]) -> Value {
         .collect::<Vec<_>>())
 }
 
-fn session_json_summary(session: &crate::session::Summary) -> Value {
+pub(crate) fn session_json_summary(session: &crate::session::Summary) -> Value {
     let mut value = json!({
         "id": session.id,
         "projectID": crate::session::project_id(&session.directory),
@@ -3772,7 +3772,7 @@ pub fn snapshot(
     })
 }
 
-fn model_json(model: &crate::models::Model) -> Value {
+pub(crate) fn model_json(model: &crate::models::Model) -> Value {
     json!({
         "id": model.id,
         "modelID": model.id,

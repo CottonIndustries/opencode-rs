@@ -19,6 +19,7 @@ mod plugin;
 mod prompt;
 mod provider;
 mod run;
+mod server;
 mod session;
 mod snapshot;
 mod state;
@@ -126,6 +127,18 @@ enum Cmd {
         /// Run auth login instead of starting the server
         #[arg(long)]
         login: bool,
+    },
+    /// Start the local HTTP API and event feed
+    Serve {
+        /// Interface to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        hostname: String,
+        /// Port to bind
+        #[arg(short, long, default_value_t = 4096)]
+        port: u16,
+        /// Working directory
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Start the minimal interactive interface
     Mini {
@@ -271,6 +284,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Acp { login: true }) => cli::auth_login(None, None).await,
         Some(Cmd::Acp { login: false }) => acp::serve().await,
+        Some(Cmd::Serve { hostname, port, dir }) => {
+            let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
+            server::serve(app, server::Options { hostname, port }).await
+        }
         Some(Cmd::Mini { project, tui }) => tui::start(project.unwrap_or_else(cwd), tui.into()).await,
         Some(Cmd::Run { message, continue_last, session, fork, model, agent, format, file, title, thinking, auto_approve, dir }) => {
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;

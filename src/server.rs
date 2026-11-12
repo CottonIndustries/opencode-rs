@@ -1,0 +1,268 @@
+//! Minimal OpenCode V2 HTTP API and SSE event feed.
+
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+use crate::app::{App, AppEvent};
+
+pub struct Options {
+    pub hostname: String,
+    pub port: u16,
+}
+
+pub async fn serve(app: Arc<App>, options: Options) -> Result<()> {
+    let listener = TcpListener::bind((options.hostname.as_str(), options.port)).await?;
+    let address = listener.local_addr()?;
+    eprintln!("opencode server listening on http://{address}");
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let app = app.clone();
+        tokio::spawn(async move {
+            let _ = handle(stream, app).await;
+        });
+    }
+}
+
+struct Request {
+    method: String,
+    path: String,
+    body: Value,
+}
+
+async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(None);
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+        if buffer.len() > 64 * 1024 {
+            return Err(anyhow!("request headers too large"));
+        }
+    };
+    let header = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let mut lines = header.lines();
+    let request_line = lines.next().ok_or_else(|| anyhow!("missing request line"))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or("/").to_string();
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    let mut body = buffer[header_end..].to_vec();
+    while body.len() < content_length {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
+    let body = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap_or(Value::Null)
+    };
+    Ok(Some(Request { method, path, body }))
+}
+
+async fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
+    let Some(request) = read_request(&mut stream).await? else { return Ok(()) };
+    if request.method == "OPTIONS" {
+        write_response(&mut stream, 204, Value::Null).await?;
+        return Ok(());
+    }
+    if request.path.starts_with("/api/event") || request.path == "/event" {
+        return event_feed(stream, app).await;
+    }
+    let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+    let segments: Vec<String> = parsed
+        .path_segments()
+        .map(|segments| segments.map(String::from).collect())
+        .unwrap_or_default();
+    let route = route(&app, &request, &segments).await;
+    match route {
+        Ok(value) => write_response(&mut stream, 200, value).await,
+        Err(error) => {
+            let value = json!({ "data": null, "error": { "message": format!("{error:#}") } });
+            write_response(&mut stream, 400, value).await
+        }
+    }
+}
+
+async fn write_response(stream: &mut TcpStream, status: u16, value: Value) -> Result<()> {
+    let body = if value.is_null() { String::new() } else { value.to_string() };
+    let reason = match status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\naccess-control-allow-origin: *\r\naccess-control-allow-headers: *\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result<Value> {
+    let method = request.method.as_str();
+    let path: Vec<&str> = segments.iter().map(String::as_str).collect();
+    match (method, path.as_slice()) {
+        ("GET", ["api", "app"] | ["api", "app", "init"]) => Ok(json!({
+            "data": {
+                "directory": app.directory.to_string_lossy(),
+                "worktree": app.worktree.to_string_lossy(),
+                "project": app.project,
+                "config": serde_json::to_value(&app.config)?,
+            }
+        })),
+        ("GET", ["api", "config"]) => Ok(json!({ "data": serde_json::to_value(&app.config)? })),
+        ("GET", ["api", "agent"]) => Ok(json!({
+            "data": app.agents().values().map(crate::plugin::agent_json).collect::<Vec<_>>()
+        })),
+        ("GET", ["api", "provider"]) => Ok(json!({
+            "data": app.providers().values().map(|provider| json!({
+                "id": provider.id,
+                "name": provider.name,
+                "models": provider.models.values().map(crate::plugin::model_json).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>()
+        })),
+        ("GET", ["api", "model"]) => Ok(json!({
+            "data": app.providers().values().flat_map(|provider| provider.models.values().map(crate::plugin::model_json)).collect::<Vec<_>>()
+        })),
+        ("GET", ["api", "session"]) => {
+            let sessions = crate::session::list(&app.project)
+                .iter()
+                .map(crate::plugin::session_json_summary)
+                .collect::<Vec<_>>();
+            Ok(json!({ "data": sessions }))
+        }
+        ("POST", ["api", "session"]) => {
+            let handle = app.new_session(None);
+            handle.save();
+            let session = handle.with(|session| session.clone());
+            Ok(json!({ "data": crate::plugin::session_json(&session) }))
+        }
+        ("GET", ["api", "session", id]) => {
+            let handle = app.session(id)?;
+            let session = handle.with(|session| session.clone());
+            Ok(json!({ "data": crate::plugin::session_json(&session) }))
+        }
+        ("DELETE", ["api", "session", id]) => {
+            let removed = crate::session::delete(&app.project, id)?;
+            Ok(json!({ "data": removed }))
+        }
+        ("GET", ["api", "session", id, "message"]) => {
+            let handle = app.session(id)?;
+            let messages = handle.with(|session| {
+                crate::plugin::messages_for_hook(&session.id, &session.messages)
+            });
+            Ok(json!({ "data": messages }))
+        }
+        ("POST", ["api", "session", id, "prompt"] | ["api", "session", id, "message"]) => {
+            let handle = app.session(id)?;
+            let text = request
+                .body
+                .pointer("/parts")
+                .and_then(Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| {
+                            if part.get("type").and_then(Value::as_str) == Some("text") {
+                                part.get("text").and_then(Value::as_str).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .or_else(|| request.body.get("text").and_then(Value::as_str).map(String::from))
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                return Err(anyhow!("prompt text is required"));
+            }
+            let mut message = crate::session::Message::user_text(text);
+            if let Some(id) = request.body.get("messageID").and_then(Value::as_str) {
+                message.id = id.to_string();
+            }
+            let mut opts = crate::app::PromptOptions::default();
+            opts.agent = request.body.get("agent").and_then(Value::as_str).map(String::from);
+            opts.delivery = request.body.get("delivery").and_then(Value::as_str).map(String::from);
+            if let Some(model) = request.body.get("model") {
+                let provider = model.get("providerID").and_then(Value::as_str);
+                let id = model.get("id").or_else(|| model.get("modelID")).and_then(Value::as_str);
+                if let (Some(provider), Some(id)) = (provider, id) {
+                    opts.model = Some(format!("{provider}/{id}"));
+                }
+                opts.variant = model.get("variant").and_then(Value::as_str).map(String::from);
+            }
+            let id = handle.id();
+            app.spawn_prompt(&id, message, opts)?;
+            Ok(json!({ "data": { "id": handle.id(), "time": { "created": crate::util::now_ms() } } }))
+        }
+        ("POST", ["api", "session", id, "interrupt"]) => {
+            let handle = app.session(id)?;
+            handle.abort();
+            Ok(json!({ "data": true }))
+        }
+        ("GET", ["api", "session", id, "log"]) => {
+            let after = request.body.get("after").and_then(Value::as_u64);
+            let events = crate::event_store::read(Some(id), after, None);
+            Ok(json!({ "data": events }))
+        }
+        ("GET", ["api", "permission"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "form"]) => Ok(json!({ "data": [] })),
+        _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
+    }
+}
+
+async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
+    let mut events = app.subscribe();
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: keep-alive\r\naccess-control-allow-origin: *\r\n\r\n";
+    stream.write_all(head.as_bytes()).await?;
+    let connected = json!({ "id": crate::util::id("evt"), "type": "server.connected", "properties": {} });
+    stream.write_all(format!("data: {connected}\n\n").as_bytes()).await?;
+    loop {
+        match events.recv().await {
+            Ok(event) => {
+                let value = crate::app::plugin_event(&event);
+                let payload = format!("data: {value}\n\n");
+                if stream.write_all(payload.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn event_type(event: &AppEvent) -> &'static str {
+    match event {
+        AppEvent::TextDelta { .. } => "session.text.delta",
+        AppEvent::ReasoningDelta { .. } => "session.reasoning.delta",
+        _ => "message.updated",
+    }
+}
