@@ -1278,6 +1278,33 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
                 "exitCode": output.status.code().unwrap_or(-1),
             }))
         }
+        "auth.set" => {
+            let provider = params
+                .get("provider")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("auth.set requires provider"))?;
+            if let Some(key) = params.get("key").and_then(Value::as_str) {
+                let metadata = params.get("metadata").and_then(Value::as_object).map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                        .collect()
+                });
+                crate::auth::set(provider, crate::auth::Credential::Api { key: key.to_string(), metadata })?;
+            } else if let Some(oauth) = params.get("oauth") {
+                crate::auth::set(
+                    provider,
+                    crate::auth::Credential::Oauth {
+                        refresh: oauth.get("refresh").and_then(Value::as_str).unwrap_or("").to_string(),
+                        access: oauth.get("access").and_then(Value::as_str).unwrap_or("").to_string(),
+                        expires: oauth.get("expires").and_then(Value::as_i64).unwrap_or(0),
+                        account_id: oauth.get("accountId").and_then(Value::as_str).map(String::from),
+                        enterprise_url: oauth.get("enterpriseUrl").and_then(Value::as_str).map(String::from),
+                    },
+                )?;
+            }
+            Ok(Value::Null)
+        }
         "permission.assert" => {
             let Some(app) = attached() else {
                 return Err(anyhow!("application is not ready"));

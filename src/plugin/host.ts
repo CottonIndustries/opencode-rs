@@ -257,6 +257,10 @@ type Registry = {
 
 let websearchDefault: string | false | undefined
 let vcsDefault: string | undefined
+const integrationMethods = new Map<string, Map<string, Json>>()
+const credentials = new Map<string, Json>()
+const integrationAttempts = new Map<string, Json>()
+const connectionStatuses = new Map<string, Json>()
 
 const registry: Registry = {
   agents: new Map(),
@@ -651,11 +655,23 @@ function editorFor(domain: string): Json {
         },
         remove: (id: string) => {
           target.delete(id)
+          integrationMethods.delete(id)
         },
         method: {
-          list: () => [],
-          update: (_input: Json) => {},
-          remove: (_id: string, _method: Json) => {},
+          list: (id: string) => [...(integrationMethods.get(id)?.values() ?? [])].map((item) => item.method),
+          update: (input: Json) => {
+            const id = input?.integrationID
+            const method = input?.method
+            if (typeof id !== "string" || !method || typeof method !== "object") return
+            if (!target.has(id)) target.set(id, { id, name: id })
+            const methods = integrationMethods.get(id) ?? new Map<string, Json>()
+            methods.set(method.id ?? method.type, input)
+            integrationMethods.set(id, methods)
+          },
+          remove: (id: string, method: Json) => {
+            const methods = integrationMethods.get(id)
+            methods?.delete(method?.id ?? method?.type)
+          },
         },
       }
     case "websearch":
@@ -1824,10 +1840,33 @@ function makeDomains(plugin: PluginRecord): Json {
   }
   const reference = local("references", "reference")
   const integration = local("integrations", "integration", {
+    list: sync(() => apiResponse(projectIntegrations())),
+    get: sync((input: Json) => {
+      const id = typeof input === "string" ? input : input?.integrationID ?? input?.id
+      if (!registry.integrations.has(id) && !integrationMethods.has(id)) {
+        throw new Error(`Integration not found: ${String(id)}`)
+      }
+      return apiResponse(projectIntegration(id))
+    }),
+    connect: {
+      key: lazy((input: Json) => integrationConnectKey(input)),
+      external: lazy((input: Json) => integrationConnectExternal(input)),
+    },
+    oauth: {
+      connect: lazy(async (input: Json) => apiResponse(await integrationOauthConnect(input))),
+      status: lazy(async (input: Json) => apiResponse(attemptResult(findAttempt(input)))),
+      complete: lazy((input: Json) => integrationOauthComplete(input)),
+      cancel: lazy((input: Json) => integrationOauthCancel(input)),
+    },
+    command: {
+      connect: lazy(async (input: Json) => apiResponse(integrationCommandConnect(input))),
+      status: lazy(async (input: Json) => apiResponse(attemptResult(findAttempt(input)))),
+      cancel: lazy((input: Json) => integrationCommandCancel(input)),
+    },
     connection: {
-      active: lazy(async (_integrationID: string) => undefined),
-      resolve: lazy(async (_connection: Json) => undefined),
-      status: lazy(async (_input: Json) => undefined),
+      active: lazy(async (integrationID: string) => integrationConnectionList(integrationID)[0]),
+      resolve: lazy(async (connection: Json) => integrationResolveConnection(connection)),
+      status: lazy(async (input: Json) => integrationConnectionStatus(input)),
     },
   })
   const artifact = local("artifacts", "artifact")
@@ -1903,7 +1942,7 @@ function makeDomains(plugin: PluginRecord): Json {
     aisdk,
     command,
     config: api(configApi, mode, "config", false),
-    credential: api({ activate: lazy((input: Json) => callRPC("credential.activate", input)) }, mode, "credential"),
+    credential: api({ activate: lazy((input: Json) => activateStoredCredential(input)) }, mode, "credential"),
     event,
     experimental,
     integration,
@@ -2034,6 +2073,325 @@ async function storageScan(options: Json): Promise<Json> {
   const limit = options?.limit
   const page = limit ? filtered.slice(0, limit) : filtered
   return { entries: page, ...(limit && filtered.length > limit ? { next: page[page.length - 1]?.key } : {}) }
+}
+
+// ---------------------------------------------------------------- integrations
+
+async function loadStoredCredentials() {
+  const saved = await storageGet("__credentials__")
+  if (!Array.isArray(saved)) return
+  for (const credential of saved) {
+    if (credential && typeof credential.id === "string") credentials.set(credential.id, credential)
+  }
+}
+
+function saveStoredCredentials() {
+  eventQueue = eventQueue
+    .then(() => storageSet("__credentials__", [...credentials.values()]))
+    .catch((error) => log("error", `saving credentials failed: ${String(error)}`))
+}
+
+function integrationName(id: string): string {
+  return registry.integrations.get(id)?.name ?? id
+}
+
+function integrationConnectionList(id: string): Json[] {
+  const saved = [...credentials.values()]
+    .filter((credential) => credential.integrationID === id)
+    .sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)) || (b.time?.created ?? 0) - (a.time?.created ?? 0))
+    .map((credential) => ({
+      type: "credential",
+      id: credential.id,
+      label: credential.label,
+      method: credential.value?.type,
+    }))
+  const methods = integrationMethods.get(id)?.values() ?? []
+  const environment: Json[] = []
+  for (const entry of methods) {
+    if (entry.method?.type !== "env") continue
+    for (const name of entry.method.names ?? []) {
+      if (Deno.env.get(name)) environment.push({ type: "env", name })
+    }
+  }
+  return [...saved, ...environment]
+}
+
+function projectIntegration(id: string): Json {
+  const ref = registry.integrations.get(id) ?? { id, name: id }
+  return {
+    ...ref,
+    methods: [...(integrationMethods.get(id)?.values() ?? [])].map((entry) => entry.method),
+    connections: integrationConnectionList(id),
+  }
+}
+
+function projectIntegrations(): Json[] {
+  const ids = new Set([...registry.integrations.keys(), ...integrationMethods.keys()])
+  return [...ids].map((id) => projectIntegration(id))
+}
+
+function credentialLabel(integrationID: string, requested?: string): string {
+  if (requested) return requested
+  const name = integrationName(integrationID)
+  const labels = new Set(
+    [...credentials.values()].filter((credential) => credential.integrationID === integrationID).map((credential) => credential.label),
+  )
+  return Array.from({ length: labels.size + 1 }, (_, index) => (index === 0 ? name : `${name} ${index + 1}`)).find(
+    (candidate) => !labels.has(candidate),
+  ) ?? name
+}
+
+function syncCredentialAuth(credential: Json) {
+  const value = credential?.value
+  if (!value) return
+  if (value.type === "key") {
+    void request("auth.set", {
+      provider: credential.integrationID,
+      key: value.key,
+      metadata: value.metadata,
+    })
+    return
+  }
+  if (value.type === "oauth") {
+    void request("auth.set", {
+      provider: credential.integrationID,
+      oauth: {
+        refresh: value.refresh,
+        access: value.access,
+        expires: value.expires,
+        accountId: value.metadata?.accountId,
+        enterpriseUrl: value.metadata?.enterpriseUrl,
+      },
+    })
+  }
+}
+
+function createStoredCredential(input: Json): Json {
+  const integrationID = String(input.integrationID)
+  const created = Date.now()
+  const existing = [...credentials.values()].filter((credential) => credential.integrationID === integrationID)
+  const active = input.activate !== false || !existing.some((credential) => credential.active)
+  if (active) {
+    for (const credential of existing) credential.active = false
+  }
+  const entry = {
+    id: `cred_${crypto.randomUUID()}`,
+    integrationID,
+    label: credentialLabel(integrationID, input.label),
+    active,
+    value: input.value,
+    time: { created, updated: created },
+  }
+  credentials.set(entry.id, entry)
+  saveStoredCredentials()
+  if (active) syncCredentialAuth(entry)
+  void emitEvent({
+    id: `credential_${created}`,
+    type: "credential.updated",
+    properties: { integrationID, credentialID: entry.id },
+  })
+  if (active) {
+    void emitEvent({
+      id: `credential_switch_${created}`,
+      type: "credential.switched",
+      properties: { integrationID, credentialID: entry.id },
+    })
+  }
+  return entry
+}
+
+function activateStoredCredential(input: Json) {
+  const id = input?.credentialID ?? input?.id
+  const credential = typeof id === "string" ? credentials.get(id) : undefined
+  if (!credential) return
+  for (const item of credentials.values()) {
+    if (item.integrationID === credential.integrationID) item.active = false
+  }
+  credential.active = true
+  credential.time = { ...(credential.time ?? {}), updated: Date.now() }
+  saveStoredCredentials()
+  syncCredentialAuth(credential)
+  void emitEvent({
+    id: `credential_switch_${Date.now()}`,
+    type: "credential.switched",
+    properties: { integrationID: credential.integrationID, credentialID: credential.id },
+  })
+}
+
+function findIntegrationMethod(integrationID: string, types: string[], methodID?: string): Json | undefined {
+  return [...(integrationMethods.get(integrationID)?.values() ?? [])].find(
+    (entry) => types.includes(entry.method?.type) && (methodID === undefined || entry.method?.id === methodID),
+  )
+}
+
+function integrationConnectKey(input: Json) {
+  const integrationID = String(input.integrationID)
+  const known = integrationMethods.get(integrationID)
+  if (known && !findIntegrationMethod(integrationID, ["key"])) throw new Error(`Key method not found: ${integrationID}`)
+  const answer = input.answer && typeof input.answer === "object" ? input.answer : {}
+  createStoredCredential({
+    integrationID,
+    label: input.label,
+    value: {
+      type: "key",
+      key: String(input.key ?? ""),
+      ...(Object.keys(answer).length ? { metadata: answer } : {}),
+    },
+  })
+}
+
+function integrationConnectExternal(input: Json) {
+  const integrationID = String(input.integrationID)
+  const method = findIntegrationMethod(integrationID, ["external"], input.methodID)
+  if (!method) throw new Error(`External method not found: ${input.methodID}`)
+  const answer = input.answer && typeof input.answer === "object" ? input.answer : {}
+  createStoredCredential({
+    integrationID,
+    label: input.label,
+    value: {
+      type: "external",
+      methodID: String(input.methodID),
+      ...(Object.keys(answer).length ? { metadata: answer } : {}),
+    },
+  })
+}
+
+function findAttempt(input: Json): Json {
+  const attempt = integrationAttempts.get(input?.attemptID)
+  if (!attempt || attempt.integrationID !== input?.integrationID) throw new Error(`Attempt not found: ${String(input?.attemptID)}`)
+  return attempt
+}
+
+function attemptResult(attempt: Json): Json {
+  if (attempt.status === "failed") {
+    return { status: "failed", message: attempt.message ?? "Authorization failed", time: attempt.time }
+  }
+  return { status: attempt.status, time: attempt.time }
+}
+
+async function integrationOauthConnect(input: Json): Promise<Json> {
+  const integrationID = String(input.integrationID)
+  const method = findIntegrationMethod(integrationID, ["oauth"], input.methodID)
+  if (!method || typeof method.authorize !== "function") throw new Error(`OAuth method not found: ${input.methodID}`)
+  const authorization = await settle(method.authorize(input.answer ?? {}))
+  const created = Date.now()
+  const expires = authorization.expiresAt ?? created + 15 * 60_000
+  const attemptID = `int_${crypto.randomUUID()}`
+  const attempt = {
+    integrationID,
+    status: "pending",
+    time: { created, expires },
+    authorization,
+  }
+  integrationAttempts.set(attemptID, attempt)
+  if (authorization.mode === "auto") {
+    void (async () => {
+      try {
+        const value = await settle(authorization.callback)
+        createStoredCredential({ integrationID, label: input.label, value })
+        attempt.status = "complete"
+      } catch (error) {
+        attempt.status = "failed"
+        attempt.message = String((error as Json)?.message ?? error)
+      }
+    })()
+  }
+  return {
+    attemptID,
+    url: authorization.url,
+    instructions: authorization.instructions,
+    mode: authorization.mode,
+    ...(authorization.paste ? { paste: true } : {}),
+    time: { created, expires },
+  }
+}
+
+async function integrationOauthComplete(input: Json) {
+  const attempt = integrationAttempts.get(input.attemptID)
+  if (!attempt || attempt.integrationID !== input.integrationID) throw new Error(`Attempt not found: ${input.attemptID}`)
+  if (attempt.status !== "pending") return
+  const authorization = attempt.authorization
+  if (authorization.mode === "code") {
+    try {
+      const value = await settle(authorization.callback(input.code))
+      createStoredCredential({ integrationID: attempt.integrationID, value })
+      attempt.status = "complete"
+    } catch (error) {
+      attempt.status = "failed"
+      attempt.message = String((error as Json)?.message ?? error)
+    }
+  }
+}
+
+function integrationOauthCancel(input: Json) {
+  const attempt = integrationAttempts.get(input.attemptID)
+  if (!attempt || attempt.integrationID !== input.integrationID) return
+  attempt.status = "failed"
+  attempt.message = "Authorization cancelled"
+}
+
+function integrationCommandConnect(input: Json): Json {
+  const integrationID = String(input.integrationID)
+  const method = findIntegrationMethod(integrationID, ["command"], input.methodID)
+  if (!method) throw new Error(`Command method not found: ${input.methodID}`)
+  const created = Date.now()
+  const expires = created + 15 * 60_000
+  const attemptID = `int_${crypto.randomUUID()}`
+  const attempt = { integrationID, status: "pending", message: undefined, time: { created, expires }, cancelled: false }
+  integrationAttempts.set(attemptID, attempt)
+  void (async () => {
+    try {
+      const result = await request("shell.exec", {
+        argv: method.method.command,
+        cwd: directory,
+        env: {},
+      })
+      if (attempt.cancelled) return
+      if ((result.exitCode ?? 0) !== 0) throw new Error(String(result.stderr ?? "").trim() || `Authentication command exited ${result.exitCode}`)
+      const credential = String(result.stdout ?? "").trim()
+      if (!credential) throw new Error("Authentication command returned no credential")
+      createStoredCredential({
+        integrationID,
+        label: input.label,
+        value: { type: "key", key: credential, metadata: { methodID: input.methodID } },
+      })
+      attempt.status = "complete"
+    } catch (error) {
+      if (attempt.cancelled) return
+      attempt.status = "failed"
+      attempt.message = String((error as Json)?.message ?? error)
+    }
+  })()
+  return { attemptID, time: { created, expires } }
+}
+
+function integrationCommandCancel(input: Json) {
+  const attempt = integrationAttempts.get(input.attemptID)
+  if (!attempt || attempt.integrationID !== input.integrationID) return
+  attempt.cancelled = true
+  attempt.status = "failed"
+  attempt.message = "Authentication cancelled"
+}
+
+function integrationResolveConnection(connection: Json): Json | undefined {
+  if (!connection) return undefined
+  if (connection.type === "env") {
+    const value = typeof connection.name === "string" ? Deno.env.get(connection.name) : undefined
+    return value ? { type: "key", key: value } : undefined
+  }
+  const credential = credentials.get(connection.id)
+  return credential?.value
+}
+
+function integrationConnectionStatus(input: Json) {
+  const key = `${input.integrationID}:${input.connection?.id ?? input.connection?.name ?? "default"}`
+  if (input.status) connectionStatuses.set(key, input.status)
+  else connectionStatuses.delete(key)
+  void emitEvent({
+    id: `integration_status_${Date.now()}`,
+    type: "integration.updated",
+    properties: {},
+  })
 }
 
 // ---------------------------------------------------------------- loading
@@ -2179,6 +2537,7 @@ for (const domain of ["agents", "commands", "skills", "tools", "providers", "mcp
 }
 
 const ready = (async () => {
+  await loadStoredCredentials()
   for (const entry of config.plugins ?? []) {
     await loadPlugin(entry)
   }
