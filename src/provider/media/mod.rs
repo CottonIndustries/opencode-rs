@@ -151,7 +151,7 @@ pub fn image_protocol(provider: &Provider) -> Result<ImageProtocol> {
     if id.starts_with("minimax") {
         return Ok(ImageProtocol::Minimax);
     }
-    if id.starts_with("cloudflare") {
+    if id.starts_with("cloudflare-workers-ai") {
         return Ok(ImageProtocol::Cloudflare);
     }
     if id == "meta" {
