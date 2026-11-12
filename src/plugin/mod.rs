@@ -1271,6 +1271,95 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
     }
 }
 
+async fn plugin_generate(
+    app: &Arc<crate::app::App>,
+    session_id: &str,
+    agent_id: Option<String>,
+    session_model: Option<String>,
+    prompt: String,
+    model: Option<Value>,
+) -> Result<Value> {
+    let agent_id = agent_id.unwrap_or_else(|| app.default_agent());
+    let agent = app.agent(&agent_id).or_else(|_| app.agent(&app.default_agent()))?;
+    let (model_ref, variant) = match model.as_ref() {
+        Some(model) if model.is_string() => (model.as_str().map(String::from), None),
+        Some(model) => {
+            let reference = match (
+                model.get("providerID").and_then(Value::as_str),
+                model.get("id").or_else(|| model.get("modelID")).and_then(Value::as_str),
+            ) {
+                (Some(provider_id), Some(id)) => Some(format!("{provider_id}/{id}")),
+                _ => None,
+            };
+            (reference, model.get("variant").and_then(Value::as_str).map(String::from))
+        }
+        None => (None, None),
+    };
+    let opts = crate::app::PromptOptions { model: model_ref, variant, ..Default::default() };
+    let sel = crate::engine::select_model(app, &agent, &opts, session_model.as_deref())?;
+    let mut system: Vec<String> = Vec::new();
+    let mut messages = vec![crate::session::Message::user_text(prompt)];
+    let event = app
+        .plugins
+        .trigger(
+            "session",
+            "generate",
+            json!({
+                "sessionID": session_id,
+                "agent": agent.id,
+                "model": crate::engine::model_hook_json(&sel),
+                "system": [],
+                "messages": messages_for_hook(session_id, &messages),
+                "tools": {},
+                "options": {
+                    "maxTokens": crate::provider::max_output(&sel.model),
+                    "maxOutputTokens": crate::provider::max_output(&sel.model),
+                },
+            }),
+        )
+        .await;
+    if let Some(list) = event.get("system").and_then(Value::as_array) {
+        system = list
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from).or_else(|| item.get("text").and_then(Value::as_str).map(String::from)))
+            .collect();
+    }
+    if let Some(list) = event.get("messages") {
+        apply_messages_hook(&mut messages, list);
+    }
+    let session = crate::provider::SessionRef { id: session_id.to_string(), parent_id: None, project: app.project.clone() };
+    let mut req = crate::engine::build_request(&sel, &agent, system, messages, vec![], &session);
+    if let Some(options) = event.get("options") {
+        if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
+            req.temperature = Some(temperature);
+        }
+        if let Some(top_p) = options.get("topP").and_then(Value::as_f64) {
+            req.top_p = Some(top_p);
+        }
+        if let Some(max) = options
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .or_else(|| options.get("maxOutputTokens").and_then(Value::as_u64))
+        {
+            req.max_tokens = max;
+        }
+        if let Some(extra) = options.get("options").filter(|value| value.is_object()) {
+            req.options = extra.clone();
+        }
+    }
+    let (text, usage) = crate::engine::complete_request(req, None).await?;
+    Ok(json!({
+        "text": text,
+        "cost": crate::engine::cost(&sel.model, &usage),
+        "tokens": {
+            "input": usage.input,
+            "output": usage.output,
+            "reasoning": usage.reasoning,
+            "cache": { "read": usage.cache_read, "write": usage.cache_write },
+        },
+    }))
+}
+
 async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
     let first = args.first().cloned().unwrap_or(Value::Null);
     let arg = |key: &str| first.get(key).and_then(Value::as_str).map(String::from);
@@ -1446,30 +1535,8 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let handle = app.session(&id)?;
             let prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
             let session_agent = handle.with(|session| session.agent.clone());
-            let agent_id = session_agent.unwrap_or_else(|| app.default_agent());
-            let agent = app.agent(&agent_id).or_else(|_| app.agent(&app.default_agent()))?;
             let session_model = handle.with(|session| session.model.clone());
-            let sel = crate::engine::select_model(app, &agent, &Default::default(), session_model.as_deref())?;
-            let (text, usage) = crate::engine::complete(
-                &sel,
-                &agent,
-                vec![],
-                vec![crate::session::Message::user_text(prompt)],
-                vec![],
-                &crate::provider::SessionRef { id: id.clone(), parent_id: None, project: app.project.clone() },
-                None,
-            )
-            .await?;
-            Ok(json!({
-                "text": text,
-                "cost": crate::engine::cost(&sel.model, &usage),
-                "tokens": {
-                    "input": usage.input,
-                    "output": usage.output,
-                    "reasoning": usage.reasoning,
-                    "cache": { "read": usage.cache_read, "write": usage.cache_write },
-                },
-            }))
+            plugin_generate(app, &id, session_agent, session_model, prompt, None).await
         }
         "session.move" => {
             let id = session_id().ok_or_else(|| anyhow!("session.move requires sessionID"))?;
@@ -1757,21 +1824,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "plugin.list" => Ok(json!(app.plugins.list())),
         "generate.text" => {
-            let text = first.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
-            let fallback = app.default_agent();
-            let agent = app.agent("build").or_else(|_| app.agent(&fallback))?;
-            let sel = crate::engine::select_model(app, &agent, &Default::default(), None)?;
-            let (text, _) = crate::engine::complete(
-                &sel,
-                &agent,
-                vec![],
-                vec![crate::session::Message::user_text(text)],
-                vec![],
-                &crate::provider::SessionRef { id: "plugin".into(), parent_id: None, project: app.project.clone() },
-                None,
-            )
-            .await?;
-            Ok(json!({ "text": text }))
+            let prompt = first.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
+            let model = first.get("model").cloned();
+            plugin_generate(app, "plugin", Some(app.default_agent()), None, prompt, model).await
         }
         _ => Err(anyhow!("plugin client: unsupported method {path}")),
     }

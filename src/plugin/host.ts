@@ -706,14 +706,72 @@ for (const domain of ["agents", "commands", "skills", "tools", "providers", "mcp
 
 // ---------------------------------------------------------------- hooks
 
+function toV2Messages(messages: Json): Json[] {
+  return (Array.isArray(messages) ? messages : []).map((message: Json) => {
+    const role = message.info?.role ?? "user"
+    const content: Json[] = []
+    for (const part of message.parts ?? []) {
+      if (part.type === "text") content.push({ type: "text", text: part.text })
+      else if (part.type === "reasoning") content.push({ type: "reasoning", text: part.text })
+      else if (part.type === "file") {
+        content.push({
+          type: "media",
+          media: { source: { type: "base64", data: part.data, mediaType: part.mime } },
+          filename: part.filename,
+        })
+      } else if (part.type === "tool") {
+        content.push({
+          type: "tool-call",
+          id: part.callID,
+          name: part.tool,
+          input: part.state?.input ?? part.input ?? {},
+        })
+      }
+    }
+    return { role, content }
+  })
+}
+
+function applyV2Messages(event: Json, messages: Json[]) {
+  const original = Array.isArray(event.messages) ? event.messages : []
+  for (let index = 0; index < original.length && index < messages.length; index++) {
+    const parts = original[index]?.parts ?? []
+    const content = Array.isArray(messages[index]?.content) ? messages[index].content : []
+    const texts = content.filter((part: Json) => part?.type === "text")
+    const reasoning = content.filter((part: Json) => part?.type === "reasoning")
+    let textIndex = 0
+    let reasoningIndex = 0
+    for (const part of parts) {
+      if (part.type === "text" && textIndex < texts.length) {
+        part.text = texts[textIndex].text
+        textIndex++
+      } else if (part.type === "reasoning" && reasoningIndex < reasoning.length) {
+        part.text = reasoning[reasoningIndex].text
+        reasoningIndex++
+      }
+    }
+  }
+}
+
+const V2_MESSAGE_HOOKS = new Set(["context", "title", "compaction", "generate"])
+
 async function trigger(domain: string, name: string, event: Json): Promise<Json> {
   const key = `${domain}.${name}`
   const list = hooks.get(key) ?? []
+  const messageHook = domain === "session" && V2_MESSAGE_HOOKS.has(name)
   for (const entry of list) {
     if (entry.options?.providerID && event?.model?.providerID !== entry.options.providerID) continue
     try {
       if (entry.plugin.mode === "legacy") {
         await legacyTrigger(entry, domain, name, event)
+      } else if (messageHook) {
+        const v2 = { ...event, messages: toV2Messages(event.messages) }
+        await runCallback(entry.callback, v2)
+        applyV2Messages(event, v2.messages)
+        if (v2.system !== undefined) event.system = v2.system
+        if (v2.options !== undefined) event.options = v2.options
+        if (v2.tools !== undefined) event.tools = v2.tools
+        if (v2.result !== undefined) event.result = v2.result
       } else {
         await runCallback(entry.callback, event)
       }

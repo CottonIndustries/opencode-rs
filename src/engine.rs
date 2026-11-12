@@ -470,7 +470,7 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     Ok(())
 }
 
-fn model_hook_json(sel: &Selection) -> Value {
+pub(crate) fn model_hook_json(sel: &Selection) -> Value {
     serde_json::json!({
         "id": sel.model.id,
         "modelID": sel.model.id,
@@ -495,7 +495,7 @@ fn model_hook_json(sel: &Selection) -> Value {
     })
 }
 
-fn build_request(
+pub(crate) fn build_request(
     sel: &Selection,
     agent: &Agent,
     system: Vec<String>,
@@ -1054,7 +1054,7 @@ pub async fn complete(sel: &Selection, agent: &Agent, system: Vec<String>, messa
 }
 
 /// Run one request to completion and collect its text.
-async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
+pub(crate) async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(provider::stream(req, tx));
     let mut text = String::new();
