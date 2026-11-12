@@ -245,6 +245,7 @@ impl Tool for Edit {
         }
         data.push_str(&result);
         std::fs::write(&path, data)?;
+        let _ = crate::formatter::format(&ctx.app, &path).await;
         let replacements = if replace_all { count } else { 1 };
         let (add, del) = crate::util::diff_stats(text, &result);
         Ok(Output::text(format!("Edited {resource} ({replacements} replacement{})", if replacements == 1 { "" } else { "s" }), resource.clone())

@@ -303,6 +303,8 @@ impl Tool for Patch {
                 let done = applied.iter().map(|(_, n): &(char, String)| n.clone()).collect::<Vec<_>>().join(", ");
                 bail!("Failed to write {shown}: {e}{}", if done.is_empty() { String::new() } else { format!(". Completed before failure: {done}") });
             }
+            let target = p.dest.as_ref().unwrap_or(&p.target);
+            let _ = crate::formatter::format(&ctx.app, target).await;
             applied.push((p.kind, shown));
         }
         let mut lines = vec!["Success. Updated the following files:".to_string()];

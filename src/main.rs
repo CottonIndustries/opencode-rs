@@ -10,6 +10,7 @@ mod command;
 mod config;
 mod engine;
 mod event_store;
+mod formatter;
 mod forms;
 mod http;
 mod mcp;

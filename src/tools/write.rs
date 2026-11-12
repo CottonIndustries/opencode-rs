@@ -58,6 +58,7 @@ impl Tool for Write {
         }
         data.push_str(new);
         std::fs::write(&path, data)?;
+        let _ = crate::formatter::format(&ctx.app, &path).await;
         let msg = format!("{} file successfully: {resource}", if existed { "Wrote" } else { "Created" });
         Ok(Output::text(msg, resource.clone()).meta(json!({ "files": [{ "file": resource, "diff": diff, "additions": add, "deletions": del, "status": if existed { "modified" } else { "added" } }] })))
     }
