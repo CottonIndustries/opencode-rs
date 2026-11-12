@@ -514,10 +514,8 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(json!({ "data": sessions }))
         }
         ("POST", ["api", "session"]) => {
-            let handle = app.new_session(None);
-            handle.save();
-            let session = handle.with(|session| session.clone());
-            Ok(json!({ "data": crate::plugin::session_json(&session) }))
+            let session = crate::plugin::client_call(app, "session.create", vec![request.body.clone()]).await?;
+            Ok(json!({ "data": session }))
         }
         ("GET", ["api", "session", "active"]) => {
             let active = app
@@ -608,8 +606,8 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(json!({ "data": crate::plugin::session_json(&session) }))
         }
         ("DELETE", ["api", "session", id]) => {
-            let removed = crate::session::delete(&app.project, id)?;
-            Ok(json!({ "data": removed }))
+            crate::plugin::client_call(app, "session.remove", vec![json!({ "sessionID": id })]).await?;
+            Ok(json!({ "data": true }))
         }
         ("GET", ["api", "session", id, "message"]) => {
             let handle = app.session(id)?;
