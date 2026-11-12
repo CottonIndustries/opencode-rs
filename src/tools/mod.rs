@@ -8,6 +8,7 @@ pub mod mcp_resource;
 pub mod patch;
 pub mod question;
 pub mod read;
+pub mod schedule;
 pub mod shell;
 pub mod skill;
 pub mod subagent;
@@ -295,6 +296,13 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
     }
     if app.config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
+    }
+    if app.config.experimental.schedules {
+        tools.push(Arc::new(schedule::Create));
+        tools.push(Arc::new(schedule::List));
+        tools.push(Arc::new(schedule::Pause));
+        tools.push(Arc::new(schedule::Resume));
+        tools.push(Arc::new(schedule::Delete));
     }
     if !app.skills().is_empty() {
         tools.push(Arc::new(skill::SkillTool));

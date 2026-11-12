@@ -133,6 +133,7 @@ pub struct App {
     pub skills: RwLock<Vec<crate::tools::skill::Skill>>,
     pub commands: RwLock<BTreeMap<String, crate::command::Command>>,
     pub mcp: crate::mcp::Manager,
+    pub schedules: crate::schedule::Scheduler,
     pub plugins: crate::plugin::Manager,
     pub plugin_commands: RwLock<std::collections::BTreeSet<String>>,
     plugin_default_agent: RwLock<Option<String>>,
@@ -181,6 +182,7 @@ impl App {
             skills: RwLock::new(skills),
             commands: RwLock::new(commands),
             mcp,
+            schedules: crate::schedule::Scheduler::new(),
             plugins,
             plugin_commands: RwLock::new(plugin_commands),
             plugin_default_agent: RwLock::new(None),
@@ -281,6 +283,9 @@ impl App {
             *app.plugin_base.lock().unwrap() = Some(base);
             app.plugins.attach(&app);
             app.load_mcp_prompts().await;
+            if app.config.experimental.schedules {
+                crate::schedule::start(app.clone());
+            }
             return Ok(app);
         }
 
@@ -301,6 +306,9 @@ impl App {
         *app.plugin_base.lock().unwrap() = Some(base);
         app.plugins.attach(&app);
         app.load_mcp_prompts().await;
+        if app.config.experimental.schedules {
+            crate::schedule::start(app.clone());
+        }
         Ok(app)
     }
 

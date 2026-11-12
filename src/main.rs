@@ -23,6 +23,7 @@ mod plugin;
 mod prompt;
 mod provider;
 mod run;
+mod schedule;
 mod server;
 mod session;
 mod snapshot;

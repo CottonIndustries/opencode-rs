@@ -40,6 +40,7 @@ pub struct Config {
 #[serde(default)]
 pub struct Experimental {
     pub todo: bool,
+    pub schedules: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
