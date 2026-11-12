@@ -109,6 +109,11 @@ pub async fn serve() -> Result<()> {
             }
         }
     }
+    let apps: Vec<Arc<crate::app::App>> = server.apps.lock().await.values().cloned().collect();
+    for app in apps {
+        app.plugins.flush().await;
+        app.plugins.shutdown().await;
+    }
     drop(server);
     let _ = writer.await;
     Ok(())
