@@ -1089,7 +1089,15 @@ function toV2Event(event: Json): Json | null {
   } else if (event.type === "server.notice") {
     return null
   }
-  return { id: event.id ?? `evt_${Date.now()}`, created: event.created ?? properties.created ?? Date.now(), type, data }
+  return {
+    id: event.id ?? `evt_${Date.now()}`,
+    created: event.created ?? properties.created ?? Date.now(),
+    type,
+    data,
+    ...(event.durable === undefined ? {} : { durable: event.durable }),
+    ...(event.location === undefined ? {} : { location: event.location }),
+    ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
+  }
 }
 
 const activeStreams = new Map<string, { text: boolean; reasoning: boolean }>()

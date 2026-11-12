@@ -883,7 +883,8 @@ impl Manager {
         }
     }
 
-    pub fn emit(&self, event: Value) {
+    pub fn emit(&self, mut event: Value) {
+        crate::event_store::append(&mut event);
         let Some(inner) = &self.inner else { return };
         let _ = inner.tx.send(json!({ "type": "notification", "method": "event", "params": event }));
     }
@@ -2324,6 +2325,14 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             Ok(Value::Null)
+        }
+        "session.log" | "experimental.session.log" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.log requires sessionID"))?;
+            let after = body.get("after").and_then(Value::as_u64);
+            let limit = body.get("limit").and_then(Value::as_u64).map(|limit| limit as usize);
+            Ok(json!({
+                "data": crate::event_store::read(Some(&id), after, limit),
+            }))
         }
         "session.diff" => {
             let id = session_id().ok_or_else(|| anyhow!("session.diff requires sessionID"))?;
