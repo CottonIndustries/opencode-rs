@@ -23,6 +23,7 @@ htmd = "0.1"
 html2text = "0.12"
 ignore = "0.4"
 mime_guess = "2"
+portable-pty = "0.9"
 pulldown-cmark = { version = "0.12", default-features = false }
 rand = "0.8"
 ratatui = "0.29"
@@ -35,10 +36,12 @@ wreq = { version = "0.16.1", default-features = false, features = ["tokio-rt", "
 wreq-proto = "0.2.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
 similar = { version = "2", features = ["inline"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 unicode-width = "0.2"
+vt100 = "0.15"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
