@@ -29,6 +29,11 @@ enum WsError {
 }
 
 fn transport(req: &Request) -> Option<String> {
+    // Upstream binds the session WebSocket only for primary step requests;
+    // title, compaction and generate stay on HTTP.
+    if req.hooks.as_ref().is_some_and(|hooks| hooks.kind != "primary") {
+        return None;
+    }
     req.model
         .options
         .get("transport")
