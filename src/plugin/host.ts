@@ -225,6 +225,7 @@ type PluginRecord = {
 }
 
 const plugins: PluginRecord[] = []
+const rpcs = new Map<string, { plugin: PluginRecord; definition: Json; handlers: Json }>()
 
 type HookEntry = {
   plugin: PluginRecord
@@ -1667,15 +1668,26 @@ function makeDomains(plugin: PluginRecord): Json {
   const pluginApi: Json = { list: lazy(async () => apiResponse(pluginList())) }
   const rpc: Json = {
     register: (definition: Json, handlers: Json) => {
-      const bus = new Map<string, Function>()
-      const dispose = () => bus.clear()
+      const id = definition?.id
+      if (typeof id !== "string") throw new Error("rpc.register requires a definition id")
+      rpcs.set(id, { plugin, definition, handlers })
+      const dispose = () => rpcs.delete(id)
       plugin.registrations.push(dispose)
       return effect(() => ({
         dispose: mode === "effect" ? Effect.sync(dispose) : async () => dispose(),
-        events: { emit: (...args: Json[]) => notify("rpc.event", { definition: definition.id, args }) },
+        events: { emit: (...args: Json[]) => notify("rpc.event", { definition: id, args }) },
         handlers,
       }))
     },
+    call: lazy(async (input: Json) => {
+      const entry = rpcs.get(input?.rpcID)
+      if (!entry) throw new Error(`rpc not found: ${String(input?.rpcID)}`)
+      const handler = entry.handlers?.[input.method]
+      if (typeof handler !== "function") throw new Error(`rpc method not found: ${String(input.method)}`)
+      const controller = new AbortController()
+      const error = (value: Json) => Object.assign(new Error(value?.message ?? "rpc error"), { _tag: "Rpc.Error", ...value })
+      return settle(handler(input.input, { signal: controller.signal, error }))
+    }),
   }
   const generate: Json = { text: lazy((input: Json) => callRPC("generate.text", input)) }
   const experimental: Json = {
