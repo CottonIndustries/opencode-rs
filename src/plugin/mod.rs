@@ -1329,6 +1329,7 @@ async fn plugin_generate(
     }
     let session = crate::provider::SessionRef { id: session_id.to_string(), parent_id: None, project: app.project.clone() };
     let mut req = crate::engine::build_request(&sel, &agent, system, messages, vec![], &session);
+    crate::engine::attach_hooks(app, &mut req, session_id, &agent, &sel, "generate");
     if let Some(options) = event.get("options") {
         if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
             req.temperature = Some(temperature);

@@ -237,7 +237,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     }
     headers.extend(req.headers.iter().cloned());
 
-    let resp = super::post(&tx, &url, &headers, &body).await?;
+    let resp = super::post(&tx, &url, &headers, &body, req.hooks.as_ref()).await?;
     let mut sse = Sse::new(resp);
 
     enum Block {

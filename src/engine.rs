@@ -504,6 +504,16 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     Ok(())
 }
 
+pub(crate) fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, agent: &Agent, sel: &Selection, kind: &str) {
+    req.hooks = Some(provider::HookContext {
+        app: app.clone(),
+        session_id: session_id.to_string(),
+        agent: agent.id.clone(),
+        model: model_hook_json(sel),
+        kind: kind.to_string(),
+    });
+}
+
 pub(crate) fn model_hook_json(sel: &Selection) -> Value {
     serde_json::json!({
         "id": sel.model.id,
@@ -550,6 +560,7 @@ pub(crate) fn build_request(
         options: Value::Null,
         headers: Vec::new(),
         session: session.clone(),
+        hooks: None,
     }
 }
 
@@ -728,6 +739,7 @@ async fn step_once(
         .map(|map| map.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
         .unwrap_or_default();
     let mut req = build_request(sel, agent, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
+    attach_hooks(app, &mut req, &sid, agent, sel, "primary");
     if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
         req.temperature = Some(temperature);
     }
@@ -1187,6 +1199,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         (summary, Usage::default())
     } else {
         let mut req = build_request(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
+        attach_hooks(app, &mut req, &sid, &compaction, sel, "compaction");
         if let Some(options) = compaction_event.get("options") {
             if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
                 req.temperature = Some(temperature);
@@ -1274,6 +1287,7 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let sel = Selection { variant: if sel.model.has_reasoning_type("toggle") { Some("off".into()) } else { Some("low".into()).filter(|v| sel.model.variants().contains(v)) }, ..sel };
     let input = format!("Here is the first message of the conversation:\n\n<message>\n{first}\n</message>\n\nReply with only the title.");
     let mut req = build_request(&sel, &agent, vec![crate::agent::TITLE_PROMPT.into()], vec![Message::user_text(input)], vec![], &handle.with(|s| provider::SessionRef::of(s)));
+    attach_hooks(app, &mut req, &handle.id(), &agent, &sel, "title");
     req.max_tokens = 0;
     let title_event = app
         .plugins

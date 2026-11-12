@@ -10,6 +10,7 @@ use crate::session::{Message, ToolState, Usage};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -19,7 +20,15 @@ pub struct ToolSpec {
     pub schema: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+pub struct HookContext {
+    pub app: Arc<crate::app::App>,
+    pub session_id: String,
+    pub agent: String,
+    pub model: Value,
+    pub kind: String,
+}
+
 pub struct Request {
     pub provider: Provider,
     pub model: Model,
@@ -36,6 +45,7 @@ pub struct Request {
     /// Extra request headers contributed by plugins.
     pub headers: Vec<(String, String)>,
     pub session: SessionRef,
+    pub hooks: Option<HookContext>,
 }
 
 /// Identifies the conversation a request belongs to (sent as client headers).
@@ -147,18 +157,87 @@ pub async fn post(
     url: &str,
     headers: &[(String, String)],
     body: &Value,
+    hooks: Option<&HookContext>,
 ) -> Result<wreq::Response> {
     let mut attempt = 0u32;
+    let mut url = url.to_string();
+    let mut body = body.clone();
+    let mut headers = headers.to_vec();
     loop {
         attempt += 1;
-        let mut rb = crate::http::client().post(url).json(body);
+        if let Some(hooks) = hooks {
+            let header_map: serde_json::Map<String, Value> = headers
+                .iter()
+                .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                .collect();
+            let event = hooks
+                .app
+                .plugins
+                .trigger(
+                    "session",
+                    "http.request",
+                    serde_json::json!({
+                        "sessionID": hooks.session_id,
+                        "agent": hooks.agent,
+                        "model": hooks.model,
+                        "kind": hooks.kind,
+                        "request": {
+                            "url": url,
+                            "method": "POST",
+                            "headers": header_map,
+                            "body": body,
+                        },
+                    }),
+                )
+                .await;
+            if let Some(request) = event.get("request") {
+                if let Some(next) = request.get("url").and_then(Value::as_str) {
+                    url = next.to_string();
+                }
+                if let Some(next) = request.get("body") {
+                    body = next.clone();
+                }
+                if let Some(next) = request.get("headers").and_then(Value::as_object) {
+                    headers = next
+                        .iter()
+                        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                        .collect();
+                }
+            }
+        }
+        let mut rb = crate::http::client().post(&url).json(&body);
         // `.json()` already sets content-type
         for (k, v) in headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("content-type")) {
             rb = rb.header(k.as_str(), v.as_str());
         }
         let res = crate::http::send(rb).await;
         let (retryable, msg, wait) = match res {
-            Ok(r) if r.status().is_success() => return Ok(r),
+            Ok(r) if r.status().is_success() => {
+                if let Some(hooks) = hooks {
+                    let response_headers: serde_json::Map<String, Value> = r
+                        .headers()
+                        .iter()
+                        .filter_map(|(key, value)| value.to_str().ok().map(|value| (key.to_string(), Value::String(value.to_string()))))
+                        .collect();
+                    let _ = hooks
+                        .app
+                        .plugins
+                        .trigger(
+                            "session",
+                            "http.response",
+                            serde_json::json!({
+                                "sessionID": hooks.session_id,
+                                "agent": hooks.agent,
+                                "model": hooks.model,
+                                "kind": hooks.kind,
+                                "request": { "url": url, "method": "POST" },
+                                "response": { "status": r.status().as_u16(), "headers": response_headers },
+                            }),
+                        )
+                        .await;
+                }
+                return Ok(r);
+            }
             Ok(r) => {
                 let status = r.status();
                 let retry_after = r
