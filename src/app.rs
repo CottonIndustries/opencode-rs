@@ -26,7 +26,7 @@ pub enum AppEvent {
     Error { session: String, message: String },
     Retry { session: String, message: String },
     Permission(permission::Request),
-    PermissionResolved { id: String },
+    PermissionResolved { id: String, session_id: String, reply: String },
     Title { session: String },
     Notice { message: String },
 }
@@ -112,6 +112,8 @@ pub struct App {
     pub mcp: crate::mcp::Manager,
     pub plugins: crate::plugin::Manager,
     pub plugin_commands: RwLock<std::collections::BTreeSet<String>>,
+    plugin_default_agent: RwLock<Option<String>>,
+    plugin_default_model: RwLock<Option<String>>,
     pub events: broadcast::Sender<AppEvent>,
     pub ask_mode: Mutex<AskMode>,
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
@@ -122,6 +124,47 @@ pub struct App {
 impl App {
     pub async fn init(directory: PathBuf) -> Result<Arc<App>> {
         Self::init_with_mcp(directory, BTreeMap::new()).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        project: String,
+        directory: PathBuf,
+        worktree: PathBuf,
+        is_git: bool,
+        config: crate::config::Config,
+        config_files: Vec<PathBuf>,
+        providers: BTreeMap<String, Provider>,
+        agents: BTreeMap<String, Agent>,
+        skills: Vec<crate::tools::skill::Skill>,
+        commands: BTreeMap<String, crate::command::Command>,
+        plugins: crate::plugin::Manager,
+        plugin_commands: std::collections::BTreeSet<String>,
+    ) -> Arc<App> {
+        let mcp = crate::mcp::Manager::new(config.mcp.clone(), directory.clone());
+        let (events, _) = broadcast::channel(4096);
+        Arc::new(App {
+            project,
+            directory,
+            worktree,
+            is_git,
+            config,
+            config_files,
+            providers: RwLock::new(providers),
+            agents: RwLock::new(agents),
+            skills: RwLock::new(skills),
+            commands: RwLock::new(commands),
+            mcp,
+            plugins,
+            plugin_commands: RwLock::new(plugin_commands),
+            plugin_default_agent: RwLock::new(None),
+            plugin_default_model: RwLock::new(None),
+            events,
+            ask_mode: Mutex::new(AskMode::Interactive),
+            pending: Mutex::new(HashMap::new()),
+            pending_requests: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Like [`App::init`], adding MCP servers supplied by a client (ACP) to the configured ones.
@@ -141,12 +184,38 @@ impl App {
 
         // Plugins can transform the registries before the application starts.
         // The host receives a JSON snapshot and returns the transformed state.
+        // A provisional app lets plugin setup read live registries through the
+        // client APIs while the final app is still being assembled.
         let snapshot = crate::plugin::snapshot(&config, &providers, &agents, &skills, &commands, &directory, &worktree, &project);
-        let (plugin_manager, state, errors) = crate::plugin::init(&directory, &worktree, &project, specs, snapshot).await;
+        let provisional = Self::assemble(
+            project.clone(),
+            directory.clone(),
+            worktree.clone(),
+            is_git,
+            config.clone(),
+            files.clone(),
+            providers.clone(),
+            agents.clone(),
+            skills.clone(),
+            commands.clone(),
+            crate::plugin::Manager::disabled(),
+            Default::default(),
+        );
+        let (plugin_manager, state, errors) =
+            crate::plugin::init(&directory, &worktree, &project, specs, snapshot, Some(&provisional)).await;
+        drop(provisional);
         for error in errors {
             eprintln!("warning: {error}");
         }
-        let plugin_commands = if plugin_manager.enabled() {
+        if plugin_manager.enabled() {
+            // A legacy `config` hook may have edited the snapshot. The snapshot
+            // originated from this config, so decoding it back is lossless for
+            // every field this build understands.
+            if let Some(value) = state.get("config") {
+                if let Ok(updated) = serde_json::from_value::<crate::config::Config>(value.clone()) {
+                    config = updated;
+                }
+            }
             let applied = crate::plugin::apply_state(&state, &config, &providers, &agents, &commands);
             providers = applied.providers;
             agents = applied.agents;
@@ -161,33 +230,38 @@ impl App {
             if let Some(model) = applied.default_model {
                 config.model = Some(model);
             }
-            applied.plugin_commands
-        } else {
-            Default::default()
-        };
+            let app = Self::assemble(
+                project,
+                directory,
+                worktree,
+                is_git,
+                config,
+                files,
+                providers,
+                agents,
+                skills,
+                commands,
+                plugin_manager,
+                applied.plugin_commands,
+            );
+            app.plugins.attach(&app);
+            return Ok(app);
+        }
 
-        let mcp = crate::mcp::Manager::new(config.mcp.clone(), directory.clone());
-        let (events, _) = broadcast::channel(4096);
-        let app = Arc::new(App {
+        let app = Self::assemble(
             project,
             directory,
             worktree,
             is_git,
             config,
-            config_files: files,
-            providers: RwLock::new(providers),
-            agents: RwLock::new(agents),
-            skills: RwLock::new(skills),
-            commands: RwLock::new(commands),
-            mcp,
-            plugins: plugin_manager,
-            plugin_commands: RwLock::new(plugin_commands),
-            events,
-            ask_mode: Mutex::new(AskMode::Interactive),
-            pending: Mutex::new(HashMap::new()),
-            pending_requests: Mutex::new(HashMap::new()),
-            sessions: Mutex::new(HashMap::new()),
-        });
+            files,
+            providers,
+            agents,
+            skills,
+            commands,
+            plugin_manager,
+            Default::default(),
+        );
         app.plugins.attach(&app);
         Ok(app)
     }
@@ -203,6 +277,8 @@ impl App {
         *self.skills.write().unwrap() = applied.skills;
         *self.commands.write().unwrap() = applied.commands;
         *self.plugin_commands.write().unwrap() = applied.plugin_commands;
+        *self.plugin_default_agent.write().unwrap() = applied.default_agent;
+        *self.plugin_default_model.write().unwrap() = applied.default_model;
     }
 
     /// Start a turn in the background (plugin/client requests are admitted,
@@ -267,6 +343,11 @@ impl App {
     }
 
     pub fn default_agent(&self) -> String {
+        if let Some(id) = self.plugin_default_agent.read().unwrap().as_ref() {
+            if self.agents.read().unwrap().get(id).is_some_and(|a| a.is_primary() && !a.hidden) {
+                return id.clone();
+            }
+        }
         crate::agent::default_agent(&self.config, &self.agents.read().unwrap())
     }
 
@@ -284,6 +365,11 @@ impl App {
     }
 
     pub fn default_model(&self) -> Option<String> {
+        if let Some(reference) = self.plugin_default_model.read().unwrap().as_ref() {
+            if crate::models::resolve(&self.providers.read().unwrap(), reference).is_ok() {
+                return Some(reference.clone());
+            }
+        }
         crate::models::default_model(&self.config, &self.providers.read().unwrap())
     }
 
@@ -417,7 +503,7 @@ impl App {
         let session_id = handle.id();
         let req = permission::Request {
             id: crate::util::id("per"),
-            session_id,
+            session_id: session_id.clone(),
             tool_call_id: tool_call_id.map(String::from),
             action: action.to_string(),
             resources: needs_ask.clone(),
@@ -433,7 +519,15 @@ impl App {
         self.emit(AppEvent::Permission(req));
         let reply = rx.await.unwrap_or(Reply::Reject);
         self.pending_requests.lock().unwrap().remove(&id);
-        self.emit(AppEvent::PermissionResolved { id });
+        self.emit(AppEvent::PermissionResolved {
+            id,
+            session_id: session_id.clone(),
+            reply: match reply {
+                Reply::Once => "once",
+                Reply::Always => "always",
+                Reply::Reject => "reject",
+            }.into(),
+        });
         match reply {
             Reply::Once => Ok(()),
             Reply::Always => {
@@ -527,8 +621,10 @@ fn plugin_event(ev: &AppEvent) -> serde_json::Value {
                 "message": request.title,
             }
         }),
-        AppEvent::PermissionResolved { id: request } => json!({
-            "id": id(), "type": "permission.replied", "properties": { "requestID": request }
+        AppEvent::PermissionResolved { id: request, session_id, reply } => json!({
+            "id": id(), "type": "permission.replied", "properties": {
+                "sessionID": session_id, "requestID": request, "reply": reply
+            }
         }),
         AppEvent::Title { session } => json!({
             "id": id(), "type": "session.updated", "properties": { "sessionID": session }

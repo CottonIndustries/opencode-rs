@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -641,7 +641,7 @@ struct Inner {
     tx: mpsc::UnboundedSender<Value>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next: AtomicU64,
-    app: Arc<OnceLock<Weak<crate::app::App>>>,
+    app: Arc<Mutex<Option<Weak<crate::app::App>>>>,
     child: Mutex<Option<tokio::process::Child>>,
     shutdown: CancellationToken,
 }
@@ -753,7 +753,7 @@ impl Manager {
 
     pub fn attach(&self, app: &Arc<crate::app::App>) {
         if let Some(inner) = &self.inner {
-            let _ = inner.app.set(Arc::downgrade(app));
+            *inner.app.lock().unwrap() = Some(Arc::downgrade(app));
         }
     }
 
@@ -942,11 +942,12 @@ pub async fn init(
     project: &str,
     specs: Vec<PluginSpec>,
     snapshot: Value,
+    setup_app: Option<&Arc<crate::app::App>>,
 ) -> (Manager, Value, Vec<String>) {
     if specs.is_empty() || std::env::var_os("OPENCODE_DISABLE_PLUGINS").is_some() {
         return (Manager::disabled(), snapshot, Vec::new());
     }
-    match start(directory, worktree, project, specs, snapshot.clone()).await {
+    match start(directory, worktree, project, specs, snapshot.clone(), setup_app).await {
         Ok((manager, state)) => {
             manager.apply_runtime_state(&state);
             (manager, state, Vec::new())
@@ -965,6 +966,7 @@ async fn start(
     project: &str,
     specs: Vec<PluginSpec>,
     snapshot: Value,
+    setup_app: Option<&Arc<crate::app::App>>,
 ) -> Result<(Manager, Value)> {
     let deno = ensure_deno().await?;
     let dependencies = plugin_dependencies(&specs);
@@ -1075,7 +1077,7 @@ async fn start(
     });
 
     let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let app = Arc::new(OnceLock::<Weak<crate::app::App>>::new());
+    let app = Arc::new(Mutex::new(None::<Weak<crate::app::App>>));
     let shutdown = CancellationToken::new();
     let manager = Manager {
         inner: Some(Arc::new(Inner {
@@ -1145,6 +1147,16 @@ async fn start(
                             let _ = tx.send(response);
                         });
                     }
+                    Some("notification") => {
+                        if message.get("method").and_then(Value::as_str) == Some("state.changed") {
+                            let current = app.lock().unwrap().as_ref().and_then(Weak::upgrade);
+                            if let Some(app) = current {
+                                if let Some(state) = message.pointer("/params/state") {
+                                    app.apply_plugin_state(state);
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1156,6 +1168,10 @@ async fn start(
     }
 
     // Give the host a moment to install its runtime and import plugin modules.
+    // The caller may attach a provisional app first so setup can use client APIs.
+    if let Some(app) = setup_app {
+        manager.attach(app);
+    }
     let ready = manager
         .request_with_timeout("initialize", json!({}), Some(std::time::Duration::from_secs(300)))
         .await;
@@ -1179,7 +1195,8 @@ async fn start(
 
 // ---------------------------------------------------------------- host requests
 
-async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::app::App>>>) -> Result<Value> {
+async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crate::app::App>>>>) -> Result<Value> {
+    let attached = || app.lock().unwrap().as_ref().and_then(Weak::upgrade);
     match method {
         "log" => {
             let level = params.get("level").and_then(Value::as_str).unwrap_or("info");
@@ -1213,7 +1230,7 @@ async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::a
             }))
         }
         "permission.assert" => {
-            let Some(app) = app.get().and_then(|w| w.upgrade()) else {
+            let Some(app) = attached() else {
                 return Err(anyhow!("application is not ready"));
             };
             let session_id = params.get("sessionID").and_then(Value::as_str).unwrap_or_default();
@@ -1243,7 +1260,7 @@ async fn host_call(method: &str, params: Value, app: &Arc<OnceLock<Weak<crate::a
             Ok(Value::Null)
         }
         "client.call" => {
-            let Some(app) = app.get().and_then(|w| w.upgrade()) else {
+            let Some(app) = attached() else {
                 return Err(anyhow!("application is not ready"));
             };
             let path = params.get("path").and_then(Value::as_str).unwrap_or_default();
@@ -1306,10 +1323,10 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(limit) = filter.get("limit").and_then(Value::as_u64) {
                 list.truncate(limit as usize);
             }
-            Ok(json!(list
-                .iter()
-                .map(session_json_summary)
-                .collect::<Vec<_>>()))
+            Ok(json!({
+                "data": list.iter().map(session_json_summary).collect::<Vec<_>>(),
+                "cursor": {},
+            }))
         }
         "session.get" => {
             let id = session_id().ok_or_else(|| anyhow!("session.get requires sessionID"))?;
@@ -1368,7 +1385,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.messages" => {
             let id = session_id().ok_or_else(|| anyhow!("session.messages requires sessionID"))?;
             let handle = app.session(&id)?;
-            Ok(handle.with(|s| json!(s.messages)))
+            Ok(handle.with(|s| json!({ "data": session_messages_json(&s.messages), "cursor": {} })))
         }
         "session.status" => {
             let id = session_id().ok_or_else(|| anyhow!("session.status requires sessionID"))?;
@@ -1383,11 +1400,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }
             Ok(json!({ "done": true }))
         }
-        "session.context" | "session.instructions" => {
-            // Session instruction/context inspection is not a Rust feature;
-            // return empty data rather than failing the plugin.
-            Ok(Value::Null)
+        "session.context" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.context requires sessionID"))?;
+            let handle = app.session(&id)?;
+            Ok(handle.with(|s| session_messages_json(&s.messages)))
         }
+        "session.instructions" => Ok(json!([])),
         "session.switchAgent" => {
             let id = session_id().ok_or_else(|| anyhow!("session.switchAgent requires sessionID"))?;
             let handle = app.session(&id)?;
@@ -1421,6 +1439,52 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     handle.save();
                 }
             }
+            Ok(Value::Null)
+        }
+        "session.generate" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.generate requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
+            let session_agent = handle.with(|session| session.agent.clone());
+            let agent_id = session_agent.unwrap_or_else(|| app.default_agent());
+            let agent = app.agent(&agent_id).or_else(|_| app.agent(&app.default_agent()))?;
+            let session_model = handle.with(|session| session.model.clone());
+            let sel = crate::engine::select_model(app, &agent, &Default::default(), session_model.as_deref())?;
+            let (text, usage) = crate::engine::complete(
+                &sel,
+                &agent,
+                vec![],
+                vec![crate::session::Message::user_text(prompt)],
+                vec![],
+                &crate::provider::SessionRef { id: id.clone(), parent_id: None, project: app.project.clone() },
+                None,
+            )
+            .await?;
+            Ok(json!({
+                "text": text,
+                "cost": crate::engine::cost(&sel.model, &usage),
+                "tokens": {
+                    "input": usage.input,
+                    "output": usage.output,
+                    "reasoning": usage.reasoning,
+                    "cache": { "read": usage.cache_read, "write": usage.cache_write },
+                },
+            }))
+        }
+        "session.move" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.move requires sessionID"))?;
+            let directory = body
+                .get("directory")
+                .or_else(|| first.get("directory"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("session.move requires directory"))?;
+            let handle = app.session(&id)?;
+            let directory = std::path::PathBuf::from(directory);
+            handle.with(|session| {
+                session.directory = directory.clone();
+                session.project = crate::session::project_id(&directory);
+            });
+            handle.save();
             Ok(Value::Null)
         }
         "session.abort" | "session.interrupt" => {
@@ -1496,6 +1560,21 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if let Some(agent) = arg("agent") {
                 message.agent = Some(agent);
             }
+            let message_id = message.id.clone();
+            let files = message
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    crate::session::Part::File(file) => Some(json!({
+                        "data": file.data,
+                        "mime": file.mime,
+                        "source": { "type": "inline" },
+                        "name": file.name,
+                    })),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let payload_text = message.text();
             let mut opts = crate::app::PromptOptions::default();
             opts.agent = first.get("agent").and_then(Value::as_str).map(String::from);
             if let Some(model) = first.get("model") {
@@ -1507,14 +1586,31 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 opts.variant = model.get("variant").and_then(Value::as_str).map(String::from);
             }
             app.spawn_prompt(&id, message, opts)?;
-            Ok(json!({ "queued": true }))
+            Ok(json!({
+                "id": message_id,
+                "sessionID": id,
+                "time": { "created": crate::util::now_ms() },
+                "type": "user",
+                "payload": { "text": payload_text, "files": files },
+                "delivery": "steer",
+            }))
         }
         "session.synthetic" => {
             let id = session_id().ok_or_else(|| anyhow!("session.synthetic requires sessionID"))?;
             let text = body.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let message_id = crate::util::id("msg");
+            let session_id = id.clone();
+            let payload_text = text.clone();
             let app = app.clone();
-            tokio::spawn(async move { crate::engine::notify(app, id, text).await });
-            Ok(json!(true))
+            tokio::spawn(async move { crate::engine::notify(app, session_id, payload_text).await });
+            Ok(json!({
+                "id": message_id,
+                "sessionID": id,
+                "time": { "created": crate::util::now_ms() },
+                "type": "synthetic",
+                "payload": { "text": text },
+                "delivery": "steer",
+            }))
         }
         "session.command" => {
             let id = session_id().ok_or_else(|| anyhow!("session.command requires sessionID"))?;
@@ -1718,6 +1814,112 @@ fn permission_json(request: &crate::permission::Request) -> Value {
         "metadata": request.metadata,
         "message": request.title,
     })
+}
+
+fn model_ref_json(reference: Option<&str>) -> Value {
+    reference
+        .and_then(crate::models::parse_ref)
+        .map(|(provider_id, id, variant)| json!({ "providerID": provider_id, "id": id, "variant": variant }))
+        .unwrap_or(Value::Null)
+}
+
+fn session_messages_json(messages: &[crate::session::Message]) -> Value {
+    use crate::session::{Part, Role, ToolState};
+    json!(messages
+        .iter()
+        .map(|message| match message.role {
+            Role::User => {
+                let text = message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let files: Vec<Value> = message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::File(file) => Some(json!({
+                            "data": file.data,
+                            "mime": file.mime,
+                            "source": { "type": "inline" },
+                            "name": file.name,
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                let mut value = json!({
+                    "id": message.id,
+                    "time": { "created": message.time },
+                    "type": "user",
+                    "text": text,
+                });
+                if !files.is_empty() {
+                    value["files"] = json!(files);
+                }
+                value
+            }
+            Role::Assistant => {
+                let content: Vec<Value> = message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::Text { text, .. } => Some(json!({ "type": "text", "text": text })),
+                        Part::Reasoning { text, .. } => Some(json!({ "type": "reasoning", "text": text })),
+                        Part::Tool { id, name, input, state, .. } => Some(json!({
+                            "type": "tool",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                            "state": match state {
+                                ToolState::Pending | ToolState::Running => json!({
+                                    "status": "running", "input": input, "metadata": {},
+                                }),
+                                ToolState::Completed { output, metadata, attachments, .. } => {
+                                    let mut items = vec![json!({ "type": "text", "text": output })];
+                                    items.extend(attachments.iter().map(|file| json!({
+                                        "type": "file",
+                                        "uri": format!("data:{};base64,{}", file.mime, file.data),
+                                        "mime": file.mime,
+                                        "name": file.name,
+                                    })));
+                                    json!({
+                                        "status": "completed", "input": input, "content": items, "metadata": metadata,
+                                    })
+                                }
+                                ToolState::Error { error } => json!({
+                                    "status": "error",
+                                    "input": input,
+                                    "error": { "type": "unknown", "message": error },
+                                }),
+                            },
+                            "time": { "created": message.time },
+                        })),
+                        Part::Compaction { summary } => Some(json!({ "type": "text", "text": summary })),
+                        Part::File(_) => None,
+                    })
+                    .collect();
+                json!({
+                    "id": message.id,
+                    "time": { "created": message.time, "completed": message.completed },
+                    "type": "assistant",
+                    "agent": message.agent.clone().unwrap_or_default(),
+                    "model": model_ref_json(message.model.as_deref()),
+                    "content": content,
+                    "cost": message.cost,
+                    "tokens": {
+                        "input": message.usage.input,
+                        "output": message.usage.output,
+                        "reasoning": message.usage.reasoning,
+                        "cache": { "read": message.usage.cache_read, "write": message.usage.cache_write },
+                    },
+                })
+            }
+        })
+        .collect::<Vec<_>>())
 }
 
 fn session_json_summary(session: &crate::session::Summary) -> Value {

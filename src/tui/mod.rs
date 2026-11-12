@@ -2062,7 +2062,7 @@ impl Ui {
                 }
                 self.permissions.push_back(req);
             }
-            AppEvent::PermissionResolved { id } => self.permissions.retain(|r| r.id != id),
+            AppEvent::PermissionResolved { id, .. } => self.permissions.retain(|r| r.id != id),
             AppEvent::Error { session, message } if session == sid => self.toast(Variant::Error, None, message),
             AppEvent::Busy { session, busy: false } if session == sid => self.interrupt = None,
             AppEvent::Notice { message } if !message.is_empty() && !message.starts_with("Compacting") => self.info(message),

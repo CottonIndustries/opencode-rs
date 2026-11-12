@@ -372,6 +372,18 @@ function installDomain(domain: string) {
   if ("defaultModel" in built) registry.defaultModel = built.defaultModel
 }
 
+let stateChangeScheduled = false
+
+function scheduleStateChanged() {
+  if (initializing || stateChangeScheduled) return
+  stateChangeScheduled = true
+  queueMicrotask(() => {
+    stateChangeScheduled = false
+    if (initializing) return
+    notify("state.changed", { state: domainSnapshot() })
+  })
+}
+
 function rebuild(domain?: string) {
   const domains = domain ? [domain] : Object.keys(registry).filter((key) => registry[key as keyof Registry] instanceof Map)
   for (const name of domains) {
@@ -389,6 +401,7 @@ function rebuild(domain?: string) {
       }
     }
   }
+  scheduleStateChanged()
 }
 
 function registerTransform(plugin: PluginRecord, domain: string, callback: Function) {
@@ -400,6 +413,7 @@ function registerTransform(plugin: PluginRecord, domain: string, callback: Funct
   } catch (error) {
     log("error", `plugin ${plugin.id} transform ${domain} failed: ${String(error)}`)
   }
+  scheduleStateChanged()
   const remove = () => {
     const current = transforms.get(domain) ?? []
     transforms.set(domain, current.filter((item) => item.callback !== callback))
@@ -721,25 +735,102 @@ function toV2Event(event: Json): Json {
   let data = properties
   if (event.type === "message.part.updated") {
     const part = properties.part ?? {}
+    const assistantMessageID = properties.assistantMessageID ?? properties.messageID ?? "msg_current"
     if (part.type === "text") {
       type = "session.text.delta"
-      data = { sessionID: properties.sessionID, delta: properties.delta ?? part.text ?? "" }
+      data = {
+        sessionID: properties.sessionID,
+        assistantMessageID,
+        ordinal: properties.ordinal ?? 0,
+        delta: properties.delta ?? part.text ?? "",
+      }
     } else if (part.type === "reasoning") {
       type = "session.reasoning.delta"
-      data = { sessionID: properties.sessionID, delta: properties.delta ?? part.text ?? "" }
+      data = {
+        sessionID: properties.sessionID,
+        assistantMessageID,
+        ordinal: properties.ordinal ?? 0,
+        delta: properties.delta ?? part.text ?? "",
+      }
     } else if (part.type === "tool") {
       const status = part.state?.status
-      type = status === "completed" ? "session.tool.success" : status === "error" ? "session.tool.failed" : "session.tool.called"
-      data = { sessionID: properties.sessionID, callID: properties.callID ?? part.callID, tool: part.tool ?? part.name, ...part.state }
+      const base = {
+        sessionID: properties.sessionID,
+        assistantMessageID,
+        id: properties.callID ?? part.callID,
+        name: part.tool ?? part.name,
+        executed: true,
+      }
+      if (status === "completed") {
+        type = "session.tool.success"
+        data = {
+          ...base,
+          content: [{ type: "text", text: part.state.output ?? "" }],
+          metadata: part.state.metadata ?? {},
+        }
+      } else if (status === "error") {
+        type = "session.tool.failed"
+        data = {
+          ...base,
+          error: { type: "unknown", message: String(part.state.error ?? "") },
+        }
+      } else {
+        type = "session.tool.called"
+        data = { ...base, input: part.state?.input ?? {} }
+      }
+    }
+  } else if (event.type === "session.idle") {
+    data = { sessionID: properties.sessionID }
+  } else if (event.type === "session.status") {
+    data = { sessionID: properties.sessionID, status: properties.status ?? { type: "busy" } }
+  } else if (event.type === "session.updated") {
+    const info = properties.info ?? {}
+    if (typeof info.title === "string") {
+      type = "session.renamed"
+      data = { sessionID: properties.sessionID ?? info.id, title: info.title }
+    } else {
+      type = "session.metadata.updated"
+      data = { sessionID: properties.sessionID ?? info.id, metadata: info.metadata ?? {} }
+    }
+  } else if (event.type === "session.created") {
+    const info = properties.info ?? {}
+    data = {
+      sessionID: info.id ?? properties.sessionID,
+      projectID: info.projectID,
+      location: info.location ?? { directory: directory },
+      parentID: info.parentID ?? undefined,
+      slug: info.id ?? properties.sessionID,
+      title: info.title,
+      agent: info.agent,
+      model: info.model,
+      version,
     }
   } else if (event.type === "message.updated") {
-    type = "session.message.updated"
+    type = "session.message.content.updated"
   } else if (event.type === "session.retry") {
     type = "session.retry.scheduled"
+    data = {
+      sessionID: properties.sessionID,
+      assistantMessageID: properties.assistantMessageID ?? "msg_current",
+      attempt: properties.attempt ?? 1,
+      at: properties.at ?? Date.now(),
+      error: properties.error ?? { type: "unknown", message: properties.message ?? "" },
+    }
   } else if (event.type === "session.step") {
-    type = "session.step.finished"
+    type = "session.step.ended"
+    data = {
+      sessionID: properties.sessionID,
+      assistantMessageID: properties.assistantMessageID ?? "msg_current",
+      finish: "stop",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    }
   } else if (event.type === "permission.replied") {
-    data = { sessionID: properties.sessionID, requestID: properties.requestID, reply: properties.reply ?? properties.decision }
+    data = {
+      sessionID: properties.sessionID,
+      requestID: properties.requestID,
+      reply: properties.reply ?? "once",
+    }
   }
   return { id: event.id ?? `evt_${Date.now()}`, created: event.created ?? properties.created ?? Date.now(), type, data }
 }
@@ -1194,7 +1285,11 @@ function makeClientProxy(path = ""): Json {
       log("info", args[0]?.message ?? "", args[0])
       return apiResponse(undefined)
     }
-    return apiResponse(await request("client.call", { path, args }))
+    const result = await request("client.call", { path, args })
+    if (result && Array.isArray(result.data) && (path === "session.list" || path === "session.messages")) {
+      return apiResponse(result.data)
+    }
+    return apiResponse(result)
   }
   return new Proxy(invoke, {
     get(_target, prop) {
@@ -1353,15 +1448,19 @@ function providerRecord(id: string): Json | undefined {
 
 function makeDomains(plugin: PluginRecord): Json {
   const mode = plugin.mode
-  const sync = (fn: Function) => (mode === "effect" ? Effect.sync(fn) : Promise.resolve().then(fn))
-  const lazy = (fn: Function) => (mode === "effect" ? Effect.tryPromise({ try: fn, catch: (error: unknown) => error }) : fn)
+  const effect = (fn: Function) => (mode === "effect" ? Effect.sync(fn) : Promise.resolve().then(fn))
+  const sync = (fn: Function) => (mode === "effect" ? (...args: Json[]) => Effect.sync(() => fn(...args)) : fn)
+  const lazy = (fn: Function) =>
+    mode === "effect"
+      ? (...args: Json[]) => Effect.tryPromise({ try: () => fn(...args), catch: (error: unknown) => error })
+      : fn
   const registration = (remove: () => void) => makeRegistration(mode, remove)
   const local = (domain: string, prefix: string, extras: Json = {}, envelope = true): Json => {
     const target = registry[domain as keyof Registry] as unknown as Map<string, Json> | undefined
     const base: Json = {
       ...extras,
       transform: (callback: Function) => registration(registerTransform(plugin, domain, callback)),
-      reload: () => sync(() => rebuild(domain)),
+      reload: () => effect(() => rebuild(domain)),
     }
     if (target instanceof Map) {
       base.list = sync(() => {
@@ -1369,7 +1468,7 @@ function makeDomains(plugin: PluginRecord): Json {
         return envelope ? apiResponse(value) : value
       })
       if (!("get" in extras)) {
-        base.get = (id: string) => sync(() => {
+        base.get = sync((id: string) => {
           const value = target.get(id)
           return envelope ? apiResponse(value) : value
         })
@@ -1385,12 +1484,12 @@ function makeDomains(plugin: PluginRecord): Json {
 
   const agent = local("agents", "agent", {
     list: sync(() => [...registry.agents.values()]),
-    get: (id: string) => sync(() => registry.agents.get(id)),
+    get: sync((id: string) => registry.agents.get(id)),
   })
   const commandTarget = registry.commands
   const command = local("commands", "command", {
     add: (definition: Json) => commandTarget.set(definition.name, definition),
-    get: (name: string) => sync(() => commandTarget.get(name)),
+    get: sync((name: string) => commandTarget.get(name)),
     execute: lazy((input: Json) => request("command.execute", input)),
   })
   const skill = local("skills", "skill")
@@ -1400,45 +1499,41 @@ function makeDomains(plugin: PluginRecord): Json {
   })
   const provider = local("providers", "provider", {
     list: sync(() => apiResponse([...registry.providers.values()].map((record) => record.provider))),
-    get: (id: string) => sync(() => apiResponse(registry.providers.get(id)?.provider)),
+    get: sync((id: string) => apiResponse(registry.providers.get(id)?.provider)),
   })
   const modelBase: Json = {
     transform: (callback: Function) => registration(registerTransform(plugin, "model", callback)),
-    reload: () => sync(() => rebuild("model")),
+    reload: () => effect(() => rebuild("model")),
     list: (providerID?: string) =>
-      sync(() => {
+      sync((providerID?: string) => {
         const out: Json[] = []
         for (const [id, record] of registry.providers) {
           if (providerID && id !== providerID) continue
           out.push(...record.models.values())
         }
         return apiResponse(out)
-      }),
+      })(providerID),
     get: (providerID: string, modelID: string) =>
-      sync(() => apiResponse(registry.providers.get(providerID)?.models.get(modelID))),
+      sync((providerID: string, modelID: string) => apiResponse(registry.providers.get(providerID)?.models.get(modelID)))(providerID, modelID),
     update: (providerID: string, modelID: string, update: (value: Json) => void) =>
-      sync(() => {
+      sync((providerID: string, modelID: string, update: (value: Json) => void) => {
         const value = registry.providers.get(providerID)?.models.get(modelID)
         if (value) update(value)
-      }),
+      })(providerID, modelID, update),
     remove: (providerID: string, modelID: string) =>
-      sync(() => {
+      sync((providerID: string, modelID: string) => {
         registry.providers.get(providerID)?.models.delete(modelID)
-      }),
+      })(providerID, modelID),
     default: {
-      get: () => (mode === "effect" ? Effect.sync(() => registry.defaultModel) : async () => registry.defaultModel),
+      get: sync(() => registry.defaultModel),
       set: (providerID: string, modelID: string) =>
-        sync(() => {
+        sync((providerID: string, modelID: string) => {
           registry.defaultModel = { providerID, id: modelID, modelID }
-        }),
+        })(providerID, modelID),
     },
     provider: {
-      list: () =>
-        (mode === "effect" ? Effect.sync(listProviderRecords) : async () => listProviderRecords()),
-      get: (id: string) =>
-        (mode === "effect"
-          ? Effect.sync(() => providerRecord(id))
-          : async () => providerRecord(id)),
+      list: sync(() => listProviderRecords()),
+      get: sync((id: string) => providerRecord(id)),
     },
   }
   const model = api(modelBase, mode, "model")
@@ -1463,7 +1558,7 @@ function makeDomains(plugin: PluginRecord): Json {
   const configApi: Json = {
     get: sync(() => initialState.config ?? {}),
     providers: sync(() => listProviderRecords()),
-    provider: (id: string) => sync(() => providerRecord(id)),
+    provider: sync((id: string) => providerRecord(id)),
   }
   const storage: Json = {
     get: lazy((key: string) => storageGet(key)),
@@ -1487,7 +1582,7 @@ function makeDomains(plugin: PluginRecord): Json {
       const bus = new Map<string, Function>()
       const dispose = () => bus.clear()
       plugin.registrations.push(dispose)
-      return sync(() => ({
+      return effect(() => ({
         dispose: mode === "effect" ? Effect.sync(dispose) : async () => dispose(),
         events: { emit: (...args: Json[]) => notify("rpc.event", { definition: definition.id, args }) },
         handlers,
@@ -1534,21 +1629,49 @@ function makeDomains(plugin: PluginRecord): Json {
 
 function makeSessionDomain(plugin: PluginRecord): Json {
   const mode = plugin.mode
-  const lazy = (fn: Function) => (mode === "effect" ? Effect.tryPromise({ try: fn, catch: (error: unknown) => error }) : fn)
+  const lazy = (fn: Function) =>
+    mode === "effect"
+      ? (...args: Json[]) => Effect.tryPromise({ try: () => fn(...args), catch: (error: unknown) => error })
+      : fn
+  const call = (method: string) => lazy(async (input: Json) => callRPC(method, input))
+  const voidCall = (method: string) =>
+    lazy(async (input: Json) => {
+      await callRPC(method, input)
+      return undefined
+    })
+  const paged = (method: string) =>
+    lazy(async (input: Json) => {
+      const value = await callRPC(method, input)
+      if (value && Array.isArray(value.data)) return value
+      return { data: Array.isArray(value) ? value : [], cursor: {} }
+    })
   const base: Json = {
-    list: lazy(async (input: Json) => apiResponse(await callRPC("session.list", input))),
+    list: paged("session.list"),
+    messages: paged("session.messages"),
+    create: call("session.create"),
+    get: call("session.get"),
+    remove: voidCall("session.remove"),
+    switchAgent: voidCall("session.switchAgent"),
+    switchModel: voidCall("session.switchModel"),
+    prompt: call("session.prompt"),
+    generate: call("session.generate"),
+    command: voidCall("session.command"),
+    compact: call("session.compact"),
+    synthetic: call("session.synthetic"),
+    interrupt: lazy(async (input: Json) => {
+      await callRPC("session.abort", input)
+      return { interrupted: true }
+    }),
+    update: voidCall("session.update"),
+    move: voidCall("session.move"),
+    context: call("session.context"),
+    instructions: call("session.instructions"),
+    wait: voidCall("session.wait"),
+    status: call("session.status"),
     hook: (name: string, callback: Function, options?: Json) =>
       makeRegistration(mode, registerHook(plugin, "session", name, callback, options).remove),
-    context: lazy(async (input: Json) => apiResponse(await callRPC("session.context", input))),
-    instructions: lazy(async (input: Json) => apiResponse(await callRPC("session.instructions", input))),
-    wait: lazy(async (input: Json) => apiResponse(await callRPC("session.wait", input))),
-    synthetic: lazy(async (input: Json) => apiResponse(await callRPC("session.synthetic", input))),
-    compact: lazy(async (input: Json) => apiResponse(await callRPC("session.compact", input))),
-    interrupt: lazy(async (input: Json) => apiResponse(await callRPC("session.abort", input))),
-    status: lazy(async (input: Json) => apiResponse(await callRPC("session.status", input))),
-    messages: lazy(async (input: Json) => apiResponse(await callRPC("session.messages", input))),
   }
-  return api(base, mode, "session")
+  return api(base, mode, "session", false)
 }
 
 // ---------------------------------------------------------------- storage
