@@ -38,7 +38,7 @@ use std::path::PathBuf;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Upstream release this port mirrors; reported to providers like the TypeScript client does.
-pub const UPSTREAM_VERSION: &str = "2.1.4";
+pub const UPSTREAM_VERSION: &str = "2.2.7";
 pub const UPSTREAM_CHANNEL: &str = "latest";
 
 /// Client name reported to providers (`x-opencode-client`): `OPENCODE_CLIENT` or `cli`, as upstream.

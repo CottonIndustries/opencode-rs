@@ -52,7 +52,7 @@ if yours live elsewhere.
   the new input when the prefix still matches.
 - **OpenCode Zen free tier**: with no OpenCode key, the `opencode` provider uses the
   anonymous `public` key and lists only free models. Model requests match the TypeScript
-  client: `User-Agent: opencode/latest/2.1.4/cli`, `x-opencode-client: cli` (or
+  client: `User-Agent: opencode/latest/2.2.7/cli`, `x-opencode-client: cli` (or
   `OPENCODE_CLIENT`), its session/affinity/project headers and ID formats, trace headers,
   `max_completion_tokens`, and its title request. Set `OPENCODE_API_KEY` to unlock paid Zen models.
 - **Network fingerprint** (`src/http.rs`): all HTTP goes through BoringSSL configured like
