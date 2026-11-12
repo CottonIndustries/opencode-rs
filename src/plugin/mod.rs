@@ -1489,6 +1489,20 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let session = handle.with(|s| s.clone());
             Ok(session_json(&session))
         }
+        "session.fork" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.fork requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let forked = {
+                let session = handle.session.lock().unwrap();
+                crate::session::fork(&session)
+            };
+            crate::session::save(&forked)?;
+            let forked = app.session(&forked.id)?;
+            let session = forked.with(|session| session.clone());
+            Ok(session_json(&session))
+        }
+        "session.background" => Ok(Value::Null),
+        "session.skill" => Ok(Value::Null),
         "session.create" => {
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
             let handle = app.create_session(parent);

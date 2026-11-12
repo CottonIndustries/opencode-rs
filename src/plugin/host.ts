@@ -1764,6 +1764,7 @@ function makeSessionDomain(plugin: PluginRecord): Json {
       get: call("session.message.get"),
     },
     create: call("session.create"),
+    fork: call("session.fork"),
     get: call("session.get"),
     remove: voidCall("session.remove"),
     switchAgent: voidCall("session.switchAgent"),
@@ -1779,6 +1780,8 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     }),
     update: voidCall("session.update"),
     move: voidCall("session.move"),
+    background: voidCall("session.background"),
+    skill: voidCall("session.skill"),
     context: call("session.context"),
     instructions: {
       entry: {
