@@ -41,6 +41,8 @@ pub struct Config {
 pub struct Experimental {
     pub todo: bool,
     pub schedules: bool,
+    #[serde(alias = "codemodeVm")]
+    pub codemode: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

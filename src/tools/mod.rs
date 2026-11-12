@@ -1,6 +1,7 @@
 //! Built-in tools and the per-request registry.
 
 pub mod artifact;
+pub mod codemode;
 pub mod edit;
 pub mod glob;
 pub mod grep;
@@ -296,6 +297,9 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
     }
     if app.config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
+    }
+    if app.config.experimental.codemode {
+        tools.push(Arc::new(codemode::Execute));
     }
     if app.config.experimental.schedules {
         tools.push(Arc::new(schedule::Create));
