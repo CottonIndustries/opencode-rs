@@ -412,15 +412,12 @@ async fn prepare_prompt(
     // only adds files or metadata). Only replace the text when the hook
     // actually supplied a string; otherwise the original user text survives.
     if let Some(prompt_text) = prompt_event.pointer("/prompt/text").and_then(Value::as_str) {
-        if prompt_text != msg.text() {
+        // An empty text edit from a hook must not erase the user's message.
+        if !prompt_text.is_empty() && prompt_text != msg.text() {
             let files: Vec<Part> = msg.parts.iter().filter(|p| matches!(p, Part::File(_))).cloned().collect();
-            msg.parts = if prompt_text.is_empty() {
-                files
-            } else {
-                let mut parts = vec![Part::Text { text: prompt_text.to_string(), synthetic: false }];
-                parts.extend(files);
-                parts
-            };
+            let mut parts = vec![Part::Text { text: prompt_text.to_string(), synthetic: false }];
+            parts.extend(files);
+            msg.parts = parts;
         }
     }
     if let Some(files) = prompt_event.pointer("/prompt/files").and_then(Value::as_array) {
@@ -438,9 +435,18 @@ async fn prepare_prompt(
         msg.parts = parts;
     }
     if let (Some(info), Some(parts)) = (prompt_event.get("message"), prompt_event.get("parts")) {
+        let original_text = msg.text();
         let mut list = vec![msg.clone()];
         crate::plugin::apply_messages_hook(&mut list, &serde_json::json!([{ "info": info, "parts": parts }]));
-        *msg = list.remove(0);
+        let mut next = list.remove(0);
+        // A prompt hook that only adds files/parts must not erase the message
+        // text the user actually typed.
+        if next.text().trim().is_empty() && !original_text.trim().is_empty() {
+            let mut parts = vec![Part::Text { text: original_text, synthetic: false }];
+            parts.extend(next.parts.into_iter().filter(|part| matches!(part, Part::File(_))));
+            next.parts = parts;
+        }
+        *msg = next;
     }
 }
 
