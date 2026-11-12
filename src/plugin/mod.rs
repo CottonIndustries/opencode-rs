@@ -1766,7 +1766,7 @@ fn instruction_hash(value: &Value) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn form_info_json(form: &crate::forms::Form) -> Value {
+pub(crate) fn form_info_json(form: &crate::forms::Form) -> Value {
     let mut value = json!({
         "id": form.id,
         "sessionID": form.session_id,
@@ -1857,7 +1857,7 @@ fn generate_ref(input: &Value) -> Option<String> {
     Some(reference)
 }
 
-async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
+pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
     let first = args.first().cloned().unwrap_or(Value::Null);
     let arg = |key: &str| first.get(key).and_then(Value::as_str).map(String::from);
     // V1 SDK calls use `{ path: { id }, body: { ... } }`; V2 calls are flat.
@@ -3550,7 +3550,7 @@ fn session_history_json(
     Value::Array(values)
 }
 
-fn session_messages_json(messages: &[crate::session::Message]) -> Value {
+pub(crate) fn session_messages_json(messages: &[crate::session::Message]) -> Value {
     use crate::session::{Part, Role, ToolState};
     json!(messages
         .iter()

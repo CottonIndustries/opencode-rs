@@ -103,6 +103,18 @@ impl FormStore {
         forms
     }
 
+    /// Every pending form across sessions.
+    pub fn all(&self) -> Vec<Form> {
+        let inner = self.inner.lock().unwrap();
+        let mut forms: Vec<Form> = inner
+            .values()
+            .filter(|entry| entry.form.status == Status::Pending)
+            .map(|entry| entry.form.clone())
+            .collect();
+        forms.sort_by(|a, b| a.time_created.cmp(&b.time_created).then_with(|| a.id.cmp(&b.id)));
+        forms
+    }
+
     pub fn get(&self, id: &str) -> Result<Form> {
         self.inner
             .lock()

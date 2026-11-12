@@ -336,6 +336,9 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let session = handle.with(|session| session.clone());
             Ok(json!({ "data": crate::plugin::session_json(&session) }))
         }
+        ("GET", ["api", "session", "active"]) => Ok(json!({
+            "data": app.active_session_ids(),
+        })),
         ("GET", ["api", "session", id]) => {
             let handle = app.session(id)?;
             let session = handle.with(|session| session.clone());
@@ -347,9 +350,7 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         ("GET", ["api", "session", id, "message"]) => {
             let handle = app.session(id)?;
-            let messages = handle.with(|session| {
-                crate::plugin::messages_for_hook(&session.id, &session.messages)
-            });
+            let messages = handle.with(|session| crate::plugin::session_messages_json(&session.messages));
             Ok(json!({ "data": messages }))
         }
         ("POST", ["api", "session", id, "prompt"] | ["api", "session", id, "message"]) => {
@@ -612,10 +613,253 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let result = app.plugins.rpc_call(rpc, method, request.body.clone()).await?;
             Ok(json!({ "data": result }))
         }
-        ("GET", ["api", "permission"]) => Ok(json!({ "data": [] })),
-        ("GET", ["api", "form"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "info"]) => Ok(json!({
+            "version": crate::UPSTREAM_VERSION,
+            "pid": std::process::id(),
+            "hostname": std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok(),
+            "urls": [],
+            "paths": { "tmp": crate::paths::get().tmp.to_string_lossy() },
+            "capabilities": { "persistentPty": true },
+        })),
+        ("GET", ["api", "location"]) => Ok(json!({
+            "directory": app.directory.to_string_lossy(),
+            "worktree": app.worktree.to_string_lossy(),
+            "projectID": app.project,
+            "vcs": if app.is_git { "git" } else { "none" },
+        })),
+        ("POST", ["api", "location", "reload"]) => Ok(Value::Null),
+        ("GET", ["api", "config", "shell"]) => {
+            let shell = crate::tools::shell::detect();
+            Ok(json!({
+                "shell": {
+                    "program": shell.program.to_string_lossy(),
+                    "args": shell.args,
+                },
+            }))
+        }
+        ("GET", ["api", "command"]) => Ok(json!({
+            "data": app.commands().values().map(|command| json!({
+                "name": command.name,
+                "description": command.description,
+                "agent": command.agent,
+                "model": command.model,
+                "template": command.template,
+            })).collect::<Vec<_>>(),
+        })),
+        ("GET", ["api", "skill"]) => Ok(json!({
+            "data": app.skills().iter().map(|skill| json!({
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+            })).collect::<Vec<_>>(),
+        })),
+        ("GET", ["api", "mcp"]) => {
+            let status = app.mcp.status().await;
+            Ok(json!({
+                "data": status.into_iter().map(|(name, status)| json!({
+                    "name": name,
+                    "status": match status {
+                        crate::mcp::Status::Connected { tools } => json!({ "status": "connected", "tools": tools }),
+                        crate::mcp::Status::Disabled => json!({ "status": "disabled" }),
+                        crate::mcp::Status::Failed(error) => json!({ "status": "error", "error": error }),
+                    }
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        ("GET", ["api", "mcp", "resource"]) => Ok(json!({ "data": app.mcp.resource_catalog(None).await? })),
+        ("GET", ["api", "plugin"]) => Ok(json!({ "data": app.plugins.list() })),
+        ("GET", ["api", "reference"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "agent", agent_id]) => {
+            let agent = app.agents().get(*agent_id).cloned().ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
+            Ok(json!({ "data": crate::plugin::agent_json(&agent) }))
+        }
+        ("GET", ["api", "provider", provider_id]) => {
+            let provider = app.providers().get(*provider_id).cloned().ok_or_else(|| anyhow!("provider not found: {provider_id}"))?;
+            Ok(json!({
+                "data": {
+                    "id": provider.id,
+                    "name": provider.name,
+                    "models": provider.models.values().map(crate::plugin::model_json).collect::<Vec<_>>(),
+                }
+            }))
+        }
+        ("GET", ["api", "model", "default"]) => {
+            let model = app
+                .default_model()
+                .and_then(|reference| crate::models::parse_ref(&reference))
+                .and_then(|(provider_id, id, variant)| {
+                    app.providers()
+                        .get(&provider_id)
+                        .and_then(|provider| provider.models.get(&id))
+                        .map(|model| (provider_id, id, variant, model.clone()))
+                })
+                .map(|(provider_id, id, variant, model)| {
+                    let mut value = crate::plugin::model_json(&model);
+                    value["providerID"] = json!(provider_id);
+                    value["id"] = json!(id);
+                    value["variant"] = json!(variant);
+                    value
+                });
+            Ok(json!({ "data": model }))
+        }
+        ("GET", ["api", "permission", "request"]) => Ok(json!({
+            "data": app.pending_permissions().iter().map(permission_json).collect::<Vec<_>>(),
+        })),
+        ("GET", ["api", "permission", "saved"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "experimental", "job"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": null })),
+        ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),
+        ("GET", ["api", "experimental", "artifacts", "providers"]) => Ok(json!({
+            "data": [{ "id": "local", "name": "Local" }],
+        })),
+        ("GET", ["api", "experimental", "artifacts"]) => Ok(json!({ "data": crate::artifact::list()? })),
+        ("POST", ["api", "experimental", "artifacts"]) => Ok(json!({ "data": crate::artifact::create(&request.body)? })),
+        ("GET", ["api", "experimental", "artifacts", artifact_id]) => {
+            Ok(json!({ "data": crate::artifact::get(artifact_id)? }))
+        }
+        ("PATCH" | "PUT", ["api", "experimental", "artifacts", artifact_id]) => {
+            Ok(json!({ "data": crate::artifact::update(artifact_id, &request.body)? }))
+        }
+        ("DELETE", ["api", "experimental", "artifacts", artifact_id]) => {
+            Ok(json!({ "data": crate::artifact::delete(artifact_id)? }))
+        }
+        ("GET", ["api", "experimental", "schedule"]) => Ok(json!({
+            "data": app.schedules.list(None),
+        })),
+        ("POST", ["api", "experimental", "schedule"]) => {
+            let session = request.body.get("sessionID").and_then(Value::as_str).unwrap_or_default();
+            if session.is_empty() {
+                return Err(anyhow!("schedule.create requires sessionID"));
+            }
+            app.session(session)?;
+            Ok(json!({ "data": app.schedules.create(session, &app.directory, &request.body).await? }))
+        }
+        ("GET", ["api", "experimental", "schedule", schedule_id]) => {
+            Ok(json!({ "data": app.schedules.get(schedule_id)? }))
+        }
+        ("POST", ["api", "experimental", "schedule", schedule_id, "pause"]) => {
+            Ok(json!({ "data": app.schedules.pause(schedule_id)? }))
+        }
+        ("POST", ["api", "experimental", "schedule", schedule_id, "resume"]) => {
+            Ok(json!({ "data": app.schedules.resume(schedule_id)? }))
+        }
+        ("DELETE", ["api", "experimental", "schedule", schedule_id]) => {
+            Ok(json!({ "data": app.schedules.remove(schedule_id)? }))
+        }
+        ("GET", ["api", "form"]) => Ok(json!({ "data": app.forms.all().iter().map(crate::plugin::form_info_json).collect::<Vec<_>>() })),
+        ("GET", ["api", "debug", "location"]) => Ok(json!({
+            "directory": app.directory.to_string_lossy(),
+            "worktree": app.worktree.to_string_lossy(),
+            "projectID": app.project,
+        })),
+        ("DELETE", ["api", "debug", "location"]) => Ok(Value::Null),
+        ("GET", ["api", "session", id, "context"]) => session_call(app, "session.context", id, json!({})).await,
+        ("GET", ["api", "session", id, "status"]) => session_call(app, "session.status", id, json!({})).await,
+        ("GET", ["api", "session", id, "children"]) => session_call(app, "session.children", id, json!({})).await,
+        ("GET", ["api", "session", id, "todo"]) => session_call(app, "session.todo", id, json!({})).await,
+        ("GET", ["api", "session", id, "inbox"]) => session_call(app, "session.inbox.list", id, json!({})).await,
+        ("DELETE", ["api", "session", id, "inbox", inbox_id]) => {
+            session_call(app, "session.inbox.cancel", id, json!({ "inboxID": inbox_id })).await
+        }
+        ("PATCH", ["api", "session", id, "inbox", inbox_id]) => {
+            let mut body = request.body.clone();
+            body["inboxID"] = json!(inbox_id);
+            session_call(app, "session.inbox.update", id, body).await
+        }
+        ("POST", ["api", "session", id, "agent"]) => session_call(app, "session.switchAgent", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "model"]) => session_call(app, "session.switchModel", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "command"]) => session_call(app, "session.command", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "skill"]) => session_call(app, "session.skill", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "synthetic"]) => session_call(app, "session.synthetic", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "shell"]) => session_call(app, "session.shell", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "wait"]) => session_call(app, "session.wait", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "move"]) => session_call(app, "session.move", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "background"]) => session_call(app, "session.background", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "generate"]) => session_call(app, "session.generate", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "revert", "stage"]) => session_call(app, "session.revert.stage", id, request.body.clone()).await,
+        ("DELETE", ["api", "session", id, "revert"]) => session_call(app, "session.revert.clear", id, json!({})).await,
+        ("POST", ["api", "session", id, "revert", "commit"]) => session_call(app, "session.revert.commit", id, request.body.clone()).await,
+        ("PATCH", ["api", "session", id]) => session_call(app, "session.update", id, request.body.clone()).await,
+        ("GET", ["api", "session", id, "message", message_id]) => {
+            session_call(app, "session.message.get", id, json!({ "messageID": message_id })).await
+        }
+        ("GET", ["api", "session", id, "form"]) => session_call(app, "session.form.list", id, json!({})).await,
+        ("POST", ["api", "session", id, "form"]) => session_call(app, "session.form.create", id, request.body.clone()).await,
+        ("GET", ["api", "session", id, "form", form_id]) => {
+            session_call(app, "session.form.get", id, json!({ "formID": form_id })).await
+        }
+        ("POST", ["api", "session", id, "form", form_id, "reply"]) => {
+            let mut body = request.body.clone();
+            if !body.get("answer").is_some() {
+                body["answer"] = body.get("values").cloned().unwrap_or_else(|| json!({}));
+            }
+            body["formID"] = json!(form_id);
+            session_call(app, "session.form.reply", id, body).await
+        }
+        ("DELETE", ["api", "session", id, "form", form_id]) => {
+            session_call(app, "session.form.cancel", id, json!({ "formID": form_id })).await
+        }
+        ("PUT", ["api", "session", id, "environment"]) => session_call(app, "session.environment", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "view"]) => session_call(app, "session.view", id, request.body.clone()).await,
+        ("GET", ["api", "session", id, "permission"]) => Ok(json!({
+            "data": app.pending_permissions().iter().filter(|request| request.session_id.as_str() == *id).map(permission_json).collect::<Vec<_>>(),
+        })),
+        ("GET", ["api", "session", id, "permission", request_id]) => {
+            let request = app
+                .pending_permissions()
+                .into_iter()
+                .find(|request| request.session_id.as_str() == *id && request.id.as_str() == *request_id)
+                .ok_or_else(|| anyhow!("permission not found: {request_id}"))?;
+            Ok(json!({ "data": permission_json(&request) }))
+        }
+        ("POST", ["api", "session", id, "permission", request_id, "reply"]) => {
+            let permission = app
+                .pending_permissions()
+                .into_iter()
+                .find(|permission| permission.session_id.as_str() == *id && permission.id.as_str() == *request_id)
+                .ok_or_else(|| anyhow!("permission not found: {request_id}"))?;
+            let reply = match request.body.get("decision").or_else(|| request.body.get("reply")).and_then(Value::as_str) {
+                Some("once") | Some("allow") => crate::permission::Reply::Once,
+                Some("always") => crate::permission::Reply::Always,
+                Some("reject") | Some("deny") => crate::permission::Reply::Reject,
+                _ => return Err(anyhow!("permission reply must be once, always or reject")),
+            };
+            app.reply_permission(&permission.id, reply);
+            Ok(Value::Null)
+        }
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
     }
+}
+
+async fn session_call(app: &Arc<App>, method: &str, id: &str, mut body: Value) -> Result<Value> {
+    if !body.is_object() {
+        body = json!({});
+    }
+    body["sessionID"] = json!(id);
+    Ok(client_response(crate::plugin::client_call(app, method, vec![body]).await?))
+}
+
+fn client_response(value: Value) -> Value {
+    if value.is_null() {
+        json!({ "data": null })
+    } else if value.get("data").is_some() {
+        value
+    } else {
+        json!({ "data": value })
+    }
+}
+
+fn permission_json(request: &crate::permission::Request) -> Value {
+    json!({
+        "id": request.id,
+        "sessionID": request.session_id,
+        "toolCallID": request.tool_call_id,
+        "action": request.action,
+        "resources": request.resources,
+        "title": request.title,
+        "metadata": request.metadata,
+        "save": request.save,
+    })
 }
 
 fn pty_connect_id(path: &str) -> Option<String> {

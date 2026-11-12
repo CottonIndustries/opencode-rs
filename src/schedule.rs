@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
     pub id: String,
+    #[serde(rename = "sessionID", alias = "sessionId")]
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
