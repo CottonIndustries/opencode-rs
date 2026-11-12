@@ -1736,9 +1736,9 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }
             Ok(project)
         }
-        "tui.showToast" | "tui.appendPrompt" | "tui.openHelp" | "tui.openSessions"
-        | "tui.openThemes" | "tui.openModels" | "tui.submitPrompt" | "tui.clearPrompt"
-        | "tui.executeCommand" | "tui.openDialog" | "tui.control" => Ok(Value::Null),
+        "tui.appendPrompt" | "tui.openHelp" | "tui.openSessions" | "tui.openThemes"
+        | "tui.openModels" | "tui.submitPrompt" | "tui.clearPrompt" | "tui.executeCommand"
+        | "tui.openDialog" | "tui.control" => Ok(Value::Null),
         "app.log" => {
             let message = body
                 .get("message")
@@ -1774,6 +1774,13 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 list.retain(|s| s.title.to_lowercase().contains(&search));
             }
             if let Some(directory) = filter.get("directory").and_then(Value::as_str) {
+                list.retain(|s| s.directory.to_string_lossy() == directory);
+            }
+            if let Some(directory) = first
+                .pointer("/location/directory")
+                .and_then(Value::as_str)
+                .or_else(|| first.pointer("/path/directory").and_then(Value::as_str))
+            {
                 list.retain(|s| s.directory.to_string_lossy() == directory);
             }
             if let Some(project) = filter.get("project").and_then(Value::as_str) {
