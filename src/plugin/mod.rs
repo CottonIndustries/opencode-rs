@@ -1981,7 +1981,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "time": { "created": crate::util::now_ms() },
                 "type": "user",
                 "payload": { "text": payload_text, "files": files },
-                "delivery": "steer",
+                "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
             }))
         }
         "session.synthetic" => {
@@ -1998,7 +1998,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "time": { "created": crate::util::now_ms() },
                 "type": "synthetic",
                 "payload": { "text": text },
-                "delivery": "steer",
+                "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
             }))
         }
         "session.command" => {
@@ -2047,7 +2047,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 "time": { "created": crate::util::now_ms() },
                 "type": "compaction",
                 "payload": {},
-                "delivery": "steer",
+                "delivery": body.get("delivery").and_then(Value::as_str).unwrap_or("steer"),
             }))
         }
         "permission.list" => {
