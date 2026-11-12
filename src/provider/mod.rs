@@ -128,6 +128,8 @@ pub enum Event {
     ReasoningEnd { signature: Option<String>, redacted: Option<String>, item_id: Option<String> },
     /// A tool call's arguments are streaming in (for display).
     ToolInputStart { id: String, name: String },
+    /// A fragment of a tool call's JSON arguments.
+    ToolInputDelta { id: String, delta: String },
     ToolCall { id: String, name: String, input: Value, meta: Option<Value> },
     Usage(Usage),
     Finish(String),

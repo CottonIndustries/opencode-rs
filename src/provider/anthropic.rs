@@ -308,8 +308,11 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
                     (Some("signature_delta"), Some(Block::Thinking { sig })) => {
                         sig.push_str(d.get("signature").and_then(|s| s.as_str()).unwrap_or(""));
                     }
-                    (Some("input_json_delta"), Some(Block::Tool { json, .. })) => {
-                        json.push_str(d.get("partial_json").and_then(|s| s.as_str()).unwrap_or(""));
+                    (Some("input_json_delta"), Some(Block::Tool { id, json, .. })) => {
+                        if let Some(delta) = d.get("partial_json").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
+                            json.push_str(delta);
+                            let _ = tx.send(Event::ToolInputDelta { id: id.clone(), delta: delta.to_string() });
+                        }
                     }
                     _ => {}
                 }

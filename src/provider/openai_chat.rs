@@ -286,8 +286,11 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
                     }
                     entry.name.push_str(if entry.name.is_empty() { n } else { "" });
                 }
-                if let Some(a) = tc.pointer("/function/arguments").and_then(|x| x.as_str()) {
+                if let Some(a) = tc.pointer("/function/arguments").and_then(|x| x.as_str()).filter(|a| !a.is_empty()) {
                     entry.args.push_str(a);
+                    if !entry.id.is_empty() {
+                        let _ = tx.send(Event::ToolInputDelta { id: entry.id.clone(), delta: a.to_string() });
+                    }
                 }
             }
         }

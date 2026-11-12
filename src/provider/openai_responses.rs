@@ -133,6 +133,7 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     let mut finish = "unknown".to_string();
     let mut had_calls = false;
     let mut summary_parts = 0usize;
+    let mut tool_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     while let Some((event, data)) = sse.next().await? {
         if data.trim() == "[DONE]" {
@@ -160,13 +161,24 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
             "response.output_item.added" => {
                 let item = v.get("item").cloned().unwrap_or(Value::Null);
                 if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                    let call_id = item.get("call_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if let Some(item_id) = item.get("id").and_then(|x| x.as_str()) {
+                        tool_ids.insert(item_id.to_string(), call_id.clone());
+                    }
                     let _ = tx.send(Event::ToolInputStart {
-                        id: item.get("call_id").and_then(|x| x.as_str()).unwrap_or("").into(),
+                        id: call_id,
                         name: item.get("name").and_then(|x| x.as_str()).unwrap_or("").into(),
                     });
                 }
                 if item.get("type").and_then(|t| t.as_str()) == Some("reasoning") {
                     summary_parts = 0;
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(delta) = v.get("delta").and_then(|x| x.as_str()).filter(|d| !d.is_empty()) {
+                    let item_id = v.get("item_id").and_then(|x| x.as_str()).unwrap_or("");
+                    let id = tool_ids.get(item_id).cloned().unwrap_or_else(|| item_id.to_string());
+                    let _ = tx.send(Event::ToolInputDelta { id, delta: delta.to_string() });
                 }
             }
             "response.output_item.done" => {

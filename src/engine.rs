@@ -571,6 +571,7 @@ fn apply_event(msg: &mut Message, ev: &Event, reasoning_open: &mut bool) {
         }
         Event::Usage(u) => msg.usage = u.clone(),
         Event::Finish(f) => msg.finish = Some(f.clone()),
+        Event::ToolInputDelta { .. } => {}
         Event::Retry { .. } => {}
     }
 }
@@ -1103,6 +1104,16 @@ async fn step_once(
                         "id": crate::util::id("evt"),
                         "type": "session.tool.input.started",
                         "properties": { "sessionID": sid.clone(), "assistantMessageID": msg_id.clone(), "id": id.clone(), "name": name.clone() },
+                    })),
+                    Event::ToolInputDelta { id, delta } => app.plugins.emit(serde_json::json!({
+                        "id": crate::util::id("evt"),
+                        "type": "session.tool.input.delta",
+                        "properties": {
+                            "sessionID": sid.clone(),
+                            "assistantMessageID": msg_id.clone(),
+                            "id": id.clone(),
+                            "delta": delta.clone(),
+                        },
                     })),
                     Event::ToolCall { id, name, input, .. } => app.plugins.emit(serde_json::json!({
                         "id": crate::util::id("evt"),
