@@ -736,6 +736,25 @@ mod tests {
     }
 
     #[test]
+    fn prompt_attachments_render_agents_and_skills() {
+        let skills = vec![crate::tools::skill::Skill {
+            id: "test".into(),
+            name: "Test".into(),
+            description: String::new(),
+            path: PathBuf::new(),
+            content: "follow the test".into(),
+        }];
+        let body = json!({
+            "agents": [{ "name": "reviewer" }],
+            "skills": [{ "id": "test" }, { "name": "inline", "text": "extra instructions" }],
+        });
+        let text = prompt_attachments(&skills, &body);
+        assert!(text.contains("[Agent mention: reviewer]"));
+        assert!(text.contains("[Skill activated: Test]\nfollow the test"));
+        assert!(text.contains("[Skill activated: inline]\nextra instructions"));
+    }
+
+    #[test]
     fn session_messages_use_v2_shapes() {
         let messages = vec![crate::session::Message::user_text("hello")];
         let value = session_messages_json(&messages);
@@ -871,10 +890,10 @@ impl Manager {
         .await
     }
 
-    pub async fn execute_command(&self, name: &str, session_id: &str, arguments: &str) -> Result<Value> {
+    pub async fn execute_command(&self, name: &str, session_id: &str, prompt: Value, delivery: &str) -> Result<Value> {
         self.request_with_timeout(
             "command.execute",
-            json!({ "name": name, "sessionID": session_id, "arguments": arguments, "delivery": "steer" }),
+            json!({ "name": name, "sessionID": session_id, "prompt": prompt, "delivery": delivery }),
             None,
         )
         .await
@@ -1438,6 +1457,29 @@ async fn plugin_generate(
             "cache": { "read": usage.cache_read, "write": usage.cache_write },
         },
     }))
+}
+
+fn prompt_attachments(skills: &[crate::tools::skill::Skill], body: &Value) -> String {
+    let mut parts = Vec::new();
+    for agent in body.get("agents").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(name) = agent.get("name").and_then(Value::as_str) {
+            parts.push(format!("[Agent mention: {name}]"));
+        }
+    }
+    for skill in body.get("skills").and_then(Value::as_array).into_iter().flatten() {
+        let id = skill.get("id").and_then(Value::as_str);
+        let name = skill.get("name").and_then(Value::as_str);
+        if let Some(text) = skill.get("text").and_then(Value::as_str) {
+            parts.push(format!("[Skill activated: {}]\n{text}", name.unwrap_or("")));
+            continue;
+        }
+        if let Some(found) = skills.iter().find(|candidate| {
+            id.is_some_and(|id| candidate.id == id) || name.is_some_and(|name| candidate.name == name)
+        }) {
+            parts.push(format!("[Skill activated: {}]\n{}", found.name, found.content));
+        }
+    }
+    parts.join("\n\n")
 }
 
 async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -> Result<Value> {
@@ -2048,7 +2090,19 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     texts.push(text.to_string());
                 }
             }
-            let mut message = crate::session::Message::user_text(texts.join("\n"));
+            let available_skills = app.skills();
+            let extra = prompt_attachments(&available_skills, &body);
+            let mut text = texts.join("\n");
+            if !extra.is_empty() {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(&extra);
+            }
+            let mut message = crate::session::Message::user_text(text);
+            if let Some(id) = body.get("id").or_else(|| first.get("id")).and_then(Value::as_str) {
+                message.id = id.to_string();
+            }
             for file in files {
                 message.parts.push(crate::session::Part::File(file));
             }
@@ -2094,7 +2148,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.synthetic requires sessionID"))?;
             app.session(&id)?;
             let text = body.get("text").and_then(Value::as_str).unwrap_or("").to_string();
-            let message_id = crate::util::id("msg");
+            let message_id = body
+                .get("id")
+                .or_else(|| first.get("id"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| crate::util::id("msg"));
             let session_id = id.clone();
             let payload_text = text.clone();
             let notification_id = message_id.clone();
@@ -2131,10 +2190,25 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .or_else(|| arg("text"))
                 .unwrap_or_default();
             if app.plugin_commands().contains(&name) {
-                let _ = app.plugins.execute_command(&name, &id, &arguments).await?;
+                let prompt = json!({
+                    "text": arguments,
+                    "files": body.get("files").cloned().unwrap_or_else(|| json!([])),
+                    "agents": body.get("agents").cloned().unwrap_or_else(|| json!([])),
+                    "skills": body.get("skills").cloned().unwrap_or_else(|| json!([])),
+                });
+                let delivery = body.get("delivery").and_then(Value::as_str).unwrap_or("steer");
+                let _ = app.plugins.execute_command(&name, &id, prompt, delivery).await?;
                 Ok(json!(true))
             } else if let Some(cmd) = app.commands().get(&name).cloned() {
-                let text = crate::command::render(&cmd, &arguments, &app.directory, &app.worktree);
+                let mut text = crate::command::render(&cmd, &arguments, &app.directory, &app.worktree);
+                let available_skills = app.skills();
+                let extra = prompt_attachments(&available_skills, &body);
+                if !extra.is_empty() {
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(&extra);
+                }
                 let mut opts = crate::app::PromptOptions::default();
                 opts.agent = cmd.agent.clone();
                 opts.model = cmd.model.clone();

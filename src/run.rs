@@ -157,7 +157,10 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
 
     if let Some((name, cmd_args)) = plugin_command {
         let mut rx = app.subscribe();
-        let ack = app.plugins.execute_command(&name, &sid, &cmd_args).await?;
+        let ack = app
+            .plugins
+            .execute_command(&name, &sid, serde_json::json!({ "text": cmd_args }), "steer")
+            .await?;
         let admitted = ack
             .get("type")
             .and_then(serde_json::Value::as_str)

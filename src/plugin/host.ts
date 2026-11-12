@@ -1241,7 +1241,7 @@ async function executePluginCommand(params: Json): Promise<Json> {
   if (typeof command.execute !== "function") return {}
   const invocation = {
     sessionID: params.sessionID,
-    prompt: { text: params.arguments ?? "" },
+    prompt: params.prompt ?? { text: params.arguments ?? "" },
     delivery: params.delivery ?? "steer",
   }
   const result = await settle(command.execute(invocation))

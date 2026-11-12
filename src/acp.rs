@@ -361,7 +361,10 @@ impl Server {
                 };
             }
             if app.plugin_commands().contains(&name) {
-                let _ = app.plugins.execute_command(&name, sid, &args).await?;
+                let _ = app
+                    .plugins
+                    .execute_command(&name, sid, serde_json::json!({ "text": args }), "steer")
+                    .await?;
                 return Ok(json!({ "stopReason": "end_turn" }));
             }
             let commands = app.commands();

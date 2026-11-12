@@ -1064,7 +1064,10 @@ impl Ui {
                     let name = name.to_string();
                     let args = args.trim().to_string();
                     tokio::spawn(async move {
-                        let _ = app.plugins.execute_command(&name, &sid, &args).await;
+                        let _ = app
+                            .plugins
+                            .execute_command(&name, &sid, serde_json::json!({ "text": args }), "steer")
+                            .await;
                     });
                     return;
                 }
