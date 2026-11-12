@@ -1000,7 +1000,7 @@ async fn step_once(
                         if let Some(title) = result.get("title").and_then(Value::as_str) {
                             out.title = title.to_string();
                         }
-                        if let Some(metadata) = result.get("metadata") {
+                        if let Some(metadata) = result.get("metadata").filter(|value| !value.is_null()) {
                             out.metadata = metadata.clone();
                         }
                     }
