@@ -96,6 +96,8 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       return await executePluginCommand(params)
     case "plugin.list":
       return pluginList()
+    case "tui.command.execute":
+      return await executeTuiCommand(params)
     case "websearch.list":
       return {
         providers: [...registry.websearch.values()].map((item) => ({ id: item.id, name: item.name })),
@@ -233,6 +235,9 @@ type PluginRecord = {
 }
 
 const plugins: PluginRecord[] = []
+const tuiPlugins: PluginRecord[] = []
+const tuiCommands = new Map<string, Json>()
+const tuiAliases = new Map<string, string>()
 const rpcs = new Map<string, { plugin: PluginRecord; definition: Json; handlers: Json }>()
 
 type HookEntry = {
@@ -1534,6 +1539,212 @@ async function executePluginTool(params: Json): Promise<Json> {
   } finally {
     if (params.callID) abortControllers.delete(params.callID)
   }
+}
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "command"
+}
+
+function tuiCommandList(): Json[] {
+  return [...tuiCommands.values()].map((command) => ({
+    id: command.id,
+    title: command.title,
+    description: command.description,
+    group: command.group,
+    bind: command.bind,
+    slash: command.slash,
+  }))
+}
+
+function registerTuiCommand(plugin: PluginRecord, command: Json): () => void {
+  const title = typeof command.title === "string" && command.title.trim() ? command.title.trim() : "Plugin command"
+  const id = typeof command.id === "string" && command.id.trim() ? command.id.trim() : `tui.${plugin.id}.${slug(title)}`
+  const entry = {
+    id,
+    title,
+    description: command.description,
+    group: command.group ?? "Plugin",
+    bind: command.bind,
+    slash: command.slash,
+    run: command.run,
+    plugin: plugin.id,
+  }
+  tuiCommands.set(id, entry)
+  const slash = command.slash
+  if (slash && typeof slash.name === "string") {
+    tuiAliases.set(slash.name, id)
+    for (const alias of slash.aliases ?? []) tuiAliases.set(String(alias), id)
+  }
+  const dispose = () => {
+    tuiCommands.delete(id)
+    for (const [name, target] of tuiAliases) if (target === id) tuiAliases.delete(name)
+  }
+  plugin.registrations.push(dispose)
+  return dispose
+}
+
+function makeTuiContext(plugin: PluginRecord): Json {
+  const prefix = `tui:${plugin.id}:`
+  const memory = new Map<string, Json>()
+  const storage = {
+    store: (key: string, options: Json) => {
+      const state = structuredClone(options?.initial ?? {})
+      return [
+        state,
+        async (mutation: Function) => {
+          mutation(state)
+          await storageSet(`${prefix}${key}`, state)
+        },
+      ]
+    },
+    memory: (key: string, options: Json) => {
+      const state = memory.get(key) ?? structuredClone(options?.initial ?? {})
+      memory.set(key, state)
+      return [state, (mutation: Function) => mutation(state)]
+    },
+  }
+  const noCleanup = () => () => {}
+  const keymap = {
+    layer: (factory: Function) => {
+      try {
+        const layer = factory()
+        for (const command of layer?.commands ?? []) registerTuiCommand(plugin, command)
+      } catch (error) {
+        log("error", `tui plugin ${plugin.id} keymap layer failed: ${String(error)}`)
+      }
+    },
+    dispatch: (id: string, input?: string) => {
+      const command = tuiCommands.get(id)
+      if (command?.run) void settle(command.run(input))
+    },
+    shortcuts: () => [],
+    commands: () => [...tuiCommands.values()],
+    pending: () => [],
+    active: () => [],
+    mode: { current: () => "base", push: () => () => {} },
+  }
+  const toast = {
+    show: (options: Json) => {
+      void request("tui.toast", {
+        title: options?.title,
+        message: options?.message ?? "",
+        variant: options?.variant ?? "info",
+      }).catch((error: unknown) => log("error", `tui toast failed: ${String(error)}`))
+    },
+  }
+  const dialog = {
+    show: () => {},
+    set: () => {},
+    close: () => {},
+    alert: async () => undefined,
+    confirm: async () => undefined,
+    prompt: async () => undefined,
+    select: async () => undefined,
+  }
+  const ui = {
+    dialog,
+    toast,
+    format: { path: (value: string) => value },
+    router: { register: noCleanup, navigate: () => {}, current: () => ({ type: "home" }) },
+    panel: { open: () => false, close: () => {}, current: () => undefined },
+    tabs: {
+      enabled: () => false,
+      list: () => [],
+      open: () => false,
+      focus: () => false,
+      move: () => false,
+      close: () => false,
+    },
+    model: {
+      current: () => undefined,
+      variant: { list: () => [], set: () => false },
+    },
+    slot: noCleanup,
+  }
+  return {
+    options: plugin.options,
+    location: { directory, worktree, project },
+    app: { version: config.version, channel: config.channel, platform: Deno.build.os },
+    renderer: {},
+    client: makeClientProxy(),
+    data: {
+      on: () => () => {},
+      listen: () => () => {},
+      session: {
+        list: () => [],
+        get: () => undefined,
+        root: (id: string) => id,
+        family: (id: string) => [id],
+        cost: () => 0,
+        status: () => "idle",
+        pending: { list: () => [], sync: async () => {}, invalidate: () => {} },
+        sync: async () => {},
+        invalidate: () => {},
+        message: { list: () => [], get: () => undefined, sync: async () => {}, invalidate: () => {} },
+        permission: { list: () => [], sync: async () => {}, invalidate: () => {} },
+        form: {
+          list: () => [],
+          sync: async () => {},
+          invalidate: () => {},
+          reply: async () => {},
+          cancel: async () => {},
+        },
+      },
+      project: {
+        list: () => [],
+        get: () => undefined,
+        sync: async () => {},
+        invalidate: () => {},
+        permission: { list: () => [], sync: async () => {}, invalidate: () => {} },
+      },
+      shell: { list: () => [], get: () => undefined, sync: async () => {}, invalidate: () => {} },
+      location: { default: () => ({ directory }) },
+    },
+    attention: {},
+    theme: {},
+    themeMode: "dark",
+    markdown: { registerCodeBlockRenderer: noCleanup },
+    keymap,
+    storage,
+    ui,
+  }
+}
+
+async function loadTuiPlugin(entry: Json): Promise<void> {
+  const record: PluginRecord = {
+    id: entry.id ?? entry.spec,
+    spec: entry.spec,
+    source: entry.source ?? { type: "package", target: entry.spec },
+    options: entry.options ?? {},
+    mode: "promise",
+    features: { server: false, tui: true },
+    state: { status: "active" },
+    directTools: new Map(),
+    registrations: [],
+  }
+  try {
+    const module = await importCandidate(entry.tuiCandidates ?? [])
+    const value = module.default ?? module
+    const setup = typeof value === "function" ? value : value?.setup
+    if (typeof setup !== "function") throw new Error("TUI entry exports no setup")
+    if (value && typeof value === "object" && typeof value.id === "string" && value.id.trim()) record.id = value.id.trim()
+    const cleanup = await setup(makeTuiContext(record))
+    if (typeof cleanup === "function") record.cleanup = cleanup
+    log("info", `loaded tui plugin ${record.id}`)
+  } catch (error) {
+    record.state = { status: "failed", error: error instanceof Error ? error.message : String(error) }
+    log("error", `failed to load tui plugin ${record.spec}: ${record.state.error}`)
+  }
+  tuiPlugins.push(record)
+}
+
+async function executeTuiCommand(params: Json): Promise<Json> {
+  const name = String(params.name ?? "")
+  const id = tuiCommands.has(name) ? name : tuiAliases.get(name)
+  const command = id ? tuiCommands.get(id) : undefined
+  if (!command) throw new Error(`TUI command not found: ${name}`)
+  if (typeof command.run !== "function") return {}
+  return (await settle(command.run(params.input, undefined))) ?? {}
 }
 
 async function executePluginCommand(params: Json): Promise<Json> {
@@ -2937,6 +3148,7 @@ function domainSnapshot(): Json {
     defaultAgent: registry.defaultAgent,
     defaultModel: registry.defaultModel,
     config: initialState.config,
+    tui: { commands: tuiCommandList() },
   }
 }
 
@@ -2966,6 +3178,12 @@ async function loadPlugin(entry: Json): Promise<PluginRecord> {
   }
   try {
     const candidates: string[] = entry.candidates ?? []
+    if (!candidates.length) {
+      record.features = { server: false, tui: true }
+      record.state = { status: "active" }
+      plugins.push(record)
+      return record
+    }
     const module = await importCandidate(candidates)
     record.module = module
     const value = module.default
@@ -3043,6 +3261,11 @@ const ready = (async () => {
   for (const entry of config.plugins ?? []) {
     await loadPlugin(entry)
   }
+  if (config.tui === true) {
+    for (const entry of config.plugins ?? []) {
+      if (Array.isArray(entry.tuiCandidates) && entry.tuiCandidates.length > 0) await loadTuiPlugin(entry)
+    }
+  }
   // Legacy config hooks run before transforms so they can adjust the raw
   // configuration used by later state consumers.
   for (const plugin of plugins) {
@@ -3059,7 +3282,7 @@ const ready = (async () => {
   return {
     plugins: pluginList(),
     state: domainSnapshot(),
-    errors: plugins
+    errors: [...plugins, ...tuiPlugins]
       .filter((plugin) => plugin.state.status === "failed")
       .map((plugin) => ({ id: plugin.id, error: plugin.state.error })),
   }
@@ -3084,6 +3307,22 @@ async function shutdown() {
     if (plugin.scope) {
       try {
         await Effect.runPromise(Scope.close(plugin.scope, Exit.void))
+      } catch {
+        // ignore
+      }
+    }
+  }
+  for (const plugin of tuiPlugins) {
+    for (const dispose of plugin.registrations.splice(0)) {
+      try {
+        dispose()
+      } catch {
+        // ignore
+      }
+    }
+    if (plugin.cleanup) {
+      try {
+        await settle(plugin.cleanup())
       } catch {
         // ignore
       }

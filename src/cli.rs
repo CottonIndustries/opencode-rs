@@ -407,6 +407,16 @@ pub async fn debug_plugins() -> Result<()> {
             websearch.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
         );
     }
+    let tui = app.plugins.tui_commands();
+    if !tui.is_empty() {
+        println!(
+            "TUI commands: {}",
+            tui.iter()
+                .filter_map(|command| command.get("id").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -429,6 +439,14 @@ pub async fn debug_plugin_tool(name: &str, input: &str) -> Result<()> {
             }),
         )
         .await?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+pub async fn debug_plugin_tui(name: &str, input: &str) -> Result<()> {
+    std::env::set_var("OPENCODE_TUI", "1");
+    let app = App::init(cwd()).await?;
+    let result = app.plugins.execute_tui_command(name, serde_json::json!(input)).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

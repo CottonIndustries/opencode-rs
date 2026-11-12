@@ -275,6 +275,12 @@ enum DebugCmd {
         #[arg(default_value = "{}")]
         input: String,
     },
+    /// Execute a plugin TUI command
+    PluginTui {
+        name: String,
+        #[arg(default_value = "")]
+        input: String,
+    },
 }
 
 fn cwd() -> PathBuf {
@@ -344,6 +350,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             DebugCmd::Prompt => cli::debug_prompt().await,
             DebugCmd::Plugins => cli::debug_plugins().await,
             DebugCmd::PluginTool { name, input } => cli::debug_plugin_tool(&name, &input).await,
+            DebugCmd::PluginTui { name, input } => cli::debug_plugin_tui(&name, &input).await,
         },
     }
 }

@@ -274,6 +274,59 @@ fn entry_candidates(spec: &PluginSpec) -> Result<Vec<String>> {
     ])
 }
 
+/// TUI entry candidates for a plugin, or none when it has no TUI half.
+fn tui_entry_candidates(spec: &PluginSpec) -> Vec<String> {
+    if is_local(&spec.target) {
+        let path = local_path(&spec.target);
+        if path.is_file() {
+            return Vec::new();
+        }
+        let Some(dir) = path.is_dir().then_some(path) else { return Vec::new() };
+        if let Ok(text) = std::fs::read_to_string(dir.join("package.json")) {
+            if let Ok(manifest) = serde_json::from_str::<Value>(crate::util::strip_bom(&text).0) {
+                if let Some(exports) = manifest.get("exports") {
+                    if let Some(entry) = exports.get("./tui") {
+                        let raw = match entry {
+                            Value::String(value) => Some(value.clone()),
+                            Value::Object(map) => map
+                                .get("import")
+                                .or_else(|| map.get("default"))
+                                .and_then(Value::as_str)
+                                .map(String::from),
+                            _ => None,
+                        };
+                        if let Some(raw) = raw {
+                            let raw = raw.strip_prefix("file://").unwrap_or(&raw);
+                            let file = if Path::new(raw).is_absolute() {
+                                PathBuf::from(raw)
+                            } else {
+                                dir.join(raw)
+                            };
+                            let file = crate::util::normalize(&file);
+                            if file.is_file() {
+                                return vec![file_url(&file)];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for name in ["tui.tsx", "tui.ts", "tui.js", "tui.mjs", "tui.cjs"] {
+            let file = dir.join(name);
+            if file.is_file() {
+                return vec![file_url(&file)];
+            }
+        }
+        return Vec::new();
+    }
+    let (name, version) = parse_package(&spec.target);
+    let at = match version {
+        Some(version) => format!("npm:{name}@{version}"),
+        None => format!("npm:{name}@latest"),
+    };
+    vec![format!("{at}/tui")]
+}
+
 fn local_directory_entry(dir: &Path) -> Option<PathBuf> {
     let manifest = std::fs::read_to_string(dir.join("package.json")).ok();
     if let Some(text) = manifest {
@@ -649,6 +702,7 @@ pub struct Manager {
     info: RwLock<Vec<Value>>,
     websearch: RwLock<Vec<(String, String)>>,
     websearch_default: RwLock<Option<Value>>,
+    tui: RwLock<Vec<Value>>,
     errors: Vec<String>,
     events: tokio::sync::broadcast::Sender<Value>,
 }
@@ -910,6 +964,7 @@ impl Manager {
             info: RwLock::new(Vec::new()),
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
+            tui: RwLock::new(Vec::new()),
             errors: Vec::new(),
             events: tokio::sync::broadcast::channel(4096).0,
         }
@@ -922,6 +977,7 @@ impl Manager {
             info: RwLock::new(Vec::new()),
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
+            tui: RwLock::new(Vec::new()),
             errors,
             events: tokio::sync::broadcast::channel(4096).0,
         }
@@ -1079,6 +1135,17 @@ impl Manager {
             .get("websearchDefault")
             .filter(|value| value.is_string() || value.is_boolean())
             .cloned();
+        if let Some(Value::Array(commands)) = state.pointer("/tui/commands") {
+            *self.tui.write().unwrap() = commands.clone();
+        }
+    }
+
+    pub fn tui_commands(&self) -> Vec<Value> {
+        self.tui.read().unwrap().clone()
+    }
+
+    pub async fn execute_tui_command(&self, name: &str, input: Value) -> Result<Value> {
+        self.request("tui.command.execute", json!({ "name": name, "input": input })).await
     }
 
     pub fn websearch_providers(&self) -> Vec<(String, String)> {
@@ -1184,12 +1251,16 @@ async fn start(
     let mut seen = BTreeSet::new();
     let mut skipped = Vec::new();
     for spec in &specs {
+        let tui_candidates = tui_entry_candidates(spec);
         let candidates = match entry_candidates(spec) {
             Ok(candidates) => candidates,
             Err(error) => {
-                crate::util::log(&format!("skipping plugin {}: {error:#}", spec.target));
-                skipped.push(format!("skipping plugin {}: {error:#}", spec.target));
-                continue;
+                if tui_candidates.is_empty() {
+                    crate::util::log(&format!("skipping plugin {}: {error:#}", spec.target));
+                    skipped.push(format!("skipping plugin {}: {error:#}", spec.target));
+                    continue;
+                }
+                Vec::new()
             }
         };
         let id = package_name(spec);
@@ -1209,6 +1280,7 @@ async fn start(
                 json!({ "type": "package", "target": name, "version": version })
             },
             "candidates": candidates,
+            "tuiCandidates": tui_candidates,
         }));
     }
     if plugins.is_empty() {
@@ -1229,6 +1301,7 @@ async fn start(
         "storageDir": crate::paths::get().data.join("storage").join("plugin").join("kv").to_string_lossy(),
         "plugins": plugins,
         "state": snapshot,
+        "tui": std::env::var_os("OPENCODE_TUI").is_some(),
     });
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     #[cfg(unix)]
@@ -1301,6 +1374,7 @@ async fn start(
         info: RwLock::new(Vec::new()),
         websearch: RwLock::new(Vec::new()),
         websearch_default: RwLock::new(None),
+        tui: RwLock::new(Vec::new()),
         errors: Vec::new(),
         events: tokio::sync::broadcast::channel(4096).0,
     };
@@ -1902,6 +1976,19 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             }))
         }
         "app.init" => Ok(json!(true)),
+        "tui.toast" => {
+            let message = first
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = first.get("title").and_then(Value::as_str).unwrap_or_default();
+            let text = if title.is_empty() { message } else { format!("{title}: {message}") };
+            if !text.is_empty() {
+                app.emit(crate::app::AppEvent::Notice { message: text });
+            }
+            Ok(Value::Null)
+        }
         "project.current" | "project.list" => {
             let project = json!({
                 "id": app.project,

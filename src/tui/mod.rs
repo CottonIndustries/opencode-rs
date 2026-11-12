@@ -135,10 +135,10 @@ struct Toast {
 }
 
 struct Command {
-    id: &'static str,
+    id: String,
     title: String,
-    category: &'static str,
-    slash: &'static [&'static str],
+    category: String,
+    slash: Vec<String>,
     suggested: bool,
     palette: bool,
 }
@@ -627,8 +627,22 @@ impl Ui {
     // ---------------------------------------------------------------- commands
 
     fn commands(&self) -> Vec<Command> {
-        let c = |id: &'static str, title: &str, category: &'static str, slash: &'static [&'static str], suggested: bool| Command { id, title: title.to_string(), category, slash, suggested, palette: true };
-        let hidden = |id: &'static str, title: &str, category: &'static str| Command { id, title: title.to_string(), category, slash: &[], suggested: false, palette: false };
+        let c = |id: &str, title: &str, category: &str, slash: &[&str], suggested: bool| Command {
+            id: id.to_string(),
+            title: title.to_string(),
+            category: category.to_string(),
+            slash: slash.iter().map(|value| value.to_string()).collect(),
+            suggested,
+            palette: true,
+        };
+        let hidden = |id: &str, title: &str, category: &str| Command {
+            id: id.to_string(),
+            title: title.to_string(),
+            category: category.to_string(),
+            slash: Vec::new(),
+            suggested: false,
+            palette: false,
+        };
         let in_session = self.route == Route::Session;
         let sidebar = if self.sidebar_visible() { "Hide sidebar" } else { "Show sidebar" };
         let thinking = if self.settings.thinking_shown() { "Collapse thinking" } else { "Expand thinking" };
@@ -685,14 +699,33 @@ impl Ui {
                 v.push(c("session.redo", "Redo", "Session", &["redo"], false));
             }
         }
+        for command in self.app.plugins.tui_commands() {
+            let Some(name) = command.get("id").and_then(Value::as_str) else { continue };
+            let title = command.get("title").and_then(Value::as_str).unwrap_or(name);
+            let mut slash = Vec::new();
+            if let Some(primary) = command.pointer("/slash/name").and_then(Value::as_str) {
+                slash.push(primary.to_string());
+                if let Some(aliases) = command.pointer("/slash/aliases").and_then(Value::as_array) {
+                    slash.extend(aliases.iter().filter_map(Value::as_str).map(String::from));
+                }
+            }
+            v.push(Command {
+                id: format!("tui:{name}"),
+                title: title.to_string(),
+                category: command.get("group").and_then(Value::as_str).unwrap_or("Plugin").to_string(),
+                slash,
+                suggested: false,
+                palette: true,
+            });
+        }
         v
     }
 
     fn slash_commands(&self) -> Vec<(String, String, Pick)> {
         let mut out: Vec<(String, String, Pick)> = Vec::new();
         for c in self.commands() {
-            for s in c.slash {
-                let pick = if c.id == "session.rename" { Pick::Slash(s.to_string()) } else { Pick::Command(c.id.to_string()) };
+            for s in &c.slash {
+                let pick = if c.id == "session.rename" { Pick::Slash(s.clone()) } else { Pick::Command(c.id.clone()) };
                 out.push((format!("/{s}"), c.title.clone(), pick));
             }
         }
@@ -794,6 +827,16 @@ impl Ui {
                 self.toast(Variant::Success, None, "Session transcript copied to clipboard!");
             }
             "session.export" => self.export(),
+            id if id.starts_with("tui:") => {
+                let name = id["tui:".len()..].to_string();
+                let input = args.trim().to_string();
+                let app = self.app.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = app.plugins.execute_tui_command(&name, json!(input)).await {
+                        app.emit(AppEvent::Notice { message: format!("Plugin command failed: {error}") });
+                    }
+                });
+            }
             _ => {}
         }
     }
@@ -1053,9 +1096,9 @@ impl Ui {
         }
         if let Some(rest) = text.strip_prefix('/') {
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-            if let Some(cmd) = self.commands().into_iter().find(|c| c.slash.contains(&name)) {
+            if let Some(cmd) = self.commands().into_iter().find(|c| c.slash.iter().any(|slash| slash == name)) {
                 self.clear_prompt();
-                self.exec(cmd.id, args);
+                self.exec(&cmd.id, args);
                 return;
             }
             if let Some(cmd) = self.app.commands().get(name).cloned() {
@@ -1173,11 +1216,11 @@ impl Ui {
         let mut opts: Vec<Opt> = cmds
             .iter()
             .filter(|c| c.suggested)
-            .map(|c| Opt { title: c.title.clone(), footer: self.shortcut(c.id), category: "Suggested".into(), value: c.id.into(), search: c.id.into(), ..Default::default() })
+            .map(|c| Opt { title: c.title.clone(), footer: self.shortcut(&c.id), category: "Suggested".into(), value: c.id.clone(), search: c.id.clone(), ..Default::default() })
             .collect();
         let pinned = opts.len();
         for c in &cmds {
-            opts.push(Opt { title: c.title.clone(), footer: self.shortcut(c.id), category: c.category.into(), value: c.id.into(), search: c.id.into(), ..Default::default() });
+            opts.push(Opt { title: c.title.clone(), footer: self.shortcut(&c.id), category: c.category.clone(), value: c.id.clone(), search: c.id.clone(), ..Default::default() });
         }
         let commands = self.app.commands();
         for c in commands.values() {
@@ -3268,6 +3311,7 @@ fn edit_key(e: &mut Editor, k: &Key, ev: &KeyEvent, km: &Keymap, multiline: bool
 }
 
 pub async fn start(dir: std::path::PathBuf, opts: StartOptions) -> Result<()> {
+    std::env::set_var("OPENCODE_TUI", "1");
     let app = App::init(dir).await?;
     let ui = Ui::new(app.clone(), &opts)?;
     let mouse = ui.settings.mouse();
