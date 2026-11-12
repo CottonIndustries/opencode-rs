@@ -611,6 +611,40 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     Ok(interrupted)
 }
 
+pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &Selection) {
+    let model = model_hook_json(sel);
+    let sdk = app
+        .plugins
+        .trigger(
+            "aisdk",
+            "sdk",
+            serde_json::json!({
+                "model": model,
+                "package": req.provider.npm,
+                "options": req.options,
+            }),
+        )
+        .await;
+    if let Some(options) = sdk.get("options").filter(|value| value.is_object()) {
+        req.options = options.clone();
+    }
+    let language = app
+        .plugins
+        .trigger(
+            "aisdk",
+            "language",
+            serde_json::json!({
+                "model": model,
+                "sdk": Value::Null,
+                "options": req.options,
+            }),
+        )
+        .await;
+    if let Some(options) = language.get("options").filter(|value| value.is_object()) {
+        req.options = options.clone();
+    }
+}
+
 pub(crate) fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, agent: &Agent, sel: &Selection, kind: &str) {
     req.hooks = Some(provider::HookContext {
         app: app.clone(),
@@ -873,6 +907,7 @@ async fn step_once(
         req.options = Value::Object(extra);
     }
     req.headers = headers;
+    apply_aisdk_hooks(app, &mut req, sel).await;
     let model_request = app
         .plugins
         .trigger(
@@ -1372,6 +1407,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
     } else {
         let mut req = build_request(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
         attach_hooks(app, &mut req, &sid, &compaction, sel, "compaction");
+        apply_aisdk_hooks(app, &mut req, sel).await;
         if let Some(options) = compaction_event.get("options") {
             if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
                 req.temperature = Some(temperature);
@@ -1510,6 +1546,7 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let input = format!("Here is the first message of the conversation:\n\n<message>\n{first}\n</message>\n\nReply with only the title.");
     let mut req = build_request(&sel, &agent, vec![crate::agent::TITLE_PROMPT.into()], vec![Message::user_text(input)], vec![], &handle.with(|s| provider::SessionRef::of(s)));
     attach_hooks(app, &mut req, &handle.id(), &agent, &sel, "title");
+    apply_aisdk_hooks(app, &mut req, &sel).await;
     req.max_tokens = 0;
     let title_event = app
         .plugins
