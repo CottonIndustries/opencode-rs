@@ -212,14 +212,14 @@ pub async fn post(
         }
         let res = crate::http::send(rb).await;
         let (retryable, msg, wait) = match res {
-            Ok(r) if r.status().is_success() => {
+            Ok(mut r) if r.status().is_success() => {
                 if let Some(hooks) = hooks {
                     let response_headers: serde_json::Map<String, Value> = r
                         .headers()
                         .iter()
                         .filter_map(|(key, value)| value.to_str().ok().map(|value| (key.to_string(), Value::String(value.to_string()))))
                         .collect();
-                    let _ = hooks
+                    let updated = hooks
                         .app
                         .plugins
                         .trigger(
@@ -235,6 +235,18 @@ pub async fn post(
                             }),
                         )
                         .await;
+                    if let Some(headers) = updated.pointer("/response/headers").and_then(Value::as_object) {
+                        for (key, value) in headers {
+                            let Some(value) = value.as_str() else { continue };
+                            let (Ok(name), Ok(value)) = (
+                                http::header::HeaderName::from_bytes(key.as_bytes()),
+                                http::header::HeaderValue::from_str(value),
+                            ) else {
+                                continue;
+                            };
+                            r.headers_mut().insert(name, value);
+                        }
+                    }
                 }
                 return Ok(r);
             }
