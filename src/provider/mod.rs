@@ -130,7 +130,7 @@ pub enum Event {
     ToolCall { id: String, name: String, input: Value, meta: Option<Value> },
     Usage(Usage),
     Finish(String),
-    Retry(String),
+    Retry { message: String, attempt: u32, delay: u64 },
 }
 
 pub type Tx = UnboundedSender<Event>;
@@ -286,7 +286,7 @@ pub async fn post(
                 }
             }
         }
-        let _ = tx.send(Event::Retry(format!("{msg} — retrying in {}s (attempt {attempt})", delay / 1000)));
+        let _ = tx.send(Event::Retry { message: msg.clone(), attempt, delay });
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
 }

@@ -417,6 +417,7 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         crate::plugin::apply_messages_hook(&mut list, &serde_json::json!([{ "info": info, "parts": parts }]));
         msg = list.remove(0);
     }
+    let previous = handle.with(|s| (s.agent.clone(), s.model.clone()));
     let first = handle.with(|s| {
         s.agent = Some(agent.id.clone());
         s.model = Some(full.clone());
@@ -424,6 +425,26 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
         s.messages.iter().filter(|m| m.role == Role::User).count() == 1 && s.has_default_title()
     });
     handle.save();
+    if previous.0 != Some(agent.id.clone()) {
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.agent.selected",
+            "properties": { "sessionID": handle.id(), "agent": agent.id.clone(), "previous": previous.0 }
+        }));
+    }
+    if previous.1 != Some(full.clone()) {
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.model.selected",
+            "properties": {
+                "sessionID": handle.id(),
+                "model": model_hook_json(&sel),
+                "previous": previous.1.as_deref().and_then(crate::models::parse_ref).map(|(provider_id, id, variant)| {
+                    serde_json::json!({ "providerID": provider_id, "id": id, "variant": variant })
+                })
+            }
+        }));
+    }
     if handle.with(|s| s.parent_id.is_none()) {
         crate::state::push_recent_model(&model_ref);
     }
@@ -521,7 +542,7 @@ fn apply_event(msg: &mut Message, ev: &Event, reasoning_open: &mut bool) {
         }
         Event::Usage(u) => msg.usage = u.clone(),
         Event::Finish(f) => msg.finish = Some(f.clone()),
-        Event::Retry(_) => {}
+        Event::Retry { .. } => {}
     }
 }
 
@@ -574,7 +595,29 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
         step += 1;
         let last = max_steps.is_some_and(|m| step >= m);
         let active_tools: Vec<Arc<dyn Tool>> = if last { vec![] } else { registry.clone() };
-        let res = step_once(&app, &handle, &agent, &sel, &active_tools, &registry, last).await?;
+        let res = match step_once(&app, &handle, &agent, &sel, &active_tools, &registry, last).await {
+            Ok(result) => result,
+            Err(error) => {
+                let message_id = handle.with(|session| {
+                    session
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| message.role == crate::session::Role::Assistant)
+                        .map(|message| message.id.clone())
+                });
+                app.plugins.emit(serde_json::json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.step.failed",
+                    "properties": {
+                        "sessionID": sid.clone(),
+                        "assistantMessageID": message_id,
+                        "error": { "type": "unknown", "message": error.to_string() },
+                    },
+                }));
+                return Err(error);
+            }
+        };
         app.emit(AppEvent::StepFinished { session: sid.clone() });
         app.plugins.emit(serde_json::json!({
             "id": crate::util::id("evt"),
@@ -1043,7 +1086,13 @@ async fn step_once(
                             "text": input.to_string(),
                         },
                     })),
-                    Event::Retry(m) => app.emit(AppEvent::Retry { session: sid.clone(), message: m.clone() }),
+                    Event::Retry { message, attempt, delay } => app.emit(AppEvent::Retry {
+                        session: sid.clone(),
+                        message: message.clone(),
+                        assistant_message_id: msg_id.clone(),
+                        attempt: *attempt,
+                        at: crate::util::now_ms() + *delay as i64,
+                    }),
                     _ => app.emit(AppEvent::Updated { session: sid.clone() }),
                 }
                 update(&mut |m| apply_event(m, &ev, &mut reasoning_open));
@@ -1337,7 +1386,7 @@ async fn step_once(
                                 "id": call_id,
                                 "input": input,
                                 "status": "error",
-                                "error": { "message": msg },
+                                "error": { "_tag": "Tool.Error", "message": msg },
                             }),
                         )
                         .await;

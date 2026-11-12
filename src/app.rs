@@ -24,7 +24,13 @@ pub enum AppEvent {
     StepFinished { session: String },
     Busy { session: String, busy: bool },
     Error { session: String, message: String },
-    Retry { session: String, message: String },
+    Retry {
+        session: String,
+        message: String,
+        assistant_message_id: String,
+        attempt: u32,
+        at: i64,
+    },
     Permission(permission::Request),
     PermissionResolved { id: String, session_id: String, reply: String },
     Title { session: String, title: String },
@@ -682,8 +688,16 @@ fn plugin_event(ev: &AppEvent) -> serde_json::Value {
         AppEvent::Error { session, message } => json!({
             "id": id(), "type": "session.error", "properties": { "sessionID": session, "error": { "message": message } }
         }),
-        AppEvent::Retry { session, message } => json!({
-            "id": id(), "type": "session.retry", "properties": { "sessionID": session, "message": message }
+        AppEvent::Retry { session, message, assistant_message_id, attempt, at } => json!({
+            "id": id(),
+            "type": "session.retry",
+            "properties": {
+                "sessionID": session,
+                "assistantMessageID": assistant_message_id,
+                "attempt": attempt,
+                "at": at,
+                "error": { "type": "unknown", "message": message },
+            }
         }),
         AppEvent::Permission(request) => json!({
             "id": id(), "type": "permission.asked", "properties": {
