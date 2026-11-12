@@ -802,9 +802,16 @@ for (const domain of ["agents", "commands", "skills", "tools", "providers", "mcp
 
 // ---------------------------------------------------------------- hooks
 
+function fileData(part: Json): string {
+  if (typeof part.data === "string") return part.data
+  const url = typeof part.url === "string" ? part.url : ""
+  return url.split("base64,")[1] ?? ""
+}
+
 function toV2Messages(messages: Json): Json[] {
   return (Array.isArray(messages) ? messages : []).map((message: Json) => {
-    const role = message.info?.role ?? "user"
+    const info = message.info ?? {}
+    const role = info.role ?? "user"
     const content: Json[] = []
     for (const part of message.parts ?? []) {
       if (part.type === "text") content.push({ type: "text", text: part.text })
@@ -812,7 +819,9 @@ function toV2Messages(messages: Json): Json[] {
       else if (part.type === "file") {
         content.push({
           type: "media",
-          media: { source: { type: "base64", data: part.data, mediaType: part.mime } },
+          media: {
+            source: { type: "base64", data: fileData(part), mediaType: part.mime },
+          },
           filename: part.filename,
         })
       } else if (part.type === "tool") {
@@ -837,37 +846,105 @@ function toV2Messages(messages: Json): Json[] {
             result: { type: "error", value: part.state.error ?? "" },
           })
         }
+      } else if (part.type === "compaction") {
+        content.push({ type: "compaction", summary: part.summary ?? "" })
       }
     }
-    return { role, content }
+    return { id: info.id, role, content }
   })
 }
 
+/**
+ * Project a plugin's V2 `{ role, content }` messages back onto the host's
+ * `{ info, parts }` shape. Plugins may add, remove, reorder or replace whole
+ * messages, so this rebuilds the list instead of editing entries in place:
+ * matching is by message id where the plugin kept one, otherwise by position.
+ */
 function applyV2Messages(event: Json, messages: Json[]) {
   const original = Array.isArray(event.messages) ? event.messages : []
-  for (let index = 0; index < original.length && index < messages.length; index++) {
-    const parts = original[index]?.parts ?? []
-    const content = Array.isArray(messages[index]?.content) ? messages[index].content : []
-    const texts = content.filter((part: Json) => part?.type === "text")
-    const reasoning = content.filter((part: Json) => part?.type === "reasoning")
-    const results = content.filter((part: Json) => part?.type === "tool-result")
-    let textIndex = 0
-    let reasoningIndex = 0
-    let resultIndex = 0
-    for (const part of parts) {
-      if (part.type === "text" && textIndex < texts.length) {
-        part.text = texts[textIndex].text
-        textIndex++
-      } else if (part.type === "reasoning" && reasoningIndex < reasoning.length) {
-        part.text = reasoning[reasoningIndex].text
-        reasoningIndex++
-      } else if (part.type === "tool" && resultIndex < results.length) {
-        const result = results[resultIndex++]?.result
-        if (result?.type === "text") part.state.output = result.value
-        else if (result?.type === "error") part.state.error = String(result.value)
+  const byID = new Map<string, Json>()
+  for (const message of original) {
+    const id = message?.info?.id
+    if (typeof id === "string") byID.set(id, message)
+  }
+  const result: Json[] = []
+  const tools = new Map<string, Json>()
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index] ?? {}
+    const content = Array.isArray(message.content) ? message.content : []
+    if (message.role === "tool") {
+      // A host tool-result carrier: attach it to the call it answers.
+      for (const part of content) {
+        if (part?.type !== "tool-result") continue
+        const target = tools.get(String(part.id))
+        if (!target) continue
+        const state = target.state ?? (target.state = {})
+        if (part.result?.type === "error") {
+          state.status = "error"
+          state.error = String(part.result.value ?? "")
+        } else {
+          state.status = "completed"
+          state.output = String(part.result?.value ?? "")
+        }
+      }
+      continue
+    }
+    const found = typeof message.id === "string" ? byID.get(message.id) : undefined
+    // An id the host did not send belongs to a message the plugin added; only
+    // fall back to position when the plugin omitted the id entirely.
+    const source = found ?? (message.id ? undefined : original[index])
+    const info = source?.info ? { ...source.info } : { id: message.id, role: message.role }
+    if (message.role) info.role = message.role
+    if (!info.id && message.id) info.id = message.id
+    const parts: Json[] = []
+    for (const part of content) {
+      if (part?.type === "text") {
+        parts.push({ type: "text", text: part.text ?? "", synthetic: part.synthetic === true })
+      } else if (part?.type === "reasoning") {
+        const previous = (source?.parts ?? []).find((item: Json) => item.type === "reasoning" && item.text === part.text)
+        parts.push({ ...(previous ?? {}), type: "reasoning", text: part.text ?? "" })
+      } else if (part?.type === "tool-call") {
+        const previous = (source?.parts ?? []).find((item: Json) => item.type === "tool" && item.callID === part.id)
+        const tool: Json = {
+          ...(previous ?? {}),
+          type: "tool",
+          callID: part.id,
+          tool: part.name,
+          state: {
+            ...(previous?.state ?? {}),
+            status: "pending",
+            input: part.input ?? previous?.state?.input ?? {},
+          },
+        }
+        tools.set(String(part.id), tool)
+        parts.push(tool)
+      } else if (part?.type === "tool-result") {
+        const target = tools.get(String(part.id))
+        if (!target) continue
+        const state = target.state ?? (target.state = {})
+        if (part.result?.type === "error") {
+          state.status = "error"
+          state.error = String(part.result.value ?? "")
+        } else {
+          state.status = "completed"
+          state.output = String(part.result?.value ?? "")
+        }
+      } else if (part?.type === "media") {
+        const media = part.media ?? {}
+        const source = media.source ?? {}
+        parts.push({
+          type: "file",
+          mime: source.mediaType ?? media.mediaType ?? "application/octet-stream",
+          data: source.data ?? "",
+          filename: part.filename ?? media.filename ?? "",
+        })
+      } else if (part?.type === "compaction") {
+        parts.push({ type: "compaction", summary: part.summary ?? "" })
       }
     }
+    result.push({ info, parts })
   }
+  event.messages = result
 }
 
 const V2_MESSAGE_HOOKS = new Set(["context", "title", "compaction", "generate"])

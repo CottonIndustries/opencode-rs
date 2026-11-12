@@ -857,6 +857,49 @@ mod tests {
         assert_eq!(value[0]["text"], "hello");
         assert_eq!(value[0]["content"], Value::Null);
     }
+
+    #[test]
+    fn hook_can_add_synthetic_messages() {
+        let mut messages = vec![crate::session::Message::user_text("yo")];
+        let value = json!([
+            {
+                "info": { "id": "__magic_context_v2_m0__", "role": "user" },
+                "parts": [{ "type": "text", "text": "<session-history></session-history>" }]
+            },
+            {
+                "info": { "id": "__magic_context_v2_m1__", "role": "user" },
+                "parts": [{ "type": "text", "text": "<project-memory></project-memory>" }]
+            },
+            {
+                "info": { "id": "user-id", "role": "user" },
+                "parts": [{ "type": "text", "text": "yo" }]
+            }
+        ]);
+        apply_messages_hook(&mut messages, &value);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].id, "__magic_context_v2_m0__");
+        assert_eq!(messages[1].id, "__magic_context_v2_m1__");
+        assert_eq!(messages[2].text(), "yo");
+    }
+
+    #[test]
+    fn hook_can_replace_and_remove_messages() {
+        let mut messages = vec![crate::session::Message::user_text("original")];
+        let id = messages[0].id.clone();
+        let value = json!([
+            {
+                "info": { "id": id, "role": "user" },
+                "parts": [{ "type": "text", "text": "rewritten" }]
+            }
+        ]);
+        apply_messages_hook(&mut messages, &value);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "rewritten");
+
+        let drop = json!([]);
+        apply_messages_hook(&mut messages, &drop);
+        assert_eq!(messages.len(), 1, "an empty transform must not erase the request");
+    }
 }
 
 impl Manager {
@@ -4275,16 +4318,40 @@ pub fn messages_for_hook(session_id: &str, messages: &[crate::session::Message])
 pub fn apply_messages_hook(messages: &mut Vec<crate::session::Message>, value: &Value) {
     use crate::session::{Part, ToolState};
     let Some(items) = value.as_array() else { return };
+    if items.is_empty() && !messages.is_empty() {
+        return;
+    }
     let mut result = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let target = item
-            .pointer("/info/id")
-            .and_then(Value::as_str)
-            .and_then(|id| messages.iter().position(|m| m.id == id))
-            .unwrap_or(index);
-        let Some(original) = messages.get(target).cloned() else { continue };
-        let mut message = original;
-        if let Some(info) = item.get("info") {
+        let info = item.get("info");
+        let id = info.and_then(|info| info.get("id")).and_then(Value::as_str);
+        let existing = match id {
+            Some(id) => messages.iter().position(|m| m.id == id).and_then(|index| messages.get(index)).cloned(),
+            None => messages.get(index).cloned(),
+        };
+        let mut message = match existing {
+            Some(message) => message,
+            None => {
+                // A context transform may add synthetic head messages (for
+                // example Magic Context's m[0]/m[1]) that have no host row.
+                let role = match info.and_then(|info| info.get("role")).and_then(Value::as_str) {
+                    Some("assistant") => crate::session::Role::Assistant,
+                    _ => crate::session::Role::User,
+                };
+                let mut message = crate::session::Message::new(role);
+                if let Some(id) = id {
+                    message.id = id.to_string();
+                }
+                message
+            }
+        };
+        if let Some(info) = info {
+            if let Some(role) = info.get("role").and_then(Value::as_str) {
+                message.role = match role {
+                    "assistant" => crate::session::Role::Assistant,
+                    _ => crate::session::Role::User,
+                };
+            }
             if let Some(agent) = info.get("agent").and_then(Value::as_str) {
                 message.agent = Some(agent.to_string());
             }
@@ -4389,12 +4456,10 @@ pub fn apply_messages_hook(messages: &mut Vec<crate::session::Message>, value: &
         message.parts = next;
         result.push(message);
     }
-    // A transform may remove messages; only accept the result when every
-    // returned entry mapped to a message, so malformed output cannot erase
-    // history.
-    if result.len() == items.len() {
-        *messages = result;
-    }
+    // A transform may add, remove or reorder messages, so the returned list is
+    // authoritative. The caller passes a request-level clone, never the stored
+    // session history.
+    *messages = result;
 }
 
 fn string_map(value: Option<&Value>) -> BTreeMap<String, String> {
