@@ -1550,7 +1550,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             handle.with(|session| {
                 session
                     .instruction_entries
-                    .insert(format!("skill:{}", skill.id), json!({ "name": skill.name, "text": text.clone() }));
+                    .insert(format!("skill.{}", skill.id), json!({ "name": skill.name, "text": text.clone() }));
             });
             handle.save();
             app.plugins.emit(json!({
