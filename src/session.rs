@@ -233,6 +233,12 @@ pub struct Session {
     pub viewed_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -270,6 +276,9 @@ impl Session {
             environment: Default::default(),
             viewed_at: None,
             idle_ms: None,
+            busy_at: None,
+            last_outcome: None,
+            fork: None,
             archived: false,
             instruction_entries: Default::default(),
             cost_total: 0.0,
@@ -439,6 +448,9 @@ pub struct Summary {
     pub revert: Option<serde_json::Value>,
     pub viewed_at: Option<i64>,
     pub idle_ms: Option<i64>,
+    pub busy_at: Option<i64>,
+    pub last_outcome: Option<String>,
+    pub fork: Option<serde_json::Value>,
     pub archived: bool,
     pub cost: f64,
     pub tokens: Usage,
@@ -465,6 +477,12 @@ pub fn list(project: &str) -> Vec<Summary> {
         viewed_at: Option<i64>,
         #[serde(default)]
         idle_ms: Option<i64>,
+        #[serde(default)]
+        busy_at: Option<i64>,
+        #[serde(default)]
+        last_outcome: Option<String>,
+        #[serde(default)]
+        fork: Option<serde_json::Value>,
         #[serde(default)]
         archived: bool,
         #[serde(default)]
@@ -493,6 +511,9 @@ pub fn list(project: &str) -> Vec<Summary> {
                         revert: h.revert,
                         viewed_at: h.viewed_at,
                         idle_ms: h.idle_ms,
+                        busy_at: h.busy_at,
+                        last_outcome: h.last_outcome,
+                        fork: h.fork,
                         archived: h.archived,
                         cost: h.cost_total,
                         tokens: h.tokens_total,

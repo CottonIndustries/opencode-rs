@@ -130,6 +130,11 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
         return Ok(());
     }
     app.emit(AppEvent::Busy { session: session_id.to_string(), busy: true });
+    handle.with(|session| {
+        session.busy_at = Some(crate::util::now_ms());
+        session.time_updated = crate::util::now_ms();
+    });
+    handle.save();
     app.plugins.emit(serde_json::json!({
         "id": crate::util::id("evt"),
         "type": "session.execution.started",
@@ -209,6 +214,17 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
     }
     let busy = app.session(session_id).map(|handle| handle.is_busy() || !handle.queue.lock().unwrap().is_empty()).unwrap_or(false);
     if !busy {
+        let outcome = match &result {
+            Ok(false) => "succeeded",
+            Ok(true) => "interrupted",
+            Err(_) => "failed",
+        };
+        handle.with(|session| {
+            session.idle_ms = Some(crate::util::now_ms());
+            session.last_outcome = Some(outcome.to_string());
+            session.time_updated = crate::util::now_ms();
+        });
+        handle.save();
         app.emit(AppEvent::Busy { session: session_id.to_string(), busy: false });
         if let Some(inbox_id) = handle.pending_compaction.lock().unwrap().take() {
             app.plugins.emit(serde_json::json!({
@@ -234,14 +250,9 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
             "type": "session.execution.interrupted",
             "properties": { "sessionID": session_id, "reason": "user" },
         })),
-        Err(error) => app.plugins.emit(serde_json::json!({
-            "id": crate::util::id("evt"),
-            "type": "session.execution.failed",
-            "properties": {
-                "sessionID": session_id,
-                "error": { "type": "unknown", "message": error.to_string() },
-            },
-        })),
+        // A failed turn already emits AppEvent::Error, which becomes the V2
+        // session.execution.failed event. Do not emit a second failure here.
+        Err(_) => {}
     }
     result.map(|_| ())
 }

@@ -2083,14 +2083,21 @@ function makeDomains(plugin: PluginRecord): Json {
     diff: vcsCall("diff", true),
     branch: { list: vcsCall("branches", true) },
   }
+  const referenceInfo = (name: string, source: Json): Json => ({
+    name,
+    path: source.path ?? source.repository ?? "",
+    ...(source.description === undefined ? {} : { description: source.description }),
+    ...(source.hidden === undefined ? {} : { hidden: source.hidden }),
+    source,
+  })
   const reference = local("references", "reference", {
     list: sync(() =>
-      apiResponse([...registry.references.entries()].map(([name, source]) => ({ name, ...source }))),
+      apiResponse([...registry.references.entries()].map(([name, source]) => referenceInfo(name, source))),
     ),
     get: sync((input: Json) => {
       const name = typeof input === "string" ? input : input?.name ?? input?.id
       const source = registry.references.get(name)
-      return apiResponse(source ? { name, ...source } : undefined)
+      return apiResponse(source ? referenceInfo(name, source) : undefined)
     }),
   })
   const integration = local("integrations", "integration", {

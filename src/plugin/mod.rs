@@ -1876,7 +1876,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.fork requires sessionID"))?;
             let handle = app.session(&id)?;
             let before = body.get("before").and_then(Value::as_str).map(String::from);
-            let forked = {
+            let mut forked = {
                 let session = handle.session.lock().unwrap();
                 let mut forked = crate::session::fork(&session);
                 if let Some(before) = &before {
@@ -1894,6 +1894,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                     .map(|message| json!({ "type": "through", "messageID": message.id }))
                     .unwrap_or_else(|| json!({ "type": "before", "messageID": "" })),
             };
+            forked.fork = Some(json!({ "sessionID": id, "boundary": boundary.clone() }));
             crate::session::save(&forked)?;
             let forked = app.session(&forked.id)?;
             let session = forked.with(|session| session.clone());
@@ -2640,7 +2641,10 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 json!(session
                     .instruction_entries
                     .iter()
-                    .map(|(key, value)| json!({ "key": key, "value": value }))
+                    .filter_map(|(key, value)| {
+                        let key = key.strip_prefix("api/")?;
+                        Some(json!({ "key": key, "value": value }))
+                    })
                     .collect::<Vec<_>>())
             }))
         }
@@ -2648,15 +2652,18 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.put requires sessionID"))?;
             let handle = app.session(&id)?;
             let key = body.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
+            if key.is_empty() || key.contains('/') {
+                return Err(anyhow!("instruction entry key must be slash-free"));
+            }
             let value = body.get("value").cloned().unwrap_or(Value::Null);
             let hash = instruction_hash(&value);
-            handle.with(|session| session.instruction_entries.insert(key.clone(), value));
+            let stored = format!("api/{key}");
+            handle.with(|session| session.instruction_entries.insert(stored.clone(), value));
             handle.save();
-            let event_key = if key.contains('/') { key } else { format!("api/{key}") };
             app.plugins.emit(json!({
                 "id": crate::util::id("evt"),
                 "type": "session.instructions.updated",
-                "properties": { "sessionID": id, "delta": { (event_key): hash } }
+                "properties": { "sessionID": id, "delta": { (stored): hash } }
             }));
             Ok(Value::Null)
         }
@@ -2664,13 +2671,16 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.instructions.entry.remove requires sessionID"))?;
             let handle = app.session(&id)?;
             let key = body.get("key").and_then(Value::as_str).unwrap_or_default();
-            handle.with(|session| session.instruction_entries.remove(key));
+            if key.is_empty() || key.contains('/') {
+                return Err(anyhow!("instruction entry key must be slash-free"));
+            }
+            let stored = format!("api/{key}");
+            handle.with(|session| session.instruction_entries.remove(&stored));
             handle.save();
-            let event_key = if key.contains('/') { key.to_string() } else { format!("api/{key}") };
             app.plugins.emit(json!({
                 "id": crate::util::id("evt"),
                 "type": "session.instructions.updated",
-                "properties": { "sessionID": id, "delta": { (event_key): "removed" } }
+                "properties": { "sessionID": id, "delta": { (stored): "removed" } }
             }));
             Ok(Value::Null)
         }
@@ -3484,6 +3494,15 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
     if let Some(idle) = session.idle_ms {
         value["time"]["idle"] = json!(idle);
     }
+    if let Some(busy) = session.busy_at {
+        value["time"]["busy"] = json!(busy);
+    }
+    if let Some(outcome) = &session.last_outcome {
+        value["outcome"] = json!(outcome);
+    }
+    if let Some(fork) = &session.fork {
+        value["fork"] = fork.clone();
+    }
     if session.archived {
         value["time"]["archived"] = json!(session.time_updated);
     }
@@ -3532,6 +3551,15 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
     }
     if let Some(idle) = session.idle_ms {
         value["time"]["idle"] = json!(idle);
+    }
+    if let Some(busy) = session.busy_at {
+        value["time"]["busy"] = json!(busy);
+    }
+    if let Some(outcome) = &session.last_outcome {
+        value["outcome"] = json!(outcome);
+    }
+    if let Some(fork) = &session.fork {
+        value["fork"] = fork.clone();
     }
     if session.archived {
         value["time"]["archived"] = json!(session.time_updated);
