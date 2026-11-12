@@ -2222,6 +2222,15 @@ impl Ui {
             AppEvent::Error { session, message } if session == sid => self.toast(Variant::Error, None, message),
             AppEvent::Busy { session, busy: false } if session == sid => self.interrupt = None,
             AppEvent::Notice { message } if !message.is_empty() && !message.starts_with("Compacting") => self.info(message),
+            AppEvent::Toast { title, message, variant } => {
+                let variant = match variant.as_str() {
+                    "success" => Variant::Success,
+                    "warning" => Variant::Warning,
+                    "error" => Variant::Error,
+                    _ => Variant::Info,
+                };
+                self.toast(variant, title, message);
+            }
             AppEvent::Updated { session } if session == sid && !self.shells.is_empty() => {
                 let done = self.handle.with(|s| s.messages.last().is_some_and(|m| m.text().starts_with("<shell-run")));
                 if done {

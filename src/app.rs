@@ -35,6 +35,7 @@ pub enum AppEvent {
     PermissionResolved { id: String, session_id: String, reply: String },
     Title { session: String, title: String },
     Notice { message: String },
+    Toast { title: Option<String>, message: String, variant: String },
 }
 
 impl AppEvent {
@@ -807,6 +808,11 @@ pub(crate) fn plugin_event(ev: &AppEvent) -> serde_json::Value {
         }),
         AppEvent::Notice { message } => json!({
             "id": id(), "type": "server.notice", "properties": { "message": message }
+        }),
+        AppEvent::Toast { title, message, variant } => json!({
+            "id": id(),
+            "type": "server.notice",
+            "properties": { "message": message, "title": title, "variant": variant }
         }),
     }
 }

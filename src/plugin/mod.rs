@@ -2031,10 +2031,10 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let title = first.get("title").and_then(Value::as_str).unwrap_or_default();
-            let text = if title.is_empty() { message } else { format!("{title}: {message}") };
-            if !text.is_empty() {
-                app.emit(crate::app::AppEvent::Notice { message: text });
+            let title = first.get("title").and_then(Value::as_str).filter(|title| !title.is_empty()).map(String::from);
+            let variant = first.get("variant").and_then(Value::as_str).unwrap_or("info").to_string();
+            if !message.is_empty() {
+                app.emit(crate::app::AppEvent::Toast { title, message, variant });
             }
             Ok(Value::Null)
         }
