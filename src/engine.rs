@@ -113,8 +113,9 @@ pub fn cost(model: &Model, u: &Usage) -> f64 {
 
 /// Send a user message; if the session is busy the message is queued and
 /// picked up at the next step (steering).
-pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, opts: PromptOptions) -> Result<()> {
+pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts: PromptOptions) -> Result<()> {
     let handle = app.session(session_id)?;
+    prepare_prompt(&app, &handle, &mut msg, &mut opts).await;
     let synthetic = msg.parts.iter().any(|part| matches!(part, Part::Text { synthetic: true, .. }));
     if !synthetic && msg.snapshot.is_none() {
         msg.snapshot = crate::snapshot::capture(&app.worktree).map(|snapshot| snapshot.id);
@@ -348,28 +349,15 @@ pub async fn notify_with_id(
     let _ = prompt(app, &session_id, msg, opts).await;
 }
 
-async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, mut opts: PromptOptions) -> Result<bool> {
-    let agent_id = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).unwrap_or_else(|| app.default_agent());
-    let agent = app.agent(&agent_id)?.clone();
-    let session_model = handle.with(|s| s.model.clone());
-    let mut sel = select_model(&app, &agent, &opts, session_model.as_deref())?;
-    // V2 `experimental.model.resolve`: a router plugin can serve this request
-    // with a different model without changing the session's selection.
-    resolve_model_hook(&app, &agent, &mut sel, &handle.id(), "primary").await;
-    let full = sel.model.full_id();
-    let model_ref = match &sel.variant {
-        Some(v) => format!("{full}#{v}"),
-        None => full.clone(),
-    };
-    msg.agent = Some(agent.id.clone());
-    msg.model = Some(model_ref.clone());
-    if let Some(text) = plan_reminder(&agent.id, &handle.with(|s| s.messages.clone())) {
-        msg.parts.insert(0, Part::Text { text, synthetic: true });
-    }
-    let user_message_id = msg.id.clone();
-    // V2 `session.prompt` / V1 `chat.message` run before the message is saved.
+/// Run the admission-time `session.prompt` hook before a message is queued.
+async fn prepare_prompt(
+    app: &Arc<App>,
+    handle: &Arc<Handle>,
+    msg: &mut Message,
+    opts: &mut PromptOptions,
+) {
     let sid = handle.id();
-    let hooked = crate::plugin::messages_for_hook(&sid, std::slice::from_ref(&msg));
+    let hooked = crate::plugin::messages_for_hook(&sid, std::slice::from_ref(msg));
     let mut prompt_event = serde_json::json!({
         "sessionID": sid,
         "messageID": msg.id,
@@ -388,8 +376,6 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, mut opts: Pr
         },
         "metadata": msg.metadata.clone().unwrap_or_else(|| serde_json::json!({})),
         "delivery": opts.delivery.clone().unwrap_or_else(|| "steer".into()),
-        "agent": agent.id,
-        "model": { "providerID": sel.provider.id, "modelID": sel.model.id, "variant": sel.variant },
     });
     if let Some(first) = hooked.as_array().and_then(|a| a.first()) {
         prompt_event["message"] = first.get("info").cloned().unwrap_or(Value::Null);
@@ -440,8 +426,29 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, mut opts: Pr
     if let (Some(info), Some(parts)) = (prompt_event.get("message"), prompt_event.get("parts")) {
         let mut list = vec![msg.clone()];
         crate::plugin::apply_messages_hook(&mut list, &serde_json::json!([{ "info": info, "parts": parts }]));
-        msg = list.remove(0);
+        *msg = list.remove(0);
     }
+}
+
+async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: PromptOptions) -> Result<bool> {
+    let agent_id = opts.agent.clone().or_else(|| handle.with(|s| s.agent.clone())).unwrap_or_else(|| app.default_agent());
+    let agent = app.agent(&agent_id)?.clone();
+    let session_model = handle.with(|s| s.model.clone());
+    let mut sel = select_model(&app, &agent, &opts, session_model.as_deref())?;
+    // V2 `experimental.model.resolve`: a router plugin can serve this request
+    // with a different model without changing the session's selection.
+    resolve_model_hook(&app, &agent, &mut sel, &handle.id(), "primary").await;
+    let full = sel.model.full_id();
+    let model_ref = match &sel.variant {
+        Some(v) => format!("{full}#{v}"),
+        None => full.clone(),
+    };
+    msg.agent = Some(agent.id.clone());
+    msg.model = Some(model_ref.clone());
+    if let Some(text) = plan_reminder(&agent.id, &handle.with(|s| s.messages.clone())) {
+        msg.parts.insert(0, Part::Text { text, synthetic: true });
+    }
+    let user_message_id = msg.id.clone();
     let previous = handle.with(|s| (s.agent.clone(), s.model.clone()));
     let first = handle.with(|s| {
         s.agent = Some(agent.id.clone());
