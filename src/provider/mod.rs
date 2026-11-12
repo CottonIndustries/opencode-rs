@@ -5,6 +5,7 @@ pub mod media;
 pub mod google;
 pub mod openai_chat;
 pub mod openai_responses;
+pub mod ws_transport;
 
 use crate::models::{Model, Protocol, Provider};
 use crate::session::{Message, ToolState, Usage};

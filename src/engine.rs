@@ -177,8 +177,10 @@ pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts:
             }
         }
     }
-    if let Some(directory) = handle.pending_move.lock().unwrap().take() {
+    let pending_move = handle.pending_move.lock().unwrap().take();
+    if let Some(directory) = pending_move {
         crate::plugin::kill_terminal(session_id);
+        crate::provider::ws_transport::close(session_id).await;
         handle.with(|session| {
             session.directory = directory.clone();
             session.project = crate::session::project_id(&directory);

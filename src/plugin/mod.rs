@@ -1052,6 +1052,7 @@ impl Manager {
 
     /// Run plugin cleanups and stop the Deno host.
     pub async fn shutdown(&self) {
+        crate::provider::ws_transport::close_all().await;
         let Some(inner) = &self.inner else { return };
         let _ = self.request_with_timeout("shutdown", json!({}), Some(std::time::Duration::from_secs(10))).await;
         inner.shutdown.cancel();
@@ -2221,6 +2222,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let id = session_id().ok_or_else(|| anyhow!("session.remove requires sessionID"))?;
             app.session(&id)?;
             pty::manager().kill(&id);
+            crate::provider::ws_transport::close(&id).await;
             crate::session::delete(&app.project, &id)?;
             app.forget_session(&id);
             app.plugins.emit(json!({
@@ -2870,6 +2872,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 return Ok(Value::Null);
             }
             pty::manager().kill(&id);
+            crate::provider::ws_transport::close(&id).await;
             handle.with(|session| {
                 session.directory = directory.clone();
                 session.project = crate::session::project_id(&directory);

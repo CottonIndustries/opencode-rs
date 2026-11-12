@@ -14,6 +14,13 @@ struct StreamState {
     had_calls: bool,
     summary_parts: usize,
     tool_ids: HashMap<String, String>,
+    output_started: bool,
+    terminal: bool,
+    completed: bool,
+    provider_failed: bool,
+    response_id: Option<String>,
+    output: Vec<Value>,
+    error_code: Option<String>,
 }
 
 enum WsError {
@@ -241,6 +248,18 @@ async fn ws_frame(req: &Request, name: &str, frame: String) -> String {
     event.get("frame").and_then(Value::as_str).map(String::from).unwrap_or(frame)
 }
 
+struct WsFailure {
+    connect: bool,
+    output_started: bool,
+    code: Option<String>,
+    error: anyhow::Error,
+}
+
+fn too_large(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_lowercase();
+    message.contains("1009") || message.contains("message too large") || message.contains("max_message_size")
+}
+
 async fn stream_websocket(
     req: &Request,
     http_url: &str,
@@ -250,47 +269,241 @@ async fn stream_websocket(
 ) -> Result<(), WsError> {
     let url = websocket_url(http_url).map_err(WsError::Connect)?;
     let (url, headers) = ws_handshake(req, url, headers).await;
-    let mut builder = crate::http::client().websocket(&url);
-    for (key, value) in &headers {
-        builder = builder.header(key.as_str(), value.as_str());
+    let mut lease = crate::provider::ws_transport::Lease::acquire(&req.session.id).await;
+    if lease.http_fallback() {
+        return Err(WsError::Connect(anyhow!("session transport is pinned to HTTP")));
     }
-    let response = builder
-        .send()
-        .await
-        .map_err(|error| WsError::Connect(anyhow!("websocket handshake failed: {error}")))?;
-    let mut socket = response
-        .into_websocket()
-        .await
-        .map_err(|error| WsError::Connect(anyhow!("websocket upgrade failed: {error}")))?;
-    let frame = ws_frame(req, "experimental.ws.send", body.to_string()).await;
-    socket
-        .send(Message::text(frame))
-        .await
-        .map_err(|error| WsError::Stream(anyhow!("websocket send failed: {error}")))?;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match stream_once(req, &url, body, &headers, &tx, &mut lease).await {
+            Ok(()) => return Ok(()),
+            Err(failure) if failure.connect => return Err(WsError::Connect(failure.error)),
+            Err(failure)
+                if !failure.output_started
+                    && attempt == 1
+                    && matches!(
+                        failure.code.as_deref(),
+                        Some("previous_response_not_found") | Some("websocket_connection_limit_reached")
+                    ) =>
+            {
+                lease.clear_checkpoint();
+                lease.close_channel().await;
+            }
+            Err(failure) if failure.output_started || failure.code.is_some() => {
+                return Err(WsError::Stream(failure.error));
+            }
+            Err(failure) => return Err(WsError::Stream(failure.error)),
+        }
+    }
+}
+
+fn comparable(value: &Value) -> Value {
+    let Some(map) = value.as_object() else { return value.clone() };
+    if map.get("role").and_then(Value::as_str) == Some("assistant") {
+        let content = map
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        if item.get("type").and_then(Value::as_str) == Some("output_text") {
+                            json!({ "type": "output_text", "text": item.get("text").cloned().unwrap_or(Value::Null) })
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return json!({ "role": "assistant", "content": content });
+    }
+    if map.get("type").and_then(Value::as_str) == Some("function_call") {
+        let arguments = map
+            .get("arguments")
+            .map(|arguments| match arguments {
+                Value::String(text) => serde_json::from_str::<Value>(text).unwrap_or_else(|_| arguments.clone()),
+                _ => arguments.clone(),
+            })
+            .unwrap_or(Value::Null);
+        return json!({
+            "type": "function_call",
+            "call_id": map.get("call_id").cloned().unwrap_or(Value::Null),
+            "name": map.get("name").cloned().unwrap_or(Value::Null),
+            "arguments": arguments,
+        });
+    }
+    if map.get("type").and_then(Value::as_str) == Some("reasoning") {
+        return json!({
+            "type": "reasoning",
+            "summary": map.get("summary").cloned().unwrap_or(Value::Null),
+            "encrypted_content": map.get("encrypted_content").cloned().unwrap_or(Value::Null),
+        });
+    }
+    value.clone()
+}
+
+fn continuation_body(body: &Value, checkpoint: Option<&Value>) -> (Value, bool) {
+    let Some(checkpoint) = checkpoint else { return (body.clone(), false) };
+    let Some(request) = checkpoint.get("request") else { return (body.clone(), false) };
+    let Some(previous_input) = request.get("input").and_then(Value::as_array) else {
+        return (body.clone(), false);
+    };
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return (body.clone(), false);
+    };
+    if input.iter().any(|item| item.get("type").and_then(Value::as_str) == Some("compaction_trigger")) {
+        return (body.clone(), false);
+    }
+    let mut left = body.clone();
+    let mut right = request.clone();
+    for value in [&mut left, &mut right] {
+        if let Some(map) = value.as_object_mut() {
+            map.remove("input");
+            map.remove("previous_response_id");
+            map.remove("type");
+        }
+    }
+    if left != right {
+        return (body.clone(), false);
+    }
+    let baseline: Vec<Value> = previous_input
+        .iter()
+        .chain(checkpoint.get("output").and_then(Value::as_array).into_iter().flatten())
+        .map(comparable)
+        .collect();
+    let current: Vec<Value> = input.iter().map(comparable).collect();
+    if current.len() <= baseline.len() || !baseline.iter().enumerate().all(|(index, item)| current.get(index) == Some(item)) {
+        return (body.clone(), false);
+    }
+    let Some(response_id) = checkpoint.get("responseID").and_then(Value::as_str) else {
+        return (body.clone(), false);
+    };
+    let mut next = body.clone();
+    next["input"] = Value::Array(input[baseline.len()..].to_vec());
+    next["previous_response_id"] = json!(response_id);
+    (next, true)
+}
+
+async fn stream_once(
+    req: &Request,
+    url: &str,
+    body: &Value,
+    headers: &[(String, String)],
+    tx: &Tx,
+    lease: &mut crate::provider::ws_transport::Lease,
+) -> Result<(), WsFailure> {
+    if let Err(error) = lease.connect(url, headers).await {
+        return Err(WsFailure { connect: true, output_started: false, code: None, error });
+    }
+    let (frame_body, incremental) = continuation_body(body, lease.checkpoint().as_ref());
+    if !incremental {
+        lease.clear_checkpoint();
+    }
+    let frame = ws_frame(req, "experimental.ws.send", frame_body.to_string()).await;
+    if let Err(error) = lease.send(frame).await {
+        lease.poison().await;
+        return Err(WsFailure { connect: true, output_started: false, code: None, error });
+    }
     let mut state = StreamState::default();
-    while let Some(message) = socket.recv().await {
-        let message = message.map_err(|error| WsError::Stream(anyhow!("websocket receive failed: {error}")))?;
+    loop {
+        let message = match lease.recv().await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                lease.poison().await;
+                return Err(WsFailure {
+                    connect: false,
+                    output_started: state.output_started,
+                    code: state.error_code.clone(),
+                    error: anyhow!("WebSocket closed before a terminal event"),
+                });
+            }
+            Err(error) => {
+                if too_large(&error) {
+                    lease.close_channel().await;
+                    let connect = !state.output_started;
+                    if connect {
+                        lease.pin_http();
+                    }
+                    return Err(WsFailure { connect, output_started: state.output_started, code: None, error });
+                }
+                lease.poison().await;
+                return Err(WsFailure {
+                    connect: false,
+                    output_started: state.output_started,
+                    code: state.error_code.clone(),
+                    error,
+                });
+            }
+        };
         let text = match message {
             Message::Text(text) => text.to_string(),
             Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Message::Ping(_) | Message::Pong(_) => continue,
-            Message::Close(_) => break,
+            Message::Close(frame) => {
+                let error = anyhow!("WebSocket closed before a terminal event");
+                if frame.is_some_and(|frame| u16::from(frame.code) == 1009) {
+                    lease.close_channel().await;
+                    let connect = !state.output_started;
+                    if connect {
+                        lease.pin_http();
+                    }
+                    let error = anyhow!("WebSocket message too large");
+                    return Err(WsFailure { connect, output_started: state.output_started, code: None, error });
+                }
+                lease.poison().await;
+                return Err(WsFailure {
+                    connect: false,
+                    output_started: state.output_started,
+                    code: state.error_code.clone(),
+                    error,
+                });
+            }
         };
         if text.trim().is_empty() {
             continue;
         }
         let text = ws_frame(req, "experimental.ws.receive", text).await;
-        match process_frame(&text, None, &tx, &mut state) {
+        match process_frame(&text, None, tx, &mut state) {
             Ok(true) => break,
             Ok(false) => {}
             Err(error) => {
-                let _ = socket.close(1000, "").await;
-                return Err(WsError::Stream(error));
+                let code = state.error_code.clone();
+                let output_started = state.output_started;
+                if state.provider_failed {
+                    lease.close_channel().await;
+                } else {
+                    lease.poison().await;
+                }
+                return Err(WsFailure { connect: false, output_started, code, error });
             }
         }
     }
-    finish_stream(&tx, &mut state);
-    let _ = socket.close(1000, "").await;
+    if !state.terminal {
+        lease.poison().await;
+        return Err(WsFailure {
+            connect: false,
+            output_started: state.output_started,
+            code: None,
+            error: anyhow!("WebSocket exchange ended without a terminal event"),
+        });
+    }
+    finish_stream(tx, &mut state);
+    if state.completed {
+        if let Some(response_id) = state.response_id.clone() {
+            lease.set_checkpoint(json!({
+                "responseID": response_id,
+                "request": body,
+                "output": state.output,
+            }));
+        } else {
+            lease.clear_checkpoint();
+        }
+    } else {
+        lease.clear_checkpoint();
+    }
+    lease.finish(true);
     Ok(())
 }
 
@@ -308,6 +521,7 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
     match ty.as_str() {
         "response.output_text.delta" => {
             if let Some(d) = v.get("delta").and_then(|x| x.as_str()) {
+                state.output_started = true;
                 let _ = tx.send(Event::TextDelta(d.into()));
             }
         }
@@ -319,12 +533,14 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
         }
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             if let Some(d) = v.get("delta").and_then(|x| x.as_str()) {
+                state.output_started = true;
                 let _ = tx.send(Event::ReasoningDelta(d.into()));
             }
         }
         "response.output_item.added" => {
             let item = v.get("item").cloned().unwrap_or(Value::Null);
             if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                state.output_started = true;
                 let call_id = item.get("call_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 if let Some(item_id) = item.get("id").and_then(|x| x.as_str()) {
                     state.tool_ids.insert(item_id.to_string(), call_id.clone());
@@ -340,6 +556,7 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
         }
         "response.function_call_arguments.delta" => {
             if let Some(delta) = v.get("delta").and_then(|x| x.as_str()).filter(|d| !d.is_empty()) {
+                state.output_started = true;
                 let item_id = v.get("item_id").and_then(|x| x.as_str()).unwrap_or("");
                 let id = state.tool_ids.get(item_id).cloned().unwrap_or_else(|| item_id.to_string());
                 let _ = tx.send(Event::ToolInputDelta { id, delta: delta.to_string() });
@@ -347,6 +564,7 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
         }
         "response.output_item.done" => {
             let item = v.get("item").cloned().unwrap_or(Value::Null);
+            state.output.push(item.clone());
             match item.get("type").and_then(|t| t.as_str()) {
                 Some("function_call") => {
                     state.had_calls = true;
@@ -370,6 +588,12 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
         }
         "response.completed" | "response.incomplete" => {
             let r = v.get("response").cloned().unwrap_or(Value::Null);
+            state.terminal = true;
+            state.completed = ty == "response.completed";
+            state.response_id = r.get("id").and_then(Value::as_str).map(String::from);
+            if let Some(output) = r.get("output").and_then(Value::as_array) {
+                state.output = output.clone();
+            }
             if let Some(u) = r.get("usage") {
                 let input = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
                 let cached = u.pointer("/input_tokens_details/cached_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
@@ -392,10 +616,23 @@ fn process_frame(data: &str, event: Option<&str>, tx: &Tx, state: &mut StreamSta
             return Ok(true);
         }
         "response.failed" => {
+            state.provider_failed = true;
+            state.error_code = v
+                .pointer("/response/error/code")
+                .and_then(Value::as_str)
+                .or_else(|| v.pointer("/response/error/type").and_then(Value::as_str))
+                .map(String::from);
             let msg = v.pointer("/response/error/message").and_then(|x| x.as_str()).unwrap_or("response failed");
             return Err(anyhow!("{msg}"));
         }
         "error" => {
+            state.provider_failed = true;
+            state.error_code = v
+                .get("code")
+                .and_then(Value::as_str)
+                .or_else(|| v.pointer("/error/code").and_then(Value::as_str))
+                .or_else(|| v.get("type").and_then(Value::as_str))
+                .map(String::from);
             let msg = v.get("message").or_else(|| v.pointer("/error/message")).and_then(|x| x.as_str()).unwrap_or("unknown error");
             return Err(anyhow!("{msg}"));
         }
@@ -421,6 +658,80 @@ mod tests {
         assert_eq!(websocket_url("https://api.openai.com/v1/responses").unwrap(), "wss://api.openai.com/v1/responses");
         assert_eq!(websocket_url("http://127.0.0.1:8080/responses").unwrap(), "ws://127.0.0.1:8080/responses");
         assert!(websocket_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn continuation_sends_only_the_delta() {
+        let body = json!({
+            "model": "gpt",
+            "input": [
+                { "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+                { "role": "assistant", "content": [{ "type": "output_text", "text": "hello" }] },
+                { "role": "user", "content": [{ "type": "input_text", "text": "again" }] }
+            ],
+            "stream": true,
+            "store": false
+        });
+        let checkpoint = json!({
+            "responseID": "resp_1",
+            "request": {
+                "model": "gpt",
+                "input": [
+                    { "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }
+                ],
+                "stream": true,
+                "store": false
+            },
+            "output": [
+                { "role": "assistant", "content": [{ "type": "output_text", "text": "hello" }] }
+            ]
+        });
+        let (next, incremental) = continuation_body(&body, Some(&checkpoint));
+        assert!(incremental);
+        assert_eq!(next["previous_response_id"], "resp_1");
+        assert_eq!(next["input"].as_array().unwrap().len(), 1);
+        assert_eq!(next["input"][0]["content"][0]["text"], "again");
+    }
+
+    #[test]
+    fn continuation_matches_function_call_output() {
+        let body = json!({
+            "model": "gpt",
+            "input": [
+                { "role": "user", "content": [{ "type": "input_text", "text": "read" }] },
+                { "type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{\"path\":\"a\"}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "ok" }
+            ],
+            "stream": true
+        });
+        let checkpoint = json!({
+            "responseID": "resp_1",
+            "request": {
+                "model": "gpt",
+                "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "read" }] }],
+                "stream": true
+            },
+            "output": [
+                { "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read", "arguments": "{\"path\":\"a\"}" }
+            ]
+        });
+        let (next, incremental) = continuation_body(&body, Some(&checkpoint));
+        assert!(incremental);
+        assert_eq!(next["input"].as_array().unwrap().len(), 1);
+        assert_eq!(next["input"][0]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn continuation_falls_back_to_full_when_the_prefix_differs() {
+        let body = json!({ "model": "gpt", "input": [{ "text": "different" }], "stream": true });
+        let checkpoint = json!({
+            "responseID": "resp_1",
+            "request": { "model": "gpt", "input": [{ "text": "hi" }], "stream": true },
+            "output": []
+        });
+        let (next, incremental) = continuation_body(&body, Some(&checkpoint));
+        assert!(!incremental);
+        assert_eq!(next, body);
     }
 
     #[test]
