@@ -507,11 +507,41 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             "data": app.providers().values().flat_map(|provider| provider.models.values().map(crate::plugin::model_json)).collect::<Vec<_>>()
         })),
         ("GET", ["api", "session"]) => {
-            let sessions = crate::session::list(&app.project)
-                .iter()
-                .map(crate::plugin::session_json_summary)
-                .collect::<Vec<_>>();
-            Ok(json!({ "data": sessions }))
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let mut sessions = crate::session::list(&app.project);
+            if let Some(parent) = query_value(&parsed, "parentID") {
+                sessions.retain(|session| session.parent_id.as_deref() == Some(parent.as_str()));
+            }
+            if let Some(search) = query_value(&parsed, "search") {
+                let search = search.to_lowercase();
+                sessions.retain(|session| session.title.to_lowercase().contains(&search));
+            }
+            match query_value(&parsed, "archived").as_deref() {
+                Some("true") => sessions.retain(|session| session.archived),
+                Some("false") | None => sessions.retain(|session| !session.archived),
+                _ => {}
+            }
+            if query_value(&parsed, "order").as_deref() == Some("asc") {
+                sessions.reverse();
+            }
+            if let Some(cursor) = query_value(&parsed, "cursor") {
+                if let Some(index) = sessions.iter().position(|session| session.id == cursor) {
+                    sessions.drain(..=index);
+                }
+            }
+            let limit = query_value(&parsed, "limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|limit| *limit > 0)
+                .unwrap_or(50);
+            let has_more = sessions.len() > limit;
+            sessions.truncate(limit);
+            Ok(json!({
+                "data": sessions.iter().map(crate::plugin::session_json_summary).collect::<Vec<_>>(),
+                "cursor": {
+                    "previous": sessions.first().map(|session| session.id.clone()),
+                    "next": has_more.then(|| sessions.last().map(|session| session.id.clone())).flatten(),
+                }
+            }))
         }
         ("POST", ["api", "session"]) => {
             let session = crate::plugin::client_call(app, "session.create", vec![request.body.clone()]).await?;
