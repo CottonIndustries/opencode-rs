@@ -812,6 +812,9 @@ async function trigger(domain: string, name: string, event: Json): Promise<Json>
   return event
 }
 
+const sessionTitles = new Map<string, string>()
+const sessionMetadata = new Map<string, Json>()
+
 function toV2Event(event: Json): Json | null {
   const properties = event.properties ?? event.data ?? {}
   let type = event.type
@@ -870,19 +873,31 @@ function toV2Event(event: Json): Json | null {
     data = { sessionID: properties.sessionID, status: properties.status ?? { type: "busy" } }
   } else if (event.type === "session.updated") {
     const info = properties.info ?? {}
-    if (typeof info.title === "string") {
+    const sessionID = properties.sessionID ?? info.id
+    if (typeof info.title === "string" && sessionTitles.get(sessionID) !== info.title) {
+      sessionTitles.set(sessionID, info.title)
       type = "session.renamed"
-      data = { sessionID: properties.sessionID ?? info.id, title: info.title }
-    } else if (info.metadata !== undefined) {
+      data = { sessionID, title: info.title }
+    } else if (info.metadata !== undefined && JSON.stringify(sessionMetadata.get(sessionID)) !== JSON.stringify(info.metadata)) {
+      sessionMetadata.set(sessionID, info.metadata)
       type = "session.metadata.updated"
-      data = { sessionID: properties.sessionID ?? info.id, metadata: info.metadata }
+      data = { sessionID, metadata: info.metadata }
     } else {
       return null
     }
+  } else if (event.type === "session.renamed") {
+    sessionTitles.set(properties.sessionID, properties.title)
+    data = { sessionID: properties.sessionID, title: properties.title }
+  } else if (event.type === "session.metadata.updated") {
+    sessionMetadata.set(properties.sessionID, properties.metadata)
+    data = { sessionID: properties.sessionID, metadata: properties.metadata }
   } else if (event.type === "session.created") {
     const info = properties.info ?? {}
+    const sessionID = info.id ?? properties.sessionID
+    if (typeof info.title === "string") sessionTitles.set(sessionID, info.title)
+    if (info.metadata !== undefined) sessionMetadata.set(sessionID, info.metadata)
     data = {
-      sessionID: info.id ?? properties.sessionID,
+      sessionID,
       projectID: info.projectID,
       location: info.location ?? { directory: directory },
       parentID: info.parentID ?? undefined,
