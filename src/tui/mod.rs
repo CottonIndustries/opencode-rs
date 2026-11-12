@@ -1709,6 +1709,10 @@ impl Ui {
             return;
         }
         if leader {
+            if let Some(id) = self.plugin_binding(&k, true) {
+                self.exec(&format!("tui:{id}"), "");
+                return;
+            }
             let ids = [
                 "app.exit", "prompt.editor", "session.sidebar.toggle", "opencode.status", "session.export", "session.new", "session.list", "session.timeline", "session.compact", "model.list",
                 "agent.list", "messages.copy", "session.undo", "session.redo",
@@ -1758,6 +1762,10 @@ impl Ui {
                 self.pick_auto(opt, complete);
                 return;
             }
+        }
+        if let Some(id) = self.plugin_binding(&k, false) {
+            self.exec(&format!("tui:{id}"), "");
+            return;
         }
         let in_session = self.route == Route::Session;
         if let Some(id) = TAB_COMMANDS.into_iter().find(|id| self.keys.matches(id, &k, false)) {
@@ -1940,6 +1948,17 @@ impl Ui {
                 self.editor.cursor = a.start + insert.len();
             }
         }
+    }
+
+    fn plugin_binding(&self, key: &keymap::Key, leader: bool) -> Option<String> {
+        for command in self.app.plugins.tui_commands() {
+            let Some(id) = command.get("id").and_then(Value::as_str) else { continue };
+            let Some(bind) = command.get("bind").and_then(Value::as_str) else { continue };
+            if keymap::parse(bind).iter().any(|binding| binding.leader == leader && binding.key == *key) {
+                return Some(id.to_string());
+            }
+        }
+        None
     }
 
     fn pending_form(&self) -> Option<crate::forms::Form> {
