@@ -1152,6 +1152,12 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         return Ok(());
     }
     let existing = messages.first().is_some_and(|m| m.parts.iter().any(|p| matches!(p, Part::Compaction { .. })));
+    let reason = if continuing { "auto" } else { "manual" };
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.compaction.started",
+        "properties": { "sessionID": sid, "reason": reason },
+    }));
     // V1 experimental.session.compacting may replace or extend the prompt.
     let compacting = app
         .plugins
@@ -1233,12 +1239,62 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
                 req.options = extra.clone();
             }
         }
-        complete_request(req, Some(cancel)).await?
+        match complete_request(req, Some(cancel)).await {
+            Ok(value) => value,
+            Err(error) => {
+                *handle.cancel.lock().unwrap() = None;
+                app.plugins.emit(serde_json::json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.compaction.failed",
+                    "properties": {
+                        "sessionID": sid,
+                        "reason": reason,
+                        "error": { "type": "unknown", "message": error.to_string() },
+                        "cost": 0,
+                        "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+                    },
+                }));
+                return Err(error);
+            }
+        }
     };
     *handle.cancel.lock().unwrap() = None;
     if summary.trim().is_empty() {
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.compaction.failed",
+            "properties": {
+                "sessionID": sid,
+                "reason": reason,
+                "error": { "type": "unknown", "message": "the model returned an empty summary" },
+                "cost": cost(&sel.model, &usage),
+                "tokens": {
+                    "input": usage.input,
+                    "output": usage.output,
+                    "reasoning": usage.reasoning,
+                    "cache": { "read": usage.cache_read, "write": usage.cache_write },
+                },
+            },
+        }));
         return Err(anyhow!("the model returned an empty summary"));
     }
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.compaction.ended",
+        "properties": {
+            "sessionID": sid,
+            "reason": reason,
+            "model": model_hook_json(sel),
+            "text": summary.trim(),
+            "cost": cost(&sel.model, &usage),
+            "tokens": {
+                "input": usage.input,
+                "output": usage.output,
+                "reasoning": usage.reasoning,
+                "cache": { "read": usage.cache_read, "write": usage.cache_write },
+            },
+        },
+    }));
     let mut m = Message::new(Role::User);
     m.parts.push(Part::Compaction { summary: summary.trim().to_string() });
     if continuing {
