@@ -1627,10 +1627,21 @@ function makeDomains(plugin: PluginRecord): Json {
     provider: sync((id: string) => providerRecord(id)),
   }
   const storage: Json = {
-    get: lazy((key: string) => storageGet(key)),
-    set: lazy((key: string, value: Json) => storageSet(key, value)),
-    remove: lazy((key: string) => storageRemove(key)),
-    scan: lazy((options: Json) => storageScan(options)),
+    get: lazy((key: string) => storageGet(`${plugin.id}/${key}`)),
+    set: lazy((key: string, value: Json) => storageSet(`${plugin.id}/${key}`, value)),
+    remove: lazy((key: string) => storageRemove(`${plugin.id}/${key}`)),
+    scan: lazy(async (options: Json) => {
+      const prefix = `${plugin.id}/${options?.prefix ?? ""}`
+      const result = await storageScan({ ...options, prefix })
+      const cut = plugin.id.length + 1
+      return {
+        entries: (result.entries ?? []).map((entry: Json) => ({
+          key: String(entry.key).slice(cut),
+          value: entry.value,
+        })),
+        next: typeof result.next === "string" ? result.next.slice(cut) : undefined,
+      }
+    }),
   }
   const aisdk: Json = {
     hook: (hookName: string, callback: Function, options?: Json) =>
