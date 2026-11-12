@@ -888,6 +888,15 @@ impl Manager {
         let _ = inner.tx.send(json!({ "type": "notification", "method": "event", "params": event }));
     }
 
+    /// Invoke a plugin-registered RPC method through the Deno host.
+    pub async fn rpc_call(&self, rpc_id: &str, method: &str, input: Value) -> Result<Value> {
+        self.request(
+            "rpc.call",
+            json!({ "rpcID": rpc_id, "method": method, "input": input }),
+        )
+        .await
+    }
+
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(method, params, Some(std::time::Duration::from_secs(120))).await
     }

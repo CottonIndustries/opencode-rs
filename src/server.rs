@@ -347,6 +347,10 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             crate::plugin::pty::manager().kill(id);
             Ok(json!({ "data": null }))
         }
+        ("POST", ["api", "rpc", rpc, method]) => {
+            let result = app.plugins.rpc_call(rpc, method, request.body.clone()).await?;
+            Ok(json!({ "data": result }))
+        }
         ("GET", ["api", "permission"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "form"]) => Ok(json!({ "data": [] })),
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
