@@ -42,7 +42,11 @@ if yours live elsewhere.
   (thought signatures). Retries with backoff on 429/5xx (not on quota errors).
   `#variant` selects reasoning effort/budget. OpenAI Responses can use the
   WebSocket transport (`provider.<id>.options.transport: "websocket"`) with the
-  same BoringSSL/Bun HTTP stack; a failed handshake falls back to HTTP/SSE.
+  same BoringSSL/Bun HTTP stack. One socket is reused per session, rotated after
+  55 minutes, with a 15 second connect timeout and 30 minute idle timeout.
+  Handshake failures pin the session to HTTP/SSE, repeated stream failures do the
+  same after five attempts, and `previous_response_id` continuations send only
+  the new input when the prefix still matches.
 - **OpenCode Zen free tier**: with no OpenCode key, the `opencode` provider uses the
   anonymous `public` key and lists only free models. Model requests match the TypeScript
   client: `User-Agent: opencode/latest/2.1.4/cli`, `x-opencode-client: cli` (or
