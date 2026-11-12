@@ -121,6 +121,7 @@ impl FormStore {
             Status::Answered => return Err(anyhow!("form already answered: {id}")),
             Status::Cancelled => return Err(anyhow!("form already cancelled: {id}")),
         }
+        validate(&entry.form.fields, &values)?;
         match (&mut entry.form.replies, values) {
             (Value::Object(current), Value::Object(next)) => current.extend(next),
             (current, next) => *current = next,
@@ -179,6 +180,113 @@ impl FormStore {
     }
 }
 
+fn field_active(field: &Value, answer: &serde_json::Map<String, Value>) -> bool {
+    let Some(conditions) = field.get("when").and_then(Value::as_array) else {
+        return true;
+    };
+    conditions.iter().all(|condition| {
+        let key = condition.get("key").and_then(Value::as_str).unwrap_or_default();
+        let expected = condition.get("value");
+        let actual = answer.get(key);
+        match condition.get("op").and_then(Value::as_str).unwrap_or("eq") {
+            "eq" => actual == expected,
+            "neq" => actual != expected,
+            _ => true,
+        }
+    })
+}
+
+fn validate(fields: &Value, answer: &Value) -> Result<()> {
+    let Some(fields) = fields.as_array() else {
+        return Ok(());
+    };
+    let Some(answer) = answer.as_object() else {
+        return Err(anyhow!("form answer must be an object"));
+    };
+    for field in fields {
+        if !field_active(field, answer) {
+            continue;
+        }
+        let key = field.get("key").and_then(Value::as_str).unwrap_or_default();
+        let required = field.get("required").and_then(Value::as_bool).unwrap_or(false);
+        let Some(value) = answer.get(key) else {
+            if required {
+                return Err(anyhow!("missing required field: {key}"));
+            }
+            continue;
+        };
+        if value.is_null() {
+            if required {
+                return Err(anyhow!("missing required field: {key}"));
+            }
+            continue;
+        }
+        match field.get("type").and_then(Value::as_str).unwrap_or("string") {
+            "string" => {
+                let Some(value) = value.as_str() else {
+                    return Err(anyhow!("field {key} must be a string"));
+                };
+                if let Some(min) = field.get("minLength").and_then(Value::as_u64) {
+                    if value.chars().count() < min as usize {
+                        return Err(anyhow!("field {key} is shorter than {min} characters"));
+                    }
+                }
+                if let Some(max) = field.get("maxLength").and_then(Value::as_u64) {
+                    if value.chars().count() > max as usize {
+                        return Err(anyhow!("field {key} is longer than {max} characters"));
+                    }
+                }
+            }
+            "number" => {
+                let Some(value) = value.as_f64() else {
+                    return Err(anyhow!("field {key} must be a number"));
+                };
+                if let Some(min) = field.get("minimum").and_then(Value::as_f64) {
+                    if value < min {
+                        return Err(anyhow!("field {key} is below its minimum"));
+                    }
+                }
+                if let Some(max) = field.get("maximum").and_then(Value::as_f64) {
+                    if value > max {
+                        return Err(anyhow!("field {key} is above its maximum"));
+                    }
+                }
+            }
+            "integer" => {
+                let integral = value.as_i64().is_some() || value.as_u64().is_some();
+                if !integral {
+                    return Err(anyhow!("field {key} must be an integer"));
+                }
+            }
+            "boolean" => {
+                if !value.is_boolean() {
+                    return Err(anyhow!("field {key} must be a boolean"));
+                }
+            }
+            "multiselect" => {
+                let Some(values) = value.as_array() else {
+                    return Err(anyhow!("field {key} must be an array"));
+                };
+                if values.iter().any(|value| !value.is_string()) {
+                    return Err(anyhow!("field {key} must contain strings"));
+                }
+                if let Some(min) = field.get("minItems").and_then(Value::as_u64) {
+                    if values.len() < min as usize {
+                        return Err(anyhow!("field {key} needs at least {min} items"));
+                    }
+                }
+                if let Some(max) = field.get("maxItems").and_then(Value::as_u64) {
+                    if values.len() > max as usize {
+                        return Err(anyhow!("field {key} has more than {max} items"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +299,15 @@ mod tests {
             json!({ "provider": "example" }),
             json!([{ "key": "token", "title": "Token", "type": "string", "required": true }]),
         )
+    }
+
+    #[test]
+    fn validates_required_fields_and_types() {
+        let store = FormStore::default();
+        let form = create(&store);
+        assert!(store.reply(&form.id, json!({})).is_err());
+        assert!(store.reply(&form.id, json!({ "token": 5 })).is_err());
+        store.reply(&form.id, json!({ "token": "abc" })).unwrap();
     }
 
     #[test]
@@ -261,7 +378,7 @@ mod tests {
     #[test]
     fn replies_are_merged() {
         let store = FormStore::default();
-        let form = create(&store);
+        let form = store.create("ses_1", "Merge", Value::Null, json!([]));
         store.reply(&form.id, json!({ "first": 1, "second": 2 })).unwrap();
         assert_eq!(store.get(&form.id).unwrap().replies, json!({ "first": 1, "second": 2 }));
     }
