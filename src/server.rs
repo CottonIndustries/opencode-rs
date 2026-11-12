@@ -260,6 +260,19 @@ async fn handle(
             return fs_read(stream, &app, &path).await;
         }
     }
+    if request.method == "GET" && parsed.path().ends_with("/log") {
+        if let Some(id) = parsed
+            .path()
+            .strip_prefix("/api/experimental/session/")
+            .and_then(|rest| rest.strip_suffix("/log"))
+        {
+            let follow = query_value(&parsed, "follow").is_some_and(|value| value == "true");
+            if follow || request.accept.as_deref().is_some_and(|accept| accept.contains("text/event-stream")) {
+                let after = query_value(&parsed, "after").and_then(|value| value.parse::<u64>().ok());
+                return session_log_feed(stream, app.clone(), id.to_string(), after).await;
+            }
+        }
+    }
     if request.method == "POST" && parsed.path() == "/api/experimental/fs/write" {
         let path = query_value(&parsed, "path").unwrap_or_default();
         return fs_write(stream, &request, &path).await;
@@ -1508,6 +1521,48 @@ async fn read_ws_frame(reader: &mut tokio::net::tcp::OwnedReadHalf) -> Result<Op
         }
     }
     Ok(Some((opcode, payload)))
+}
+
+async fn session_log_feed(mut stream: TcpStream, app: Arc<App>, session_id: String, after: Option<u64>) -> Result<()> {
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: keep-alive\r\naccess-control-allow-origin: *\r\n\r\n";
+    stream.write_all(head.as_bytes()).await?;
+    let mut last = after.unwrap_or(0);
+    for event in crate::event_store::read(Some(&session_id), after, None) {
+        last = last.max(event.get("seq").and_then(Value::as_u64).unwrap_or(0));
+        if stream.write_all(format!("data: {event}\n\n").as_bytes()).await.is_err() {
+            return Ok(());
+        }
+    }
+    let synced = json!({ "type": "event-log.synced", "aggregateID": session_id, "seq": last });
+    stream.write_all(format!("data: {synced}\n\n").as_bytes()).await?;
+    let mut events = app.subscribe();
+    let mut plugin_events = app.plugins.subscribe();
+    loop {
+        let value = tokio::select! {
+            event = events.recv() => match event {
+                Ok(event) => crate::app::plugin_event(&event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+            event = plugin_events.recv() => match event {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+        };
+        if value.pointer("/properties/sessionID").and_then(Value::as_str) != Some(session_id.as_str()) {
+            continue;
+        }
+        let seq = value.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        if seq != 0 && seq <= last {
+            continue;
+        }
+        last = last.max(seq);
+        if stream.write_all(format!("data: {value}\n\n").as_bytes()).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
