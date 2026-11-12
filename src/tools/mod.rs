@@ -5,6 +5,7 @@ pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod patch;
+pub mod question;
 pub mod read;
 pub mod shell;
 pub mod skill;
@@ -282,6 +283,7 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
         Arc::new(artifact::Read),
         Arc::new(artifact::Update),
         Arc::new(artifact::Delete),
+        Arc::new(question::QuestionTool),
     ];
     if websearch::configured(&app.config).is_some() || app.plugins.has_websearch() {
         tools.push(Arc::new(websearch::WebSearch));
