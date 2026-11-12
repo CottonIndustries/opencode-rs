@@ -963,6 +963,42 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             "data": app.pending_permissions().iter().map(permission_json).collect::<Vec<_>>(),
         })),
         ("GET", ["api", "permission", "saved"]) => Ok(json!({ "data": [] })),
+        ("POST", ["api", "experimental", "generate", "text"] | ["api", "experimental", "generate"]) => {
+            let result = crate::plugin::client_call(app, "generate.text", vec![request.body.clone()]).await?;
+            Ok(json!({ "data": { "text": result.get("text").cloned().unwrap_or(Value::Null) } }))
+        }
+        ("POST", ["api", "experimental", "generate", "image"]) => {
+            let result = crate::plugin::client_call(app, "generate.image", vec![request.body.clone()]).await?;
+            Ok(json!({ "data": result }))
+        }
+        ("POST", ["api", "experimental", "generate", "decisions"]) => {
+            let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
+            Ok(json!({ "data": result }))
+        }
+        ("GET", ["api", "websearch", "provider"]) => {
+            let mut providers = app.plugins.websearch_providers();
+            providers.extend(crate::tools::websearch::providers());
+            providers.sort_by(|a, b| a.0.cmp(&b.0));
+            providers.dedup_by(|a, b| a.0 == b.0);
+            Ok(json!({
+                "data": providers.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+            }))
+        }
+        ("POST", ["api", "websearch"]) => {
+            let query = request.body.get("query").and_then(Value::as_str).unwrap_or_default();
+            if query.trim().is_empty() {
+                return Err(anyhow!("query is required"));
+            }
+            let requested = request.body.get("providerID").and_then(Value::as_str);
+            let available = app.plugins.websearch_provider(requested);
+            let result = if let Some(provider) = available {
+                app.plugins.execute_websearch(&provider, query).await?
+            } else {
+                let (provider, results) = crate::tools::websearch::execute_builtin(requested, query).await?;
+                json!({ "providerID": provider, "results": results })
+            };
+            Ok(json!({ "data": result }))
+        }
         ("GET", ["api", "experimental", "job"]) => Ok(json!({ "data": [] })),
         ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": null })),
         ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),
