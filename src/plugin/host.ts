@@ -105,7 +105,10 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       const providerID = params.providerID ?? websearchDefault
       const definition = typeof providerID === "string" ? registry.websearch.get(providerID) : undefined
       if (!definition || typeof definition.execute !== "function") {
-        throw new Error(`web search provider not found: ${String(providerID)}`)
+        return await request("websearch.builtin", {
+          providerID: typeof providerID === "string" ? providerID : undefined,
+          query: params.query,
+        })
       }
       const controller = new AbortController()
       const results = await settle(definition.execute({ query: params.query }, { signal: controller.signal }))

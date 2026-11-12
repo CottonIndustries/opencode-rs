@@ -1469,6 +1469,12 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
             app.authorize(&handle, &agent, None, action, &resources, &save, title, metadata).await?;
             Ok(Value::Null)
         }
+        "websearch.builtin" => {
+            let provider = params.get("providerID").and_then(Value::as_str);
+            let query = params.get("query").and_then(Value::as_str).unwrap_or_default();
+            let (provider_id, results) = crate::tools::websearch::execute_builtin(provider, query).await?;
+            Ok(json!({ "providerID": provider_id, "results": results }))
+        }
         "client.call" => {
             let Some(app) = attached() else {
                 return Err(anyhow!("application is not ready"));
@@ -3676,6 +3682,10 @@ pub fn snapshot(
         "skills": skills,
         "commands": commands,
         "tools": tools,
+        "websearch": crate::tools::websearch::providers()
+            .into_iter()
+            .map(|(id, name)| json!({ "id": id, "name": name }))
+            .collect::<Vec<_>>(),
         "mcp": config.mcp.iter().map(|(name, value)| json!([name, mcp_json(value)])).collect::<Vec<_>>(),
         "defaultAgent": config.default_agent,
         "defaultModel": config.model.as_ref().and_then(|m| crate::models::parse_ref(m)).map(|(provider_id, id, variant)| json!({

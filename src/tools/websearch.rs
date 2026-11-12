@@ -10,6 +10,57 @@ pub struct WebSearch;
 
 const PROVIDERS: &[(&str, &str)] = &[("exa", "EXA_API_KEY"), ("tavily", "TAVILY_API_KEY"), ("parallel", "PARALLEL_API_KEY"), ("firecrawl", "FIRECRAWL_API_KEY")];
 
+pub fn providers() -> Vec<(String, String)> {
+    PROVIDERS
+        .iter()
+        .map(|(id, _)| {
+            let name = match *id {
+                "exa" => "Exa",
+                "tavily" => "Tavily",
+                "parallel" => "Parallel",
+                "firecrawl" => "Firecrawl",
+                other => other,
+            };
+            ((*id).to_string(), name.to_string())
+        })
+        .collect()
+}
+
+/// Run a built-in provider search and return the provider id plus result rows.
+pub async fn execute_builtin(provider: Option<&str>, query: &str) -> Result<(String, Vec<Value>)> {
+    let creds = crate::auth::all();
+    let key_for = |id: &str, env: &str| {
+        std::env::var(env)
+            .ok()
+            .filter(|key| !key.is_empty())
+            .or_else(|| creds.get(id).map(|credential| credential.secret().to_string()))
+    };
+    let (id, key) = if let Some(id) = provider {
+        let env = PROVIDERS
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .map(|(_, env)| *env)
+            .ok_or_else(|| anyhow!("unknown web search provider: {id}"))?;
+        (id.to_string(), key_for(id, env).ok_or_else(|| anyhow!("Web search provider is not configured: {id}"))?)
+    } else {
+        PROVIDERS
+            .iter()
+            .find_map(|(id, env)| key_for(id, env).map(|key| ((*id).to_string(), key)))
+            .ok_or_else(|| anyhow!("No web search integration is configured"))?
+    };
+    let results = search(&id, &key, query).await?;
+    let values = results
+        .iter()
+        .map(|result| json!({
+            "url": result.url,
+            "title": result.title,
+            "content": result.content,
+            "time": {},
+        }))
+        .collect();
+    Ok((id, values))
+}
+
 /// The selected provider and its key, if any is configured.
 pub fn configured(config: &Config) -> Option<(String, String)> {
     let creds = crate::auth::all();
