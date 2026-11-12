@@ -822,6 +822,7 @@ pub(crate) fn model_hook_json(sel: &Selection) -> Value {
         "id": sel.model.id,
         "modelID": sel.model.id,
         "providerID": sel.provider.id,
+        "variant": sel.variant,
         "name": sel.model.name,
         "family": sel.model.family,
         "capabilities": {
