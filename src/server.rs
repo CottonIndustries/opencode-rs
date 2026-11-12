@@ -975,6 +975,93 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
             Ok(json!({ "data": result }))
         }
+        ("GET", ["api", "shell"]) => {
+            let shells = shells();
+            let shells = shells.lock().unwrap();
+            Ok(json!({
+                "data": shells.values().filter(|shell| shell.info["status"] == "running").map(|shell| shell.info.clone()).collect::<Vec<_>>(),
+            }))
+        }
+        ("POST", ["api", "shell"]) => {
+            let command = request
+                .body
+                .get("command")
+                .or_else(|| request.body.get("cmd"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("command is required"))?
+                .to_string();
+            let id = crate::util::id("sh");
+            let created = crate::util::now_ms();
+            let info = json!({
+                "id": id,
+                "command": command.clone(),
+                "status": "running",
+                "time": { "created": created },
+            });
+            shells().lock().unwrap().insert(id.clone(), ShellRecord { info: info.clone(), output: String::new() });
+            let directory = app.directory.clone();
+            let task_id = id.clone();
+            let shell = crate::tools::shell::detect();
+            tokio::spawn(async move {
+                let mut cmd = tokio::process::Command::new(&shell.program);
+                cmd.args(&shell.args).arg(&command).current_dir(&directory);
+                #[cfg(windows)]
+                {
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                }
+                let output = cmd.output().await;
+                let mut shells = shells().lock().unwrap();
+                if let Some(record) = shells.get_mut(&task_id) {
+                    match output {
+                        Ok(output) => {
+                            let stdout = crate::util::decode_output(&output.stdout);
+                            let stderr = crate::util::decode_output(&output.stderr);
+                            record.output = if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") };
+                            record.info["status"] = json!(if output.status.success() { "completed" } else { "failed" });
+                            record.info["exit"] = json!(output.status.code().unwrap_or(-1));
+                            record.info["time"]["completed"] = json!(crate::util::now_ms());
+                        }
+                        Err(error) => {
+                            record.info["status"] = json!("failed");
+                            record.info["error"] = json!(error.to_string());
+                            record.info["time"]["completed"] = json!(crate::util::now_ms());
+                        }
+                    }
+                }
+            });
+            Ok(json!({ "data": info }))
+        }
+        ("GET", ["api", "shell", id]) => {
+            let shells = shells();
+            let shells = shells.lock().unwrap();
+            let shell = shells.get(*id).ok_or_else(|| anyhow!("shell not found: {id}"))?;
+            Ok(json!({ "data": shell.info.clone() }))
+        }
+        ("GET", ["api", "shell", id, "output"]) => {
+            let shells = shells();
+            let shells = shells.lock().unwrap();
+            let shell = shells.get(*id).ok_or_else(|| anyhow!("shell not found: {id}"))?;
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let cursor = query_value(&parsed, "cursor").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+            let limit = query_value(&parsed, "limit").and_then(|value| value.parse::<usize>().ok()).unwrap_or(64 * 1024);
+            let bytes = shell.output.as_bytes();
+            let start = cursor.min(bytes.len());
+            let end = (start + limit).min(bytes.len());
+            Ok(json!({
+                "data": {
+                    "output": String::from_utf8_lossy(&bytes[start..end]),
+                    "cursor": end,
+                    "size": bytes.len(),
+                    "truncated": end < bytes.len(),
+                }
+            }))
+        }
+        ("DELETE", ["api", "shell", id]) => {
+            shells().lock().unwrap().remove(*id);
+            Ok(Value::Null)
+        }
         ("GET", ["api", "websearch", "provider"]) => {
             let mut providers = app.plugins.websearch_providers();
             providers.extend(crate::tools::websearch::providers());
@@ -1122,6 +1209,16 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         _ => Err(anyhow!("not found: {} {}", request.method, request.path)),
     }
+}
+
+struct ShellRecord {
+    info: Value,
+    output: String,
+}
+
+fn shells() -> &'static Mutex<HashMap<String, ShellRecord>> {
+    static SHELLS: std::sync::OnceLock<Mutex<HashMap<String, ShellRecord>>> = std::sync::OnceLock::new();
+    SHELLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn mcp_status_json(status: &crate::mcp::Status) -> Value {
