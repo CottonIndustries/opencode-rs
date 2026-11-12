@@ -283,6 +283,8 @@ async fn turn(app: Arc<App>, handle: Arc<Handle>, mut msg: Message, opts: Prompt
                 })),
                 _ => None,
             }).collect::<Vec<_>>(),
+            "agents": [],
+            "skills": [],
         },
         "metadata": {},
         "delivery": "steer",
@@ -1137,7 +1139,7 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
     messages.push(Message::user_text(prompt));
     let compaction = app.agent("compaction").unwrap_or_else(|_| agent.clone());
     let names: Vec<String> = registry.iter().map(|t| t.name().to_string()).collect();
-    let system = crate::prompt::system(app, &compaction, &sel.model, &names).await;
+    let mut system = crate::prompt::system(app, &compaction, &sel.model, &names).await;
     let specs = registry.iter().map(|t| tools::spec(t.as_ref())).collect();
     app.emit(AppEvent::Notice { message: "Compacting conversation…".into() });
     let cancel = CancellationToken::new();
@@ -1164,10 +1166,38 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
         .pointer("/result/summary")
         .and_then(Value::as_str)
         .map(String::from);
+    if let Some(list) = compaction_event.get("system").and_then(Value::as_array) {
+        system = list
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from).or_else(|| item.get("text").and_then(Value::as_str).map(String::from)))
+            .collect();
+    }
+    if let Some(list) = compaction_event.get("messages") {
+        crate::plugin::apply_messages_hook(&mut messages, list);
+    }
     let (summary, usage) = if let Some(summary) = supplied {
         (summary, Usage::default())
     } else {
-        complete(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)), Some(cancel)).await?
+        let mut req = build_request(sel, &compaction, system, messages, specs, &handle.with(|s| provider::SessionRef::of(s)));
+        if let Some(options) = compaction_event.get("options") {
+            if let Some(temperature) = options.get("temperature").and_then(Value::as_f64) {
+                req.temperature = Some(temperature);
+            }
+            if let Some(top_p) = options.get("topP").and_then(Value::as_f64) {
+                req.top_p = Some(top_p);
+            }
+            if let Some(max) = options
+                .get("maxTokens")
+                .and_then(Value::as_u64)
+                .or_else(|| options.get("maxOutputTokens").and_then(Value::as_u64))
+            {
+                req.max_tokens = max;
+            }
+            if let Some(extra) = options.get("options").filter(|value| value.is_object()) {
+                req.options = extra.clone();
+            }
+        }
+        complete_request(req, Some(cancel)).await?
     };
     *handle.cancel.lock().unwrap() = None;
     if summary.trim().is_empty() {
