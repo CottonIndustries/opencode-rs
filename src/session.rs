@@ -202,6 +202,10 @@ pub struct Session {
     /// instruction files already injected (from reads in subdirectories)
     #[serde(default)]
     pub loaded_instructions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 pub const DEFAULT_TITLE_PREFIX: &str = "New session - ";
@@ -224,6 +228,8 @@ impl Session {
             todos: vec![],
             approved: vec![],
             loaded_instructions: vec![],
+            metadata: None,
+            archived: false,
         }
     }
     pub fn has_default_title(&self) -> bool {
@@ -384,6 +390,8 @@ pub struct Summary {
     pub time_created: i64,
     pub time_updated: i64,
     pub directory: PathBuf,
+    pub metadata: Option<serde_json::Value>,
+    pub archived: bool,
 }
 
 /// Lightweight listing, newest first.
@@ -397,6 +405,10 @@ pub fn list(project: &str) -> Vec<Summary> {
         time_created: i64,
         time_updated: i64,
         directory: PathBuf,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+        #[serde(default)]
+        archived: bool,
     }
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir(project)) {
@@ -414,6 +426,8 @@ pub fn list(project: &str) -> Vec<Summary> {
                         time_created: h.time_created,
                         time_updated: h.time_updated,
                         directory: h.directory,
+                        metadata: h.metadata,
+                        archived: h.archived,
                     });
                 }
             }

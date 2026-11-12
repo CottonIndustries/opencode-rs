@@ -1587,7 +1587,7 @@ function makeDomains(plugin: PluginRecord): Json {
         registry.providers.get(providerID)?.models.delete(modelID)
       })(providerID, modelID),
     default: {
-      get: sync(() => registry.defaultModel),
+      get: sync(() => apiResponse(registry.defaultModel)),
       set: (providerID: string, modelID: string) =>
         sync((providerID: string, modelID: string) => {
           registry.defaultModel = { providerID, id: modelID, modelID }

@@ -1406,6 +1406,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 let search = search.to_lowercase();
                 list.retain(|s| s.title.to_lowercase().contains(&search));
             }
+            if let Some(directory) = filter.get("directory").and_then(Value::as_str) {
+                list.retain(|s| s.directory.to_string_lossy() == directory);
+            }
+            if filter.get("archived").and_then(Value::as_bool) != Some(true) {
+                list.retain(|s| !s.archived);
+            }
             if filter.get("order").and_then(Value::as_str) == Some("asc") {
                 list.reverse();
             }
@@ -1432,6 +1438,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 }
                 if let Some(agent) = body.get("agent").and_then(Value::as_str) {
                     session.agent = Some(agent.to_string());
+                }
+                if let Some(metadata) = body.get("metadata") {
+                    session.metadata = Some(metadata.clone());
+                }
+                if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
+                    session.archived = archived;
                 }
                 if let Some(model) = body.get("model") {
                     if let (Some(provider_id), Some(id)) = (
@@ -1465,11 +1477,19 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.update" => {
             let id = session_id().ok_or_else(|| anyhow!("session.update requires sessionID"))?;
             let handle = app.session(&id)?;
-            if let Some(title) = body.get("title").and_then(Value::as_str) {
-                handle.with(|s| s.title = title.to_string());
-            }
+            handle.with(|session| {
+                if let Some(title) = body.get("title").and_then(Value::as_str) {
+                    session.title = title.to_string();
+                }
+                if let Some(metadata) = body.get("metadata") {
+                    session.metadata = Some(metadata.clone());
+                }
+                if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
+                    session.archived = archived;
+                }
+            });
             handle.save();
-            Ok(json!(true))
+            Ok(Value::Null)
         }
         "session.messages" => {
             let id = session_id().ok_or_else(|| anyhow!("session.messages requires sessionID"))?;
@@ -1983,14 +2003,20 @@ fn session_json_summary(session: &crate::session::Summary) -> Value {
         "parentID": session.parent_id,
         "projectID": crate::session::project_id(&session.directory),
         "title": session.title,
+        "metadata": session.metadata,
         "cost": 0.0,
         "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
-        "time": { "created": session.time_created, "updated": session.time_updated },
+        "time": {
+            "created": session.time_created,
+            "updated": session.time_updated,
+            "archived": if session.archived { Some(session.time_updated) } else { None },
+        },
         "location": { "directory": session.directory.to_string_lossy() },
     })
 }
 
 pub(crate) fn session_json(session: &crate::session::Session) -> Value {
+    let (usage, cost) = session.usage_total();
     json!({
         "id": session.id,
         "parentID": session.parent_id,
@@ -2000,11 +2026,18 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
             "providerID": provider_id, "id": id, "variant": variant
         })),
         "title": session.title,
-        "cost": 0.0,
-        "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
+        "metadata": session.metadata,
+        "cost": cost,
+        "tokens": {
+            "input": usage.input,
+            "output": usage.output,
+            "reasoning": usage.reasoning,
+            "cache": { "read": usage.cache_read, "write": usage.cache_write },
+        },
         "time": {
             "created": session.time_created,
             "updated": session.time_updated,
+            "archived": if session.archived { Some(session.time_updated) } else { None },
         },
         "location": { "directory": session.directory.to_string_lossy() },
     })
