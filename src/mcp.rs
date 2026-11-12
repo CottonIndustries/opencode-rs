@@ -136,7 +136,16 @@ fn spawn_command(prog: &str) -> tokio::process::Command {
 }
 
 async fn connect(name: &str, cfg: &McpConfig, dir: &PathBuf) -> Result<(Arc<Client>, Vec<Value>)> {
-    let timeout = std::time::Duration::from_millis(cfg.timeout.unwrap_or(30_000));
+    let timeout = std::time::Duration::from_millis(
+        cfg.timeout
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.get("startup").and_then(serde_json::Value::as_u64))
+            })
+            .unwrap_or(30_000),
+    );
     let kind = cfg.kind.clone().unwrap_or_else(|| if cfg.url.is_some() { "remote".into() } else { "local".into() });
     let transport = if kind == "remote" {
         let url = cfg.url.clone().ok_or_else(|| anyhow!("remote MCP server {name} has no url"))?;
@@ -144,7 +153,12 @@ async fn connect(name: &str, cfg: &McpConfig, dir: &PathBuf) -> Result<(Arc<Clie
     } else {
         let (prog, args) = cfg.command.split_first().ok_or_else(|| anyhow!("local MCP server {name} has no command"))?;
         let mut cmd = spawn_command(prog);
-        cmd.args(args).envs(&cfg.environment).current_dir(dir).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+        let cwd = cfg
+            .cwd
+            .as_deref()
+            .map(|cwd| crate::util::resolve(dir, cwd))
+            .unwrap_or_else(|| dir.clone());
+        cmd.args(args).envs(&cfg.environment).current_dir(cwd).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| anyhow!("failed to start MCP server {name}: {e}"))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();

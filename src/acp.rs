@@ -645,14 +645,32 @@ fn mcp_servers(v: Option<&Value>) -> std::result::Result<BTreeMap<String, McpCon
             None | Some("stdio") => {
                 let mut command = vec![s.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string()];
                 command.extend(s.get("args").and_then(|a| a.as_array()).into_iter().flatten().filter_map(|a| a.as_str().map(String::from)));
-                McpConfig { kind: Some("local".into()), command, environment: pairs(s.get("env")), url: None, headers: BTreeMap::new(), enabled: None, timeout: None }
+                McpConfig {
+                    kind: Some("local".into()),
+                    command,
+                    environment: pairs(s.get("env")),
+                    cwd: None,
+                    codemode: None,
+                    url: None,
+                    headers: BTreeMap::new(),
+                    oauth: None,
+                    protocol: None,
+                    pool: None,
+                    enabled: None,
+                    timeout: None,
+                }
             }
             Some("http") => McpConfig {
                 kind: Some("remote".into()),
                 command: vec![],
                 environment: BTreeMap::new(),
+                cwd: None,
+                codemode: None,
                 url: s.get("url").and_then(|u| u.as_str()).map(String::from),
                 headers: pairs(s.get("headers")),
+                oauth: None,
+                protocol: None,
+                pool: None,
                 enabled: None,
                 timeout: None,
             },

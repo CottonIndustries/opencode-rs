@@ -121,10 +121,16 @@ pub struct McpConfig {
     pub kind: Option<String>,
     pub command: Vec<String>,
     pub environment: BTreeMap<String, String>,
+    pub cwd: Option<String>,
+    pub codemode: Option<bool>,
     pub url: Option<String>,
     pub headers: BTreeMap<String, String>,
+    pub oauth: Option<serde_json::Value>,
+    pub protocol: Option<String>,
+    pub pool: Option<bool>,
     pub enabled: Option<bool>,
-    pub timeout: Option<u64>,
+    /// A legacy millisecond count or an object with startup/catalog/execution.
+    pub timeout: Option<serde_json::Value>,
 }
 
 /// Where configuration was found, plus directories that may contain

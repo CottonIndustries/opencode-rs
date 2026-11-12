@@ -3807,7 +3807,7 @@ pub(crate) fn model_json(model: &crate::models::Model) -> Value {
 }
 
 fn mcp_json(config: &crate::config::McpConfig) -> Value {
-    if let Some(url) = &config.url {
+    let mut value = if let Some(url) = &config.url {
         json!({
             "type": "remote",
             "url": url,
@@ -3821,7 +3821,26 @@ fn mcp_json(config: &crate::config::McpConfig) -> Value {
             "environment": config.environment,
             "disabled": !config.enabled.unwrap_or(true),
         })
+    };
+    if let Some(cwd) = &config.cwd {
+        value["cwd"] = json!(cwd);
     }
+    if let Some(codemode) = config.codemode {
+        value["codemode"] = json!(codemode);
+    }
+    if let Some(oauth) = &config.oauth {
+        value["oauth"] = oauth.clone();
+    }
+    if let Some(protocol) = &config.protocol {
+        value["protocol"] = json!(protocol);
+    }
+    if let Some(pool) = config.pool {
+        value["pool"] = json!(pool);
+    }
+    if let Some(timeout) = &config.timeout {
+        value["timeout"] = timeout.clone();
+    }
+    value
 }
 
 fn apply_permissions(value: &Value) -> Vec<crate::permission::Rule> {
@@ -3953,16 +3972,23 @@ pub fn apply_state(
                 .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
                 .unwrap_or_default(),
             environment: string_map(config_value.get("environment")),
+            cwd: config_value.get("cwd").and_then(Value::as_str).map(String::from),
+            codemode: config_value.get("codemode").and_then(Value::as_bool),
             url: config_value.get("url").and_then(Value::as_str).map(String::from),
             headers: string_map(config_value.get("headers")),
+            oauth: config_value.get("oauth").cloned(),
+            protocol: config_value.get("protocol").and_then(Value::as_str).map(String::from),
+            pool: config_value.get("pool").and_then(Value::as_bool),
             enabled: config_value.get("disabled").and_then(Value::as_bool).map(|disabled| !disabled),
-            timeout: None,
+            timeout: config_value.get("timeout").cloned(),
         };
         if server.enabled.is_none() {
             server.enabled = Some(true);
         }
         if let Some(base) = config.mcp.get(name) {
-            server.timeout = base.timeout;
+            if server.timeout.is_none() {
+                server.timeout = base.timeout.clone();
+            }
         }
         mcp.insert(name.to_string(), server);
     }
