@@ -1,6 +1,5 @@
 # BoringSSL (via wreq/btls-sys) is built from source: bindgen needs libclang and the build needs
-# CMake and NASM. All three live under `tools/` (not committed); point them at your own installs
-# if yours live elsewhere.
+
 [env]
 LIBCLANG_PATH = { value = "tools/libclang", relative = true }
 CMAKE = { value = "tools/cmake/bin/cmake.exe", relative = true }
