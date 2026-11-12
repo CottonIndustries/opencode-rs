@@ -256,6 +256,7 @@ type Registry = {
 }
 
 let websearchDefault: string | false | undefined
+let vcsDefault: string | undefined
 
 const registry: Registry = {
   agents: new Map(),
@@ -675,9 +676,32 @@ function editorFor(domain: string): Json {
           },
         },
       }
+    case "vcs":
+      return {
+        list: () => [...target.values()],
+        get: (id: string) => target.get(id),
+        add: (definition: Json) => {
+          const id = definition.id ?? definition.name
+          target.set(id, { ...definition, id })
+          vcsDefault = id
+        },
+        remove: (id: string) => {
+          target.delete(id)
+          if (vcsDefault === id) vcsDefault = undefined
+        },
+        update: (id: string, update: (value: Json) => void) => {
+          const value = target.get(id)
+          if (value) update(value)
+        },
+        default: {
+          get: () => vcsDefault,
+          set: (id: string) => {
+            vcsDefault = id
+          },
+        },
+      }
     case "artifacts":
     case "worktrees":
-    case "vcs":
     default:
       return {
         list: () => [...target.values()],
@@ -1643,7 +1667,7 @@ function makeDomains(plugin: PluginRecord): Json {
   const command = local("commands", "command", {
     add: (definition: Json) => commandTarget.set(definition.name, definition),
     get: sync((name: string) => commandTarget.get(name)),
-    execute: lazy((input: Json) => request("command.execute", input)),
+    execute: lazy((input: Json) => callRPC("session.command", input)),
   })
   const skill = local("skills", "skill")
   const tool = domain("tools", "tool", "tool", false)
@@ -1758,7 +1782,7 @@ function makeDomains(plugin: PluginRecord): Json {
     }),
   })
   const vcsBase = local("vcs", "vcs", {}, false)
-  const vcsDefinition = () => [...registry.vcs.values()].at(-1)
+  const vcsDefinition = () => (vcsDefault ? registry.vcs.get(vcsDefault) : [...registry.vcs.values()].at(-1))
   const vcsCall = (method: string, envelope: boolean) =>
     lazy(async (input: Json) => {
       const definition = vcsDefinition()
@@ -1777,7 +1801,13 @@ function makeDomains(plugin: PluginRecord): Json {
     branch: { list: vcsCall("branches", true) },
   }
   const reference = local("references", "reference")
-  const integration = local("integrations", "integration")
+  const integration = local("integrations", "integration", {
+    connection: {
+      active: lazy(async (_integrationID: string) => undefined),
+      resolve: lazy(async (_connection: Json) => undefined),
+      status: lazy(async (_input: Json) => undefined),
+    },
+  })
   const artifact = local("artifacts", "artifact")
   const worktreeBase = local("worktrees", "worktree", {}, false)
   const worktreeDefinition = () => [...registry.worktrees.values()].at(-1)
