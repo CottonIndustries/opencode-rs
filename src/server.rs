@@ -32,6 +32,8 @@ struct Request {
     method: String,
     path: String,
     authorization: Option<String>,
+    websocket_key: Option<String>,
+    upgrade: bool,
     body: Value,
 }
 
@@ -59,6 +61,8 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let path = parts.next().unwrap_or("/").to_string();
     let mut content_length = 0usize;
     let mut authorization = None;
+    let mut websocket_key = None;
+    let mut upgrade = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
@@ -66,6 +70,12 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             }
             if name.eq_ignore_ascii_case("authorization") {
                 authorization = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("sec-websocket-key") {
+                websocket_key = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("upgrade") && value.trim().eq_ignore_ascii_case("websocket") {
+                upgrade = true;
             }
         }
     }
@@ -83,7 +93,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, authorization, body }))
+    Ok(Some(Request { method, path, authorization, websocket_key, upgrade, body }))
 }
 
 fn authorized(request: &Request, password: &str) -> bool {
@@ -111,6 +121,13 @@ async fn handle(mut stream: TcpStream, app: Arc<App>, password: Option<String>) 
             write_status(&mut stream, 401, "Unauthorized", body, Some("Basic realm=\"Secure Area\"")).await?;
             return Ok(());
         }
+    }
+    if request.upgrade {
+        if let Some(id) = pty_connect_id(&request.path) {
+            return pty_socket(stream, app, &id, request.websocket_key.as_deref()).await;
+        }
+        let body = json!({ "error": { "message": "WebSocket route not found" } });
+        return write_status(&mut stream, 404, "Not Found", body, None).await;
     }
     if request.path.starts_with("/api/event") || request.path == "/event" {
         return event_feed(stream, app).await;
@@ -327,6 +344,49 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(json!({ "data": crate::artifact::update(id, &request.body)? }))
         }
         ("DELETE", ["api", "artifact", id]) => Ok(json!({ "data": crate::artifact::delete(id)? })),
+        ("GET", ["api", "pty"]) => Ok(json!({ "data": crate::plugin::pty::manager().list() })),
+        ("POST", ["api", "pty"]) => {
+            let id = request
+                .body
+                .get("id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| crate::util::id("pty"));
+            let command = request.body.get("command").and_then(Value::as_str).unwrap_or_default();
+            let args = request
+                .body
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|args| args.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let cwd = request
+                .body
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| app.directory.clone());
+            let env = request
+                .body
+                .get("env")
+                .and_then(Value::as_object)
+                .map(|env| env.iter().filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string()))).collect())
+                .unwrap_or_default();
+            let info = crate::plugin::pty::manager().create(&id, command, &args, &cwd, &env, 120, 40)?;
+            Ok(json!({ "data": info }))
+        }
+        ("GET", ["api", "pty", id]) => Ok(json!({ "data": crate::plugin::pty::manager().read(id) })),
+        ("PUT" | "PATCH", ["api", "pty", id]) => {
+            if let Some(size) = request.body.get("size") {
+                let cols = size.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+                let rows = size.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
+                crate::plugin::pty::manager().resize(id, cols, rows)?;
+            }
+            Ok(json!({ "data": crate::plugin::pty::manager().read(id) }))
+        }
+        ("DELETE", ["api", "pty", id]) => {
+            crate::plugin::pty::manager().kill(id);
+            Ok(json!({ "data": null }))
+        }
         ("GET", ["api", "experimental", "session", id, "terminal"]) => {
             app.session(id)?;
             let terminals = crate::plugin::pty::manager()
@@ -439,6 +499,138 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
     }
 }
 
+fn pty_connect_id(path: &str) -> Option<String> {
+    let url = url::Url::parse(&format!("http://localhost{path}")).ok()?;
+    let segments: Vec<&str> = url.path_segments()?.collect();
+    match segments.as_slice() {
+        ["api", "pty", id, "connect"] => Some((*id).to_string()),
+        ["api", "session", id, "pty"] => Some((*id).to_string()),
+        _ => None,
+    }
+}
+
+fn websocket_accept(key: &str) -> String {
+    use base64::Engine;
+    let mut hasher = sha1_smol::Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    base64::engine::general_purpose::STANDARD.encode(hasher.digest().bytes())
+}
+
+async fn pty_socket(mut stream: TcpStream, app: Arc<App>, id: &str, key: Option<&str>) -> Result<()> {
+    let Some(key) = key else {
+        return write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "Missing Sec-WebSocket-Key" } }), None).await;
+    };
+    if !crate::plugin::pty::manager().exists(id) {
+        return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": format!("PTY session not found: {id}") } }), None).await;
+    }
+    let accept = websocket_accept(key);
+    let handshake = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    );
+    stream.write_all(handshake.as_bytes()).await?;
+    stream.flush().await?;
+    let (mut reader, mut writer) = stream.into_split();
+    // Replay the current screen so a reconnecting client sees the terminal immediately.
+    if let Some(screen) = crate::plugin::pty::manager().read(id) {
+        if let Some(text) = screen.pointer("/screen/text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                send_ws_frame(&mut writer, 2, text.as_bytes()).await?;
+            }
+        }
+    }
+    send_ws_frame(&mut writer, 2, b"\x00{\"cursor\":0}").await?;
+    let mut output = crate::plugin::pty::manager().subscribe(id).ok_or_else(|| anyhow!("terminal not found"))?;
+    loop {
+        tokio::select! {
+            chunk = output.recv() => {
+                match chunk {
+                    Ok(bytes) => send_ws_frame(&mut writer, 2, &bytes).await?,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            frame = read_ws_frame(&mut reader) => {
+                let Some((opcode, payload)) = frame? else { break };
+                match opcode {
+                    1 | 2 => {
+                        let text = String::from_utf8_lossy(&payload).into_owned();
+                        if let Some(control) = text.strip_prefix('\0') {
+                            if let Ok(value) = serde_json::from_str::<Value>(control) {
+                                if value.get("type").and_then(Value::as_str) == Some("resize") {
+                                    let cols = value.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+                                    let rows = value.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
+                                    let _ = crate::plugin::pty::manager().resize(id, cols, rows);
+                                }
+                            }
+                        } else {
+                            let _ = crate::plugin::pty::manager().write(id, &text);
+                        }
+                    }
+                    8 => break,
+                    9 => send_ws_frame(&mut writer, 10, &payload).await?,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let _ = send_ws_frame(&mut writer, 8, &1000u16.to_be_bytes()).await;
+    let _ = app;
+    Ok(())
+}
+
+async fn send_ws_frame(writer: &mut tokio::net::tcp::OwnedWriteHalf, opcode: u8, payload: &[u8]) -> Result<()> {
+    let mut header = Vec::with_capacity(10);
+    header.push(0x80 | opcode);
+    if payload.len() < 126 {
+        header.push(payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        header.push(126);
+        header.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        header.push(127);
+        header.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    writer.write_all(&header).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn read_ws_frame(reader: &mut tokio::net::tcp::OwnedReadHalf) -> Result<Option<(u8, Vec<u8>)>> {
+    let mut head = [0u8; 2];
+    if reader.read_exact(&mut head).await.is_err() {
+        return Ok(None);
+    }
+    let opcode = head[0] & 0x0f;
+    let masked = head[1] & 0x80 != 0;
+    let mut length = (head[1] & 0x7f) as u64;
+    if length == 126 {
+        let mut bytes = [0u8; 2];
+        reader.read_exact(&mut bytes).await?;
+        length = u16::from_be_bytes(bytes) as u64;
+    } else if length == 127 {
+        let mut bytes = [0u8; 8];
+        reader.read_exact(&mut bytes).await?;
+        length = u64::from_be_bytes(bytes);
+    }
+    if length > 16 * 1024 * 1024 {
+        return Err(anyhow!("WebSocket frame too large"));
+    }
+    let mut mask = [0u8; 4];
+    if masked {
+        reader.read_exact(&mut mask).await?;
+    }
+    let mut payload = vec![0u8; length as usize];
+    reader.read_exact(&mut payload).await?;
+    if masked {
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[index % 4];
+        }
+    }
+    Ok(Some((opcode, payload)))
+}
+
 async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
     let mut events = app.subscribe();
     let mut plugin_events = app.plugins.subscribe();
@@ -465,6 +657,23 @@ async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_accept_matches_rfc_example() {
+        assert_eq!(websocket_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    #[test]
+    fn finds_pty_connect_routes() {
+        assert_eq!(pty_connect_id("/api/pty/pty_1/connect").as_deref(), Some("pty_1"));
+        assert_eq!(pty_connect_id("/api/session/ses_1/pty").as_deref(), Some("ses_1"));
+        assert!(pty_connect_id("/api/session").is_none());
+    }
 }
 
 #[allow(dead_code)]

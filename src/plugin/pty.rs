@@ -19,6 +19,7 @@ struct Terminal {
     cols: u16,
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    output: tokio::sync::broadcast::Sender<Vec<u8>>,
     _master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
 }
@@ -117,6 +118,18 @@ impl Terminals {
         }))
     }
 
+    pub fn subscribe(&self, session_id: &str) -> Option<tokio::sync::broadcast::Receiver<Vec<u8>>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|terminal| terminal.output.subscribe())
+    }
+
+    pub fn exists(&self, session_id: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(session_id)
+    }
+
     pub fn kill(&self, session_id: &str) {
         if let Some(terminal) = self.sessions.lock().unwrap().remove(session_id) {
             let _ = terminal.child.lock().unwrap().kill();
@@ -196,6 +209,8 @@ impl Terminal {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
         let sink = parser.clone();
         let replies = writer.clone();
+        let (output, _) = tokio::sync::broadcast::channel(1024);
+        let output_sink = output.clone();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             loop {
@@ -210,6 +225,7 @@ impl Terminal {
                                 let _ = writer.flush();
                             }
                         }
+                        let _ = output_sink.send(buffer[..read].to_vec());
                         if let Ok(mut parser) = sink.lock() {
                             parser.process(&buffer[..read]);
                         }
@@ -224,6 +240,7 @@ impl Terminal {
             cols,
             parser,
             writer,
+            output,
             _master: Mutex::new(pair.master),
             child: Mutex::new(child),
         };
