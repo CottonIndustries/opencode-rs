@@ -1802,7 +1802,17 @@ function makeDomains(plugin: PluginRecord): Json {
       plugin.registrations.push(dispose)
       return effect(() => ({
         dispose: mode === "effect" ? Effect.sync(dispose) : async () => dispose(),
-        events: { emit: (...args: Json[]) => notify("rpc.event", { definition: id, args }) },
+        events: {
+          emit: async (...args: Json[]) => {
+            const [name, data] = args
+            const event = {
+              id: `rpc_${Date.now()}`,
+              type: `rpc.${id}.${String(name)}`,
+              properties: data ?? {},
+            }
+            await emitEvent(event)
+          },
+        },
         handlers,
       }))
     },
@@ -1813,7 +1823,9 @@ function makeDomains(plugin: PluginRecord): Json {
       if (typeof handler !== "function") throw new Error(`rpc method not found: ${String(input.method)}`)
       const controller = new AbortController()
       const error = (value: Json) => Object.assign(new Error(value?.message ?? "rpc error"), { _tag: "Rpc.Error", ...value })
-      return settle(handler(input.input, { signal: controller.signal, error }))
+      const result: Json = await settle(handler(input.input, { signal: controller.signal, error }))
+      if (result && result._tag === "Rpc.Error") throw Object.assign(new Error(result.message ?? "rpc error"), result)
+      return result
     }),
   }
   const generate: Json = { text: lazy((input: Json) => callRPC("generate.text", input)) }
