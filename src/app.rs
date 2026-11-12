@@ -375,6 +375,15 @@ impl App {
         self.providers.read().unwrap().clone()
     }
 
+    pub fn session_statuses(&self) -> Vec<(String, bool, Option<serde_json::Value>)> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .map(|handle| (handle.id(), handle.is_busy(), handle.retry.lock().unwrap().clone()))
+            .collect()
+    }
+
     pub fn active_session_ids(&self) -> Vec<String> {
         self.sessions
             .lock()

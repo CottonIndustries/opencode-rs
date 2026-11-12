@@ -1534,6 +1534,7 @@ function makeRegistration(mode: PluginMode, remove: () => void): Json {
 function makeClientProxy(path = ""): Json {
   const invoke = async (...args: Json[]) => {
     if (path === "config.get") return apiResponse(initialState.config ?? {})
+    if (path === "event.subscribe") return { stream: subscribeEvents() }
     if (path === "app.log") {
       log("info", args[0]?.message ?? "", args[0])
       return apiResponse(undefined)

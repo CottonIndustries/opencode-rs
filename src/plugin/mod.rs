@@ -1710,6 +1710,35 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 .unwrap_or(Value::Null);
             Ok(value)
         }
+        "app.get" | "path.get" => {
+            let paths = crate::paths::get();
+            Ok(json!({
+                "path": {
+                    "state": paths.state.to_string_lossy(),
+                    "config": paths.config.to_string_lossy(),
+                    "worktree": app.worktree.to_string_lossy(),
+                    "directory": app.directory.to_string_lossy(),
+                },
+                "time": { "initialized": 0 },
+            }))
+        }
+        "app.init" => Ok(json!(true)),
+        "project.current" | "project.list" => {
+            let project = json!({
+                "id": app.project,
+                "worktree": app.worktree.to_string_lossy(),
+                "vcs": "git",
+                "time": { "created": 0, "initialized": 0 },
+                "sandboxes": [],
+            });
+            if path == "project.list" {
+                return Ok(json!([project]));
+            }
+            Ok(project)
+        }
+        "tui.showToast" | "tui.appendPrompt" | "tui.openHelp" | "tui.openSessions"
+        | "tui.openThemes" | "tui.openModels" | "tui.submitPrompt" | "tui.clearPrompt"
+        | "tui.executeCommand" | "tui.openDialog" | "tui.control" => Ok(Value::Null),
         "app.log" => {
             let message = body
                 .get("message")
@@ -1821,6 +1850,12 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             Ok(value)
         }
         "session.background" => Ok(Value::Null),
+        "session.share" | "session.unshare" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.share requires sessionID"))?;
+            let handle = app.session(&id)?;
+            let session = handle.with(|session| session.clone());
+            Ok(session_json(&session))
+        }
         "session.shell" => {
             let id = session_id().ok_or_else(|| anyhow!("session.shell requires sessionID"))?;
             let command = body.get("command").and_then(Value::as_str).unwrap_or("").to_string();
@@ -1970,7 +2005,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }));
             Ok(Value::Null)
         }
-        "session.create" => {
+        "session.create" | "session.init" => {
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
             let explicit = body.get("id").and_then(Value::as_str).map(String::from);
             let (handle, created) = match explicit {
@@ -2156,7 +2191,16 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }))
         }
         "session.status" => {
-            let id = session_id().ok_or_else(|| anyhow!("session.status requires sessionID"))?;
+            let Some(id) = session_id() else {
+                let mut statuses = Map::new();
+                for (id, busy, retry) in app.session_statuses() {
+                    statuses.insert(
+                        id,
+                        retry.unwrap_or_else(|| json!({ "type": if busy { "busy" } else { "idle" } })),
+                    );
+                }
+                return Ok(Value::Object(statuses));
+            };
             let handle = app.session(&id)?;
             if let Some(retry) = handle.retry.lock().unwrap().clone() {
                 return Ok(retry);
@@ -2320,7 +2364,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }));
             Ok(Value::Null)
         }
-        "session.revert.stage" => {
+        "session.revert.stage" | "session.revert" => {
             let id = session_id().ok_or_else(|| anyhow!("session.revert.stage requires sessionID"))?;
             let message_id = arg("messageID").ok_or_else(|| anyhow!("session.revert.stage requires messageID"))?;
             let handle = app.session(&id)?;
@@ -2356,7 +2400,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             }));
             Ok(revert)
         }
-        "session.revert.clear" => {
+        "session.revert.clear" | "session.unrevert" => {
             let id = session_id().ok_or_else(|| anyhow!("session.revert.clear requires sessionID"))?;
             let handle = app.session(&id)?;
             handle.with(|session| session.revert = None);
@@ -2487,7 +2531,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 })
             }))
         }
-        "session.message.get" => {
+        "session.message.get" | "session.message" => {
             let id = session_id().ok_or_else(|| anyhow!("session.message.get requires sessionID"))?;
             let message_id = first
                 .get("messageID")
@@ -2935,7 +2979,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 Err(anyhow!("command not found: {name}"))
             }
         }
-        "session.compact" => {
+        "session.compact" | "session.summarize" => {
             let id = session_id().ok_or_else(|| anyhow!("session.compact requires sessionID"))?;
             let handle = app.session(&id)?;
             let delivery = body.get("delivery").and_then(Value::as_str).unwrap_or("steer");
