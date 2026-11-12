@@ -1595,22 +1595,24 @@ function makeRegistration(mode: PluginMode, remove: () => void): Json {
 
 function makeClientProxy(path = ""): Json {
   const invoke = async (...args: Json[]) => {
-    if (path === "config.get") return apiResponse(initialState.config ?? {})
+    if (path === "config.get") return initialState.config ?? {}
     if (path === "event.subscribe") return { stream: subscribeEvents() }
     if (path === "app.log") {
       log("info", args[0]?.message ?? "", args[0])
-      return apiResponse(undefined)
+      return undefined
     }
     const result = await request("client.call", { path, args })
+    // V1 SDK methods return their payload directly, not the V2 `{ data }` envelope.
     if (result && Array.isArray(result.data) && (path === "session.list" || path === "session.messages")) {
-      return apiResponse(result.data)
+      return result.data
     }
-    return apiResponse(result)
+    return result
   }
   return new Proxy(invoke, {
     get(_target, prop) {
       if (prop === "then" || prop === "catch" || prop === "finally") return undefined
       if (typeof prop !== "string") return undefined
+      if (path === "event" && prop === "subscribe") return () => ({ stream: subscribeEvents() })
       return makeClientProxy(path ? `${path}.${prop}` : prop)
     },
   })
