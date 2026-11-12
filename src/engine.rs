@@ -1082,11 +1082,6 @@ async fn step_once(
     Ok(StepResult { finish, usage, tool_calls: n_calls, rejected: rejected.load(Ordering::SeqCst), aborted: was_cancelled })
 }
 
-/// Collect a plain text completion (no tool execution).
-pub async fn complete(sel: &Selection, agent: &Agent, system: Vec<String>, messages: Vec<Message>, tools: Vec<ToolSpec>, session: &provider::SessionRef, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
-    complete_request(build_request(sel, agent, system, messages, tools, session), cancel).await
-}
-
 /// Run one request to completion and collect its text.
 pub(crate) async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
