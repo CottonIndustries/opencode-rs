@@ -932,14 +932,7 @@ function toV2Event(event: Json): Json | null {
       error: properties.error ?? { type: "unknown", message: properties.message ?? "" },
     }
   } else if (event.type === "session.step") {
-    type = "session.step.ended"
-    data = {
-      sessionID: properties.sessionID,
-      assistantMessageID: properties.assistantMessageID ?? "msg_current",
-      finish: "stop",
-      cost: 0,
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-    }
+    return null
   } else if (event.type === "permission.replied") {
     data = {
       sessionID: properties.sessionID,

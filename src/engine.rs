@@ -130,6 +130,11 @@ pub async fn prompt(app: Arc<App>, session_id: &str, msg: Message, opts: PromptO
         return Ok(());
     }
     app.emit(AppEvent::Busy { session: session_id.to_string(), busy: true });
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.execution.started",
+        "properties": { "sessionID": session_id },
+    }));
     let mut result: Result<bool> = Ok(false);
     let mut pending = Some((msg, opts));
     loop {
@@ -516,6 +521,7 @@ struct StepResult {
     tool_calls: usize,
     rejected: bool,
     aborted: bool,
+    message_id: String,
 }
 
 async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selection) -> Result<bool> {
@@ -544,6 +550,22 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
         let active_tools: Vec<Arc<dyn Tool>> = if last { vec![] } else { registry.clone() };
         let res = step_once(&app, &handle, &agent, &sel, &active_tools, &registry, last).await?;
         app.emit(AppEvent::StepFinished { session: sid.clone() });
+        app.plugins.emit(serde_json::json!({
+            "id": crate::util::id("evt"),
+            "type": "session.step.ended",
+            "properties": {
+                "sessionID": sid.clone(),
+                "assistantMessageID": res.message_id.clone(),
+                "finish": res.finish.clone(),
+                "cost": cost(&sel.model, &res.usage),
+                "tokens": {
+                    "input": res.usage.input,
+                    "output": res.usage.output,
+                    "reasoning": res.usage.reasoning,
+                    "cache": { "read": res.usage.cache_read, "write": res.usage.cache_write },
+                },
+            },
+        }));
         if res.aborted || res.rejected {
             interrupted = true;
             break;
@@ -882,6 +904,17 @@ async fn step_once(
     handle.with(|s| s.messages.push(assistant));
     emit_message(app, handle, &sid, &msg_id);
     app.emit(AppEvent::Updated { session: sid.clone() });
+    app.plugins.emit(serde_json::json!({
+        "id": crate::util::id("evt"),
+        "type": "session.step.started",
+        "properties": {
+            "sessionID": sid.clone(),
+            "assistantMessageID": msg_id.clone(),
+            "agent": agent.id.clone(),
+            "model": model_hook_json(sel),
+            "started": crate::util::now_ms(),
+        },
+    }));
 
     let cancel = CancellationToken::new();
     *handle.cancel.lock().unwrap() = Some(cancel.clone());
@@ -941,7 +974,14 @@ async fn step_once(
         Some((m.usage.clone(), m.finish.clone().unwrap_or_else(|| "unknown".into())))
     });
     let Some((usage, finish)) = done else {
-        return Ok(StepResult { finish: "aborted".into(), usage: Usage::default(), tool_calls: 0, rejected: false, aborted: true });
+        return Ok(StepResult {
+            finish: "aborted".into(),
+            usage: Usage::default(),
+            tool_calls: 0,
+            rejected: false,
+            aborted: true,
+            message_id: msg_id,
+        });
     };
     emit_message(app, handle, &sid, &msg_id);
     if let Some(e) = &error {
@@ -1029,7 +1069,14 @@ async fn step_once(
             set_state(id, ToolState::Error { error: "Tool execution aborted".into() });
         }
         handle.save();
-        return Ok(StepResult { finish, usage, tool_calls: 0, rejected: false, aborted: true });
+        return Ok(StepResult {
+            finish,
+            usage,
+            tool_calls: 0,
+            rejected: false,
+            aborted: true,
+            message_id: msg_id,
+        });
     }
 
     let n_calls = calls.len();
@@ -1200,7 +1247,14 @@ async fn step_once(
     let was_cancelled = cancel.is_cancelled();
     handle.save();
     app.emit(AppEvent::Updated { session: sid });
-    Ok(StepResult { finish, usage, tool_calls: n_calls, rejected: rejected.load(Ordering::SeqCst), aborted: was_cancelled })
+    Ok(StepResult {
+        finish,
+        usage,
+        tool_calls: n_calls,
+        rejected: rejected.load(Ordering::SeqCst),
+        aborted: was_cancelled,
+        message_id: msg_id,
+    })
 }
 
 /// Run one request to completion and collect its text.
