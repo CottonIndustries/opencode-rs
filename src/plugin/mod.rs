@@ -1443,6 +1443,11 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             let parent = body.get("parentID").and_then(Value::as_str).map(String::from);
             let handle = app.create_session(parent);
             handle.with(|session| {
+                if let Some(directory) = body.pointer("/location/directory").and_then(Value::as_str) {
+                    let directory = std::path::PathBuf::from(directory);
+                    session.directory = directory.clone();
+                    session.project = crate::session::project_id(&directory);
+                }
                 if let Some(title) = body.get("title").and_then(Value::as_str) {
                     session.title = title.to_string();
                 }
