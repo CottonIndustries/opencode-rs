@@ -11,6 +11,7 @@ use crate::app::{App, AppEvent};
 pub struct Options {
     pub hostname: String,
     pub port: u16,
+    pub password: Option<String>,
 }
 
 pub async fn serve(app: Arc<App>, options: Options) -> Result<()> {
@@ -20,8 +21,9 @@ pub async fn serve(app: Arc<App>, options: Options) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let app = app.clone();
+        let password = options.password.clone();
         tokio::spawn(async move {
-            let _ = handle(stream, app).await;
+            let _ = handle(stream, app, password).await;
         });
     }
 }
@@ -29,6 +31,7 @@ pub async fn serve(app: Arc<App>, options: Options) -> Result<()> {
 struct Request {
     method: String,
     path: String,
+    authorization: Option<String>,
     body: Value,
 }
 
@@ -55,10 +58,14 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or("/").to_string();
     let mut content_length = 0usize;
+    let mut authorization = None;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.trim().parse().unwrap_or(0);
+            }
+            if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
             }
         }
     }
@@ -76,14 +83,34 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, body }))
+    Ok(Some(Request { method, path, authorization, body }))
 }
 
-async fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
+fn authorized(request: &Request, password: &str) -> bool {
+    use base64::Engine;
+    let Some(header) = &request.authorization else { return false };
+    let Some(token) = header.strip_prefix("Basic ").or_else(|| header.strip_prefix("basic ")) else {
+        return false;
+    };
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(token.trim()) else {
+        return false;
+    };
+    let Ok(decoded) = String::from_utf8(decoded) else { return false };
+    decoded.split_once(':').is_some_and(|(username, candidate)| username == "opencode" && candidate == password)
+}
+
+async fn handle(mut stream: TcpStream, app: Arc<App>, password: Option<String>) -> Result<()> {
     let Some(request) = read_request(&mut stream).await? else { return Ok(()) };
     if request.method == "OPTIONS" {
         write_response(&mut stream, 204, Value::Null).await?;
         return Ok(());
+    }
+    if let Some(password) = password.filter(|password| !password.is_empty()) {
+        if !authorized(&request, &password) {
+            let body = json!({ "error": { "message": "Authentication required" } });
+            write_status(&mut stream, 401, "Unauthorized", body, Some("Basic realm=\"Secure Area\"")).await?;
+            return Ok(());
+        }
     }
     if request.path.starts_with("/api/event") || request.path == "/event" {
         return event_feed(stream, app).await;
@@ -104,16 +131,28 @@ async fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
 }
 
 async fn write_response(stream: &mut TcpStream, status: u16, value: Value) -> Result<()> {
-    let body = if value.is_null() { String::new() } else { value.to_string() };
     let reason = match status {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         _ => "OK",
     };
+    write_status(stream, status, reason, value, None).await
+}
+
+async fn write_status(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    value: Value,
+    extra: Option<&str>,
+) -> Result<()> {
+    let body = if value.is_null() { String::new() } else { value.to_string() };
+    let challenge = extra.map(|extra| format!("{extra}\r\n")).unwrap_or_default();
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\naccess-control-allow-origin: *\r\naccess-control-allow-headers: *\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\naccess-control-allow-origin: *\r\naccess-control-allow-headers: *\r\n{challenge}connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes()).await?;

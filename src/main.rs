@@ -138,6 +138,9 @@ enum Cmd {
         /// Port to bind
         #[arg(short, long, default_value_t = 4096)]
         port: u16,
+        /// Require Basic authentication with this password
+        #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
+        password: Option<String>,
         /// Working directory
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -286,9 +289,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Acp { login: true }) => cli::auth_login(None, None).await,
         Some(Cmd::Acp { login: false }) => acp::serve().await,
-        Some(Cmd::Serve { hostname, port, dir }) => {
+        Some(Cmd::Serve { hostname, port, password, dir }) => {
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
-            server::serve(app, server::Options { hostname, port }).await
+            server::serve(app, server::Options { hostname, port, password }).await
         }
         Some(Cmd::Mini { project, tui }) => tui::start(project.unwrap_or_else(cwd), tui.into()).await,
         Some(Cmd::Run { message, continue_last, session, fork, model, agent, format, file, title, thinking, auto_approve, dir }) => {
