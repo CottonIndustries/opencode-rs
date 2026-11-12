@@ -182,6 +182,20 @@ pub struct Todo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellMessage {
+    pub id: String,
+    pub command: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub started: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub project: String,
@@ -197,6 +211,8 @@ pub struct Session {
     pub model: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<ShellMessage>,
     #[serde(default)]
     pub todos: Vec<Todo>,
     /// permission rules approved with "always" during this session
@@ -244,6 +260,7 @@ impl Session {
             agent: None,
             model: None,
             messages: vec![],
+            shells: vec![],
             todos: vec![],
             permissions: None,
             approved: vec![],
