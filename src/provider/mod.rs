@@ -215,6 +215,10 @@ pub async fn post(
         let (retryable, msg, wait) = match res {
             Ok(mut r) if r.status().is_success() => {
                 if let Some(hooks) = hooks {
+                    let request_headers: serde_json::Map<String, Value> = headers
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                        .collect();
                     let response_headers: serde_json::Map<String, Value> = r
                         .headers()
                         .iter()
@@ -231,7 +235,12 @@ pub async fn post(
                                 "agent": hooks.agent,
                                 "model": hooks.model,
                                 "kind": hooks.kind,
-                                "request": { "url": url, "method": "POST" },
+                                "request": {
+                                    "url": url,
+                                    "method": "POST",
+                                    "headers": request_headers,
+                                    "body": body,
+                                },
                                 "response": { "status": r.status().as_u16(), "headers": response_headers },
                             }),
                         )
@@ -252,18 +261,65 @@ pub async fn post(
                 return Ok(r);
             }
             Ok(r) => {
-                let status = r.status();
+                let mut status = r.status().as_u16();
                 let retry_after = r
                     .headers()
                     .get("retry-after")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok());
-                let text = r.text().await.unwrap_or_default();
-                let msg = format!("{} {}", status.as_u16(), error_message(&text));
+                let response_headers: serde_json::Map<String, Value> = r
+                    .headers()
+                    .iter()
+                    .filter_map(|(key, value)| value.to_str().ok().map(|value| (key.to_string(), Value::String(value.to_string()))))
+                    .collect();
+                let mut text = r.text().await.unwrap_or_default();
+                if let Some(hooks) = hooks {
+                    let request_headers: serde_json::Map<String, Value> = headers
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                        .collect();
+                    let updated = hooks
+                        .app
+                        .plugins
+                        .trigger(
+                            "session",
+                            "http.response",
+                            serde_json::json!({
+                                "sessionID": hooks.session_id,
+                                "agent": hooks.agent,
+                                "model": hooks.model,
+                                "kind": hooks.kind,
+                                "request": {
+                                    "url": url,
+                                    "method": "POST",
+                                    "headers": request_headers,
+                                    "body": body,
+                                },
+                                "response": {
+                                    "status": status,
+                                    "headers": response_headers,
+                                    "body": text,
+                                },
+                            }),
+                        )
+                        .await;
+                    if let Some(next) = updated.pointer("/response/status").and_then(Value::as_u64) {
+                        if (100..=599).contains(&next) {
+                            status = next as u16;
+                        }
+                    }
+                    if let Some(next) = updated.pointer("/response/body") {
+                        text = match next {
+                            Value::String(text) => text.clone(),
+                            value => value.to_string(),
+                        };
+                    }
+                }
+                let msg = format!("{} {}", status, error_message(&text));
                 let lower = text.to_lowercase();
                 // quota/billing exhaustion is reported as 429 too, but retrying cannot help
                 let quota = ["limit reached", "quota", "insufficient", "billing", "credit"].iter().any(|k| lower.contains(k));
-                let retryable = (status.as_u16() == 429 && !quota) || status.as_u16() == 529 || status.is_server_error() || lower.contains("overloaded");
+                let retryable = (status == 429 && !quota) || status == 529 || (500..=599).contains(&status) || lower.contains("overloaded");
                 (retryable, msg, retry_after)
             }
             Err(e) => (e.is_connect() || e.is_timeout(), format!("request failed: {e}"), None),

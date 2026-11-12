@@ -832,10 +832,84 @@ function applyV2Messages(event: Json, messages: Json[]) {
 
 const V2_MESSAGE_HOOKS = new Set(["context", "title", "compaction", "generate"])
 
+function wrapHttpEvent(domain: string, name: string, event: Json): boolean {
+  if (domain !== "session") return false
+  if (name === "http.request") {
+    const request = event.request ?? {}
+    const body =
+      request.body === undefined
+        ? undefined
+        : typeof request.body === "string"
+          ? request.body
+          : JSON.stringify(request.body)
+    event.request = new Request(request.url ?? "http://localhost/", {
+      method: request.method ?? "POST",
+      headers: request.headers ?? {},
+      body,
+    })
+    return true
+  }
+  if (name === "http.response") {
+    const response = event.response ?? {}
+    const body =
+      response.body === undefined || response.body === null
+        ? null
+        : typeof response.body === "string"
+          ? response.body
+          : JSON.stringify(response.body)
+    event.response = new Response(body, {
+      status: response.status ?? 200,
+      headers: response.headers ?? {},
+    })
+    return true
+  }
+  return false
+}
+
+async function unwrapHttpEvent(domain: string, name: string, event: Json): Promise<void> {
+  if (domain !== "session") return
+  if (name === "http.request" && event.request instanceof Request) {
+    const request = event.request
+    const text = await request.clone().text()
+    let body: Json = undefined
+    if (text) {
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = text
+      }
+    }
+    event.request = {
+      url: request.url,
+      method: request.method,
+      headers: Object.fromEntries(request.headers),
+      ...(body === undefined ? {} : { body }),
+    }
+  }
+  if (name === "http.response" && event.response instanceof Response) {
+    const response = event.response
+    const text = await response.clone().text()
+    let body: Json = undefined
+    if (text) {
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = text
+      }
+    }
+    event.response = {
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      ...(body === undefined ? {} : { body }),
+    }
+  }
+}
+
 async function trigger(domain: string, name: string, event: Json): Promise<Json> {
   const key = `${domain}.${name}`
   const list = hooks.get(key) ?? []
   const messageHook = domain === "session" && V2_MESSAGE_HOOKS.has(name)
+  const httpEvent = list.length > 0 && wrapHttpEvent(domain, name, event)
   for (const entry of list) {
     if (entry.options?.providerID && event?.model?.providerID !== entry.options.providerID) continue
     try {
@@ -861,6 +935,7 @@ async function trigger(domain: string, name: string, event: Json): Promise<Json>
       }
     }
   }
+  if (httpEvent) await unwrapHttpEvent(domain, name, event)
   return event
 }
 
