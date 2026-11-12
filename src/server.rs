@@ -1084,16 +1084,27 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 .to_string();
             let id = crate::util::id("sh");
             let created = crate::util::now_ms();
+            let directory = request
+                .body
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(|cwd| crate::util::resolve(&app.directory, cwd))
+                .unwrap_or_else(|| app.directory.clone());
+            let shell = crate::tools::shell::detect();
+            let file = crate::paths::get().tmp.join("shell").join(format!("{id}.log"));
+            let metadata = request.body.get("metadata").cloned().unwrap_or_else(|| json!({}));
             let info = json!({
                 "id": id,
                 "command": command.clone(),
                 "status": "running",
-                "time": { "created": created },
+                "cwd": directory.to_string_lossy(),
+                "shell": shell.program.to_string_lossy(),
+                "file": file.to_string_lossy(),
+                "metadata": metadata,
+                "time": { "started": created },
             });
             shells().lock().unwrap().insert(id.clone(), ShellRecord { info: info.clone(), output: String::new() });
-            let directory = app.directory.clone();
             let task_id = id.clone();
-            let shell = crate::tools::shell::detect();
             tokio::spawn(async move {
                 let mut cmd = tokio::process::Command::new(&shell.program);
                 cmd.args(&shell.args).arg(&command).current_dir(&directory);
@@ -1111,12 +1122,16 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                             let stdout = crate::util::decode_output(&output.stdout);
                             let stderr = crate::util::decode_output(&output.stderr);
                             record.output = if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") };
-                            record.info["status"] = json!(if output.status.success() { "completed" } else { "failed" });
+                            if let Some(parent) = file.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let _ = std::fs::write(&file, &record.output);
+                            record.info["status"] = json!("exited");
                             record.info["exit"] = json!(output.status.code().unwrap_or(-1));
                             record.info["time"]["completed"] = json!(crate::util::now_ms());
                         }
                         Err(error) => {
-                            record.info["status"] = json!("failed");
+                            record.info["status"] = json!("exited");
                             record.info["error"] = json!(error.to_string());
                             record.info["time"]["completed"] = json!(crate::util::now_ms());
                         }
@@ -1178,7 +1193,42 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             };
             Ok(json!({ "data": result }))
         }
-        ("GET", ["api", "experimental", "job"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "experimental", "job"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let session = query_value(&parsed, "sessionID");
+            let kind = query_value(&parsed, "kind");
+            let status = query_value(&parsed, "status");
+            let shells = shells();
+            let shells = shells.lock().unwrap();
+            let jobs = shells
+                .values()
+                .filter_map(|shell| {
+                    let session_id = shell.info.pointer("/metadata/sessionID").and_then(Value::as_str)?;
+                    let job_status = match shell.info["status"].as_str().unwrap_or_default() {
+                        "running" => "running",
+                        "exited" => "completed",
+                        _ => "error",
+                    };
+                    Some(json!({
+                        "id": shell.info["id"],
+                        "kind": "shell",
+                        "sessionID": session_id,
+                        "status": job_status,
+                        "title": shell.info["command"],
+                        "time": {
+                            "started": shell.info.pointer("/time/started"),
+                            "completed": shell.info.pointer("/time/completed"),
+                        },
+                        "shellID": shell.info["id"],
+                        "command": shell.info["command"],
+                    }))
+                })
+                .filter(|job| session.as_deref().is_none_or(|session| job["sessionID"] == session))
+                .filter(|job| kind.as_deref().is_none_or(|kind| kind == "shell"))
+                .filter(|job| status.as_deref().is_none_or(|status| job["status"] == status))
+                .collect::<Vec<_>>();
+            Ok(json!({ "data": jobs }))
+        }
         ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": null })),
         ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),
         ("GET", ["api", "experimental", "artifacts", "providers"]) => Ok(json!({

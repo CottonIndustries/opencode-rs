@@ -1578,8 +1578,10 @@ function registerTuiCommand(plugin: PluginRecord, command: Json): () => void {
   const dispose = () => {
     tuiCommands.delete(id)
     for (const [name, target] of tuiAliases) if (target === id) tuiAliases.delete(name)
+    scheduleStateChanged()
   }
   plugin.registrations.push(dispose)
+  scheduleStateChanged()
   return dispose
 }
 
