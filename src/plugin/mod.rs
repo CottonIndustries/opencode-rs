@@ -1605,6 +1605,37 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             });
             handle.save();
             let session = handle.with(|s| s.clone());
+            if let Some(title) = body.get("title").and_then(Value::as_str) {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.renamed",
+                    "properties": { "sessionID": session.id, "title": title }
+                }));
+            }
+            if let Some(agent) = body.get("agent").and_then(Value::as_str) {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.agent.selected",
+                    "properties": { "sessionID": session.id, "agent": agent }
+                }));
+            }
+            if let Some(model) = session.model.as_deref().and_then(crate::models::parse_ref) {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.model.selected",
+                    "properties": {
+                        "sessionID": session.id,
+                        "model": { "providerID": model.0, "id": model.1, "variant": model.2 }
+                    }
+                }));
+            }
+            if let Some(permissions) = body.get("permissions") {
+                app.plugins.emit(json!({
+                    "id": crate::util::id("evt"),
+                    "type": "session.permissions",
+                    "properties": { "sessionID": session.id, "permissions": permissions }
+                }));
+            }
             Ok(session_json(&session))
         }
         "session.remove" | "session.delete" => {
