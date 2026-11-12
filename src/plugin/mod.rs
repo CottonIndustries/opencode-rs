@@ -1415,12 +1415,22 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
             if filter.get("order").and_then(Value::as_str) == Some("asc") {
                 list.reverse();
             }
+            if let Some(cursor) = filter.get("cursor").and_then(Value::as_str) {
+                if let Some(index) = list.iter().position(|session| session.id == cursor) {
+                    list.drain(..=index);
+                }
+            }
+            let previous_cursor = filter.get("cursor").and_then(Value::as_str).map(String::from);
+            let has_more = filter.get("limit").and_then(Value::as_u64).is_some_and(|limit| list.len() > limit as usize);
             if let Some(limit) = filter.get("limit").and_then(Value::as_u64) {
                 list.truncate(limit as usize);
             }
             Ok(json!({
                 "data": list.iter().map(session_json_summary).collect::<Vec<_>>(),
-                "cursor": {},
+                "cursor": {
+                    "previous": list.first().map(|session| session.id.clone()).or(previous_cursor),
+                    "next": if has_more { list.last().map(|session| session.id.clone()) } else { None },
+                },
             }))
         }
         "session.get" => {
@@ -1515,7 +1525,35 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         "session.messages" => {
             let id = session_id().ok_or_else(|| anyhow!("session.messages requires sessionID"))?;
             let handle = app.session(&id)?;
-            Ok(handle.with(|s| json!({ "data": session_messages_json(&s.messages), "cursor": {} })))
+            Ok(handle.with(|s| {
+                let mut messages: Vec<crate::session::Message> = s.messages.clone();
+                if let Some(kind) = first.get("type").and_then(Value::as_str) {
+                    messages.retain(|message| match kind {
+                        "user" => message.role == crate::session::Role::User,
+                        "assistant" => message.role == crate::session::Role::Assistant,
+                        _ => true,
+                    });
+                }
+                if first.get("order").and_then(Value::as_str) == Some("desc") {
+                    messages.reverse();
+                }
+                if let Some(cursor) = first.get("cursor").and_then(Value::as_str) {
+                    if let Some(index) = messages.iter().position(|message| message.id == cursor) {
+                        messages.drain(..=index);
+                    }
+                }
+                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| messages.len() > limit as usize);
+                if let Some(limit) = first.get("limit").and_then(Value::as_u64) {
+                    messages.truncate(limit as usize);
+                }
+                json!({
+                    "data": session_messages_json(&messages),
+                    "cursor": {
+                        "previous": messages.first().map(|message| message.id.clone()),
+                        "next": if has_more { messages.last().map(|message| message.id.clone()) } else { None },
+                    },
+                })
+            }))
         }
         "session.status" => {
             let id = session_id().ok_or_else(|| anyhow!("session.status requires sessionID"))?;
