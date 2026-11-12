@@ -1658,6 +1658,7 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
         }
         "session.remove" | "session.delete" => {
             let id = session_id().ok_or_else(|| anyhow!("session.remove requires sessionID"))?;
+            app.session(&id)?;
             crate::session::delete(&app.project, &id)?;
             app.forget_session(&id);
             app.plugins.emit(json!({
@@ -1776,12 +1777,21 @@ async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value>) -
                 if first.get("order").and_then(Value::as_str) == Some("desc") {
                     messages.reverse();
                 }
+                if let Some(cursor) = first.get("cursor").and_then(Value::as_str) {
+                    if let Some(index) = messages.iter().position(|message| message.id == cursor) {
+                        messages.drain(..=index);
+                    }
+                }
+                let has_more = first.get("limit").and_then(Value::as_u64).is_some_and(|limit| messages.len() > limit as usize);
                 if let Some(limit) = first.get("limit").and_then(Value::as_u64) {
                     messages.truncate(limit as usize);
                 }
                 json!({
                     "data": session_messages_json(&messages.iter().map(|m| (*m).clone()).collect::<Vec<_>>()),
-                    "cursor": {},
+                    "cursor": {
+                        "previous": messages.first().map(|message| message.id.clone()),
+                        "next": if has_more { messages.last().map(|message| message.id.clone()) } else { None },
+                    },
                 })
             }))
         }
