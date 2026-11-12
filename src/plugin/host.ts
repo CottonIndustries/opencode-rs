@@ -1486,7 +1486,6 @@ function makeRegistration(mode: PluginMode, remove: () => void): Json {
 function makeClientProxy(path = ""): Json {
   const invoke = async (...args: Json[]) => {
     if (path === "config.get") return apiResponse(initialState.config ?? {})
-    if (path === "session.list" && initializing) return apiResponse([])
     if (path === "app.log") {
       log("info", args[0]?.message ?? "", args[0])
       return apiResponse(undefined)
@@ -1608,15 +1607,8 @@ function renderShellValue(value: Json): string {
 // ---------------------------------------------------------------- api builder
 
 function callRPC(method: string, params?: Json): Promise<Json> {
-  // The Rust App is built after plugin setup so registry transforms apply
-  // before any session starts. Read-only client calls made during setup get
-  // neutral answers instead of failing the plugin; they work normally once
-  // initialization completes.
-  if (initializing) {
-    if (method === "session.list" || method === "permission.list") return Promise.resolve([])
-    if (method.startsWith("session.") || method.startsWith("permission.")) return Promise.resolve(null)
-    if (method === "generate.text") return Promise.resolve({ text: "" })
-  }
+  // The provisional Rust App is attached before initialize, so setup can read
+  // live registries and sessions while transform state is still being built.
   return request("client.call", { path: method, args: params === undefined ? [] : [params] })
 }
 
