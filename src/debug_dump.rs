@@ -12,6 +12,14 @@ pub fn dump(app: &crate::app::App) -> Result<Value> {
     std::fs::create_dir_all(&directory)?;
     let path = directory.join(format!("heap-{}.json", crate::util::now_ms()));
     let sessions = app.session_statuses();
+    let mut config = app.config();
+    for provider in config.provider.values_mut() {
+        provider.options.api_key = None;
+        provider.options.headers.clear();
+        for key in ["apiKey", "api_key", "authToken", "accessToken"] {
+            provider.options.extra.remove(key);
+        }
+    }
     let value = json!({
         "version": crate::VERSION,
         "pid": std::process::id(),
@@ -20,7 +28,7 @@ pub fn dump(app: &crate::app::App) -> Result<Value> {
         "directory": app.directory.to_string_lossy(),
         "worktree": app.worktree.to_string_lossy(),
         "project": app.project,
-        "config": app.config(),
+        "config": config,
         "providers": app.providers().keys().cloned().collect::<Vec<_>>(),
         "agents": app.agents().keys().cloned().collect::<Vec<_>>(),
         "sessions": sessions
