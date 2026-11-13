@@ -20,7 +20,54 @@ pub struct Skill {
     pub content: String,
 }
 
-fn builtins() -> Vec<Skill> {
+fn report_content(plugins: &[crate::plugin::PluginSpec]) -> String {
+    let terminal = ["TERM_PROGRAM", "TERM", "COLORTERM"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| format!("{name}={value}")))
+        .collect::<Vec<_>>();
+    let terminal = if terminal.is_empty() {
+        "Unavailable: terminal environment variables are not set".to_string()
+    } else {
+        terminal.join(", ")
+    };
+    let shell = std::env::var("SHELL")
+        .or_else(|_| std::env::var("ComSpec"))
+        .or_else(|_| std::env::var("COMSPEC"))
+        .unwrap_or_else(|_| "Unavailable: shell environment variable is not set".into());
+    let mut plugins = plugins.iter().map(|plugin| plugin.target.clone()).collect::<Vec<_>>();
+    plugins.sort();
+    plugins.dedup();
+    let plugins = if plugins.is_empty() {
+        "None found in config".to_string()
+    } else {
+        plugins.join(", ")
+    };
+    format!(
+        "{}
+
+## Runtime Diagnostics Snapshot
+
+These values were captured when the built-in report skill was registered. Verify them before publishing.
+
+- opencode version: {}
+- install/channel: {}
+- OS: {} ({})
+- Terminal: {}
+- Shell: {}
+- Active plugins: {}
+",
+        REPORT_SKILL.trim_end(),
+        crate::UPSTREAM_VERSION,
+        crate::UPSTREAM_CHANNEL,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        terminal,
+        shell,
+        plugins,
+    )
+}
+
+fn builtins(plugins: &[crate::plugin::PluginSpec]) -> Vec<Skill> {
     vec![
         Skill {
             id: "opencode".into(),
@@ -34,7 +81,7 @@ fn builtins() -> Vec<Skill> {
             name: "Report".into(),
             description: "Use when the user wants to report an opencode issue or bug. Collect standard diagnostics, add user-specific reproduction context, and publish the issue with GitHub CLI.".into(),
             path: PathBuf::from("/builtin/report.md"),
-            content: REPORT_SKILL.into(),
+            content: report_content(plugins),
         },
     ]
 }
@@ -61,8 +108,13 @@ fn scan(dir: &Path, out: &mut Vec<Skill>) {
     }
 }
 
-pub fn discover(config: &Config, dirs: &[PathBuf], directory: &Path) -> Vec<Skill> {
-    let mut out = builtins();
+pub fn discover(
+    config: &Config,
+    dirs: &[PathBuf],
+    directory: &Path,
+    plugins: &[crate::plugin::PluginSpec],
+) -> Vec<Skill> {
+    let mut out = builtins(plugins);
     // Like upstream: global `~/.claude` and `~/.agents`, then the same folders up the project tree.
     let home = &crate::paths::get().home;
     let mut shared = vec![home.join(".claude"), home.join(".agents")];
@@ -117,6 +169,19 @@ pub fn render(skill: &Skill) -> String {
     lines.push("</skill_files>".into());
     lines.push("</skill_content>".into());
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_builtin_includes_runtime_diagnostics() {
+        let content = report_content(&[]);
+        assert!(content.contains("## Runtime Diagnostics Snapshot"));
+        assert!(content.contains(crate::UPSTREAM_VERSION));
+        assert!(content.contains("Active plugins: None found in config"));
+    }
 }
 
 pub struct SkillTool;

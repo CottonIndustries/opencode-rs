@@ -214,7 +214,7 @@ impl App {
         let project = session::project_id(&worktree);
         let mut providers = crate::models::providers(&config);
         let mut agents = crate::agent::load(&config, &directories);
-        let mut skills = crate::tools::skill::discover(&config, &directories, &directory);
+        let mut skills = crate::tools::skill::discover(&config, &directories, &directory, &specs);
         let mut commands = crate::command::load(&config, &directories);
         let base = PluginBase {
             providers: providers.clone(),
@@ -453,11 +453,11 @@ impl App {
                 "configuration reload requires a restart while plugins are active"
             ));
         }
-        let crate::config::Loaded { config, directories, .. } =
+        let crate::config::Loaded { config, directories, plugins, .. } =
             crate::config::load(&self.directory, &self.worktree)?;
         let providers = crate::models::providers(&config);
         let agents = crate::agent::load(&config, &directories);
-        let skills = crate::tools::skill::discover(&config, &directories, &self.directory);
+        let skills = crate::tools::skill::discover(&config, &directories, &self.directory, &plugins);
         let commands = crate::command::load(&config, &directories);
         self.mcp.reconfigure(config.mcp.clone());
         *self.providers.write().unwrap() = providers;
