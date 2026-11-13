@@ -32,6 +32,8 @@ let agent = app.agent(&app.default_agent())?.clone();
 let selection = crate::engine::select_model(&app, &agent, &Default::default(), None)?;
 let tools = crate::tools::registry(&app, &agent, &selection.model).await;
 let tool = tools.into_iter().find(|tool| tool.name() == "read").unwrap();
+// Pass a Context built from the session: app, handle, agent, model,
+// session/message/call ids and a cancellation token.
 let out = tool.execute(serde_json::json!({ "path": "notes.txt" }), &ctx).await?;
 ```
 
@@ -59,7 +61,7 @@ Keep the plugin source inline in the test home or in a small fixture directory. 
 
 ## Server handlers
 
-Call the route function directly when possible. For transport behavior (auth, SSE, WebSocket, body limits), start `serve` on port 0 and use a real client. Assert status, JSON shape and headers, then stop the server.
+Tests inside `src/server.rs` can call the private `route` function directly. From another module, start `serve` on port 0 and use a real client for transport behavior (auth, SSE, WebSocket, body limits). Assert status, JSON shape and headers, then stop the server.
 
 ## TUI surfaces
 

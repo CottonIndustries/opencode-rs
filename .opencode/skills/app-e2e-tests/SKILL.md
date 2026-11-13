@@ -47,8 +47,7 @@ Inside a Rust integration test, use `env!("CARGO_BIN_EXE_opencode")` so Cargo su
 A Deno mock server is the cheapest way to capture and script provider traffic:
 
 ```ts
-const port = Number(Deno.args[0])
-Deno.serve({ port }, async (request) => {
+Deno.serve({ port: 0, onListen: ({ port }) => console.log(`PORT=${port}`) }, async (request) => {
   console.log(JSON.stringify({ url: request.url, headers: [...request.headers], body: await request.text() }))
   const body = [
     `data: ${JSON.stringify({ choices: [{ delta: { content: "hello" }, finish_reason: null }] })}\n\n`,
@@ -73,7 +72,7 @@ Point a throwaway provider at it through `opencode.json`:
 }
 ```
 
-Use a free port chosen by the test (`Deno.serve({ port: 0 })` and print the address), not a hard-coded one. Never require real API keys.
+Use a free port chosen by the test and read the `PORT=` line from the mock's output, not a hard-coded one. Never require real API keys.
 
 ## Wait for a condition, not a clock
 

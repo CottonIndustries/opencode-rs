@@ -1,7 +1,7 @@
 <!--
   Built-in skill. Name and description are registered in code at
-  packages/core/src/plugin/skill.ts. The body below becomes the skill's
-  content.
+  src/tools/skill.rs (upstream: packages/core/src/plugin/skill.ts). The body
+  below becomes the skill's content.
 -->
 
 # Report an opencode Issue
@@ -20,7 +20,9 @@ diagnostics plus the context needed to reproduce and resolve it.
 
 Do not publish an issue without user confirmation. If GitHub CLI is not
 installed or not authenticated, explain the blocker and provide the exact issue
-title/body for the user.
+title/body for the user. When the issue is about this Rust port, use the
+opencode-rs repository tracker; only file against upstream opencode when the
+user explicitly asks for that.
 
 ## Standard Diagnostics
 

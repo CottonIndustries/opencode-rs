@@ -52,7 +52,7 @@ Use `OPENCODE_DISABLE_PLUGINS=1` when isolating core behavior. Omit it when test
 
 ```powershell
 target\debug\opencode.exe run --dir $root\project --model <provider/model> "hello"
-target\debug\opencode.exe tui --dir $root\project
+target\debug\opencode.exe "$root\project"    # interactive TUI
 ```
 
 Useful inspection commands:
@@ -91,9 +91,9 @@ For server scripts, start the process once, poll the printed address or `/api/lo
 
 ## Logs and storage
 
-`debug paths` prints the resolved directories. State generally lives under the storage directory:
+`debug paths` prints the resolved directories. State lives under the data directory:
 
-- `storage/log` - process logs.
+- `log` (a sibling of `storage`) - process logs.
 - `storage/sessions.db` - session index and normalized messages.
 - `storage/events.db` - durable event log.
 - `storage/snapshots` - content-addressed snapshots.

@@ -21,7 +21,8 @@ cargo test -- --test-threads=1   # only for tests that share global state
 ## Isolate the world
 
 - Use a unique temp directory per test or per fixture, not a fixed path.
-- Set `OPENCODE_TEST_HOME` for code paths that read config, credentials or storage. Guard the variable with a mutex or a scope guard because tests run in parallel.
+- `OPENCODE_TEST_HOME` is read once by `paths::get()`, whose result is cached. Setting it inside an already-running test does not move paths. Use it for child processes, or spawn a subprocess for home-isolated integration tests.
+- In-process tests should use unique project directories and avoid config/auth/storage paths they do not need.
 - Never read the developer's real home, auth file or storage.
 - Clear `OPENCODE_DISABLE_PLUGINS`/`OPENCODE_DENO` deliberately; restore them afterwards.
 - Remove temp directories in `Drop` guards or at the end of the test body. Windows can fail to remove a directory while a file handle or child is open.
@@ -40,7 +41,7 @@ impl Drop for Home {
 - Provider tests: local HTTP server, scripted SSE body, assert URL/headers/body and emitted events.
 - WebSocket tests: local upgrade server or an in-process frame decoder; do not use a public endpoint.
 - MCP tests: stdio fixture or a local WebSocket server.
-- Server tests: call `route` directly, or bind port 0 for transport behavior.
+- Server tests: inside `src/server.rs`, call the private `route` directly; from another module, bind port 0 for transport behavior.
 - Tool tests: temp project plus `App::init`; assert output and filesystem effect.
 
 No test should require a real API key or network access.

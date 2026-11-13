@@ -4,6 +4,14 @@ Use this guide as the starting point for work involving OpenCode itself. It
 covers the core concepts needed to configure and customize OpenCode, extend it
 with plugins, and build integrations with the OpenCode SDK, clients, and API.
 
+## opencode-rs scope
+
+This repository is a Rust port of OpenCode V2. The CLI, TUI, HTTP server,
+tools, providers, storage and Deno plugin bridge live under `src/`. The
+desktop and web apps, GUI plugin modules, the OpenTUI/Solid renderer and Bun
+runtime APIs are not ported. Use `reference/opencode` for upstream TypeScript
+source and this repository's Rust code and tests as the behavioral evidence.
+
 Full documentation is available at <https://opencode.ai/v2/docs/>. This overview is
 only an index of core concepts. Before answering a question about a topic below,
 fetch the URL named in that section and use the full page as the source of
@@ -143,7 +151,8 @@ secret into configuration.
 For any request to migrate OpenCode configuration, agents, commands, skills,
 plugins, integrations, or other behavior from V1 to V2, read the full
 [migration guide](https://opencode.ai/v2/docs/migrate-v1) before acting. In
-the repository, its source is `services/www/src/docs/content/migrate-v1.mdx`.
+the reference tree, its source is
+`reference/opencode/services/site/src/docs/content/migrate-v1.mdx`.
 
 V1 config files and `.opencode/` definitions are intended to remain compatible.
 The only intentional breaking changes are the server API and plugin API. Native

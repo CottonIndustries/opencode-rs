@@ -13,26 +13,14 @@ Use the current Effect v4 source and the installed `effect@4.1.0` types, not mem
 
 ## Services and layers
 
-- Define a service with `Context.Service` and provide it with `Layer.effect`.
-- Read dependencies with `yield* Service` inside `Effect.gen`.
-- Keep the layer graph explicit; do not reach for module-level mutable state to avoid a dependency.
-- Run effects at the boundary (`Effect.runPromise`/`runPromiseExit`), not inside a service that should stay composable.
-
-```ts
-class Registry extends Context.Service<Registry, RegistryShape>()("opencode/Registry") {}
-
-const layer = Layer.effect(
-  Registry,
-  Effect.gen(function* () {
-    const storage = yield* Storage
-    return Registry.of({ get: (id) => storage.read(id) })
-  }),
-)
-```
+- Read the existing host patterns before adding a service. `src/plugin/host.ts` detects Effect values with `isEffect` and runs them at the bridge boundary with `Effect.runPromise`.
+- Effect plugins may be given a `Scope.Scope` while activating. Keep the scope on the plugin record and close it with `Scope.close` on unload, as the host does.
+- Keep dependency provisioning explicit; do not hide it in module-level mutable state. When an effect needs a service, provide it where the effect is run.
+- Run effects at the boundary, not inside code that should stay composable.
 
 ## Schemas
 
-Use `Schema` for data that crosses the host boundary: plugin options, hook payloads, stored state and RPC results. Encode/decode at the edge and keep domain types simple. `Schema.Struct`, `Schema.Array`, `Schema.optional` and `Schema.Literals` cover most cases.
+Use `Schema` for data that crosses the host boundary: plugin options, hook payloads, stored state and RPC results. The host uses `Schema.isSchema` and `Schema.toJsonSchemaDocument` when converting tool schemas, so keep domain types simple and JSON-serializable. Encode/decode at the edge.
 
 ## Streams and events
 
@@ -42,15 +30,15 @@ Use `Schema` for data that crosses the host boundary: plugin options, hook paylo
 
 ## Errors
 
-- Use typed failures (`Effect.fail`, `Schema.TaggedError`) at boundaries that the Rust side must distinguish.
+- Use typed failures (`Effect.fail`, `Schema.TaggedErrorClass`) at boundaries that the Rust side must distinguish.
 - Convert unknown throws with `Effect.try`/`Effect.tryPromise` and preserve the message.
 - Never swallow a plugin error silently; log it with context and return a structured failure to Rust.
 
 ## Testing
 
 - Test pure transformations directly.
-- Use the Effect test runtime for time and concurrency; do not sleep to wait for a fiber.
-- Keep a small in-memory layer for services instead of a real network or filesystem.
+- There is no shared Effect test runtime in this repository. If you add Deno tests, keep them independent and avoid sleeping to wait for a fiber.
+- Keep a small in-memory service or stub instead of a real network or filesystem.
 
 ## Common pitfalls
 
