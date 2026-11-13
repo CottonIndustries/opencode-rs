@@ -344,6 +344,9 @@ pub async fn notify_with_id(
     id: Option<String>,
     metadata: Option<Value>,
 ) {
+    if let Some(id) = &id {
+        crate::job::complete_background(id);
+    }
     app.plugins.emit(serde_json::json!({
         "id": crate::util::id("evt"),
         "type": "session.synthetic",

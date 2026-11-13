@@ -287,6 +287,7 @@ impl App {
             *app.plugin_base.lock().unwrap() = Some(base);
             app.plugins.attach(&app);
             crate::retention::start(app.clone());
+            crate::job::resume(app.clone());
             crate::config_watch::start(app.clone());
             app.load_mcp_prompts().await;
             if app.config.experimental.schedules {

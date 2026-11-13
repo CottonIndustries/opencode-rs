@@ -82,8 +82,20 @@ fn db() -> Option<&'static Mutex<Connection>> {
           WHERE status = 'running'",
         params![now],
     );
+    hydrate(&connection);
     let _ = DB.set(Mutex::new(connection));
     DB.get()
+}
+
+fn hydrate(connection: &Connection) {
+    let Ok(mut statement) = connection.prepare("SELECT * FROM jobs") else { return };
+    let Ok(mut rows) = statement.query([]) else { return };
+    let mut jobs = jobs().lock().unwrap();
+    while let Ok(Some(row)) = rows.next() {
+        if let Ok(job) = row_to_job(row) {
+            jobs.entry(job.id.clone()).or_insert(job);
+        }
+    }
 }
 
 /// Attach the application so completed background jobs can notify their session.
@@ -172,6 +184,31 @@ pub fn finish(id: &str, status: &str, details: Option<Value>) {
     if background {
         notify_completion(job);
     }
+}
+
+/// Resume completion notifications for background jobs that settled before a restart.
+pub fn resume(app: Arc<crate::app::App>) {
+    let _ = db();
+    for job in pending_background() {
+        let Some(notification) = job.get("notificationID").and_then(Value::as_str).map(String::from) else {
+            continue;
+        };
+        let app = app.clone();
+        tokio::spawn(async move {
+            let notification_id = notification.clone();
+            crate::engine::notify_with_id(app, job["sessionID"].as_str().unwrap_or_default().to_string(), text_for(&job), Some(notification_id.clone()), Some(json!({ "background": true, "jobID": job["id"] }))).await;
+            complete_background(&notification_id);
+        });
+    }
+}
+
+fn text_for(job: &Value) -> String {
+    format!(
+        "Background job {} ({}) finished with status {}.",
+        job.get("id").and_then(Value::as_str).unwrap_or("job"),
+        job.get("kind").and_then(Value::as_str).unwrap_or("job"),
+        job.get("status").and_then(Value::as_str).unwrap_or("unknown"),
+    )
 }
 
 fn notify_completion(job: Job) {
