@@ -18,6 +18,7 @@ mod job;
 mod lsp;
 mod mcp;
 mod mcp_oauth;
+mod media;
 mod models;
 mod paths;
 mod permission;

@@ -255,6 +255,12 @@ async fn handle(
     }
     let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
     if request.method == "GET" {
+        if let Some(hash) = parsed.path().strip_prefix("/api/experimental/media/") {
+            if let Some((data, mime)) = crate::media::get(hash) {
+                return write_bytes(&mut stream, 200, "OK", &mime, &data).await;
+            }
+            return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Media not found" } }), None).await;
+        }
         if let Some(raw) = parsed.path().strip_prefix("/api/fs/read/") {
             let path = decode_path(raw);
             return fs_read(stream, &app, &path).await;

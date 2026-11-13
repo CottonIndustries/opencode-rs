@@ -3656,7 +3656,19 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                 .unwrap_or_else(|| "Generate image".into());
             let job = crate::job::create("image", session, &title, json!({ "path": "", "model": reference }));
             match crate::provider::media::generate_image(&resolved.provider, &resolved.model, &first).await {
-                Ok(value) => {
+                Ok(mut value) => {
+                    if let Some(images) = value.get_mut("images").and_then(Value::as_array_mut) {
+                        for image in images {
+                            let Some(data) = image.get("data").and_then(Value::as_str).map(String::from) else { continue };
+                            let mime = image.get("mime").and_then(Value::as_str).unwrap_or("image/png").to_string();
+                            if let Ok(bytes) = crate::provider::media::decode_base64(&data) {
+                                if let Ok(hash) = crate::media::put(&bytes, &mime) {
+                                    image["hash"] = json!(hash);
+                                    image["url"] = json!(crate::media::url(&hash));
+                                }
+                            }
+                        }
+                    }
                     crate::job::finish(&job, "completed", None);
                     Ok(value)
                 }
