@@ -81,6 +81,17 @@ pub fn save_messages(session_id: &str, messages: &[serde_json::Value]) {
     let _ = transaction.commit();
 }
 
+pub fn message_contains(text: &str) -> bool {
+    let Some(db) = connection() else { return false };
+    let Ok(db) = db.lock() else { return false };
+    db.query_row(
+        "SELECT 1 FROM messages WHERE data LIKE '%' || ?1 || '%' LIMIT 1",
+        params![text],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 pub fn messages(session_id: &str) -> Vec<String> {
     let Some(db) = connection() else { return Vec::new() };
     let Ok(db) = db.lock() else { return Vec::new() };

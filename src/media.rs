@@ -61,6 +61,7 @@ fn in_json_dir(dir: &std::path::Path, hash: &str) -> bool {
 pub fn referenced(hash: &str) -> bool {
     is_recent(hash)
         || crate::db::contains(hash)
+        || crate::db::message_contains(hash)
         || crate::event_store::contains(hash)
         || in_json_dir(&crate::paths::get().storage().join("session"), hash)
 }
