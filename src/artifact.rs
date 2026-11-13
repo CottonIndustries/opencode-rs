@@ -121,6 +121,34 @@ pub fn update(id: &str, input: &Value) -> Result<Value> {
     Ok(info(id, &meta))
 }
 
+/// Read an artifact file for the artifact view route.
+pub fn view(id: &str, requested: &str) -> Result<(Vec<u8>, &'static str)> {
+    let meta = load(id)?;
+    let name = if requested.is_empty() {
+        meta.get("entry").and_then(Value::as_str).unwrap_or("index.html").to_string()
+    } else {
+        requested.trim_start_matches('/').to_string()
+    };
+    if name.is_empty() || Path::new(&name).components().any(|component| !matches!(component, std::path::Component::Normal(_))) {
+        return Err(anyhow!("artifact path escapes its root: {name}"));
+    }
+    let bytes = std::fs::read(dir(id).join(&name))?;
+    let mime = match Path::new(&name).extension().and_then(|value| value.to_str()) {
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("md") | Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    Ok((bytes, mime))
+}
+
 pub fn delete(id: &str) -> Result<bool> {
     if !dir(id).is_dir() {
         return Ok(false);
@@ -159,6 +187,10 @@ mod tests {
         assert!(info["url"].as_str().unwrap().contains("index.html"));
         let content = get(id).unwrap();
         assert_eq!(content["files"]["index.html"], "<h1>hi</h1>");
+        let (bytes, mime) = view(id, "index.html").unwrap();
+        assert_eq!(bytes, b"<h1>hi</h1>");
+        assert!(mime.starts_with("text/html"));
+        assert!(view(id, "../outside").is_err());
         let updated = update(id, &json!({
             "title": "Report 2",
             "files": { "index.html": "<h1>bye</h1>" },

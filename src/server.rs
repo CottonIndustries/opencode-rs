@@ -287,6 +287,14 @@ async fn handle(
     }
     let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
     if request.method == "GET" {
+        if let Some(rest) = parsed.path().strip_prefix("/api/experimental/artifacts/") {
+            if let Some((id, path)) = rest.split_once("/view/") {
+                if let Ok((bytes, mime)) = crate::artifact::view(id, path) {
+                    return write_bytes(&mut stream, 200, "OK", mime, &bytes).await;
+                }
+                return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Artifact file not found" } }), None).await;
+            }
+        }
         if let Some(id) = parsed.path().strip_prefix("/share/") {
             if let Some(page) = crate::share::html(id) {
                 return write_bytes(&mut stream, 200, "OK", "text/html; charset=utf-8", page.as_bytes()).await;
