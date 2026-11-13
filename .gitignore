@@ -2,3 +2,4 @@ target/
 /tools/
 reference/
 .codegraph/
+.serena/
