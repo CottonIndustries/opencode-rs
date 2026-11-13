@@ -149,15 +149,18 @@ pub fn append(event: &mut Value) {
 pub fn read(session_id: Option<&str>, after: Option<u64>, limit: Option<usize>) -> Vec<Value> {
     let Some(db) = open() else { return Vec::new() };
     let Ok(db) = db.lock() else { return Vec::new() };
-    let sql = match (session_id.is_some(), after.is_some(), limit.is_some()) {
-        (true, true, true) => "SELECT data FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
-        (true, true, false) => "SELECT data FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq",
-        (true, false, true) => "SELECT data FROM events WHERE session_id = ?1 ORDER BY seq LIMIT ?2",
-        (true, false, false) => "SELECT data FROM events WHERE session_id = ?1 ORDER BY seq",
-        (false, true, true) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
-        (false, true, false) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq",
-        (false, false, true) => "SELECT data FROM events ORDER BY seq LIMIT ?1",
-        (false, false, false) => "SELECT data FROM events ORDER BY seq",
+    let scoped = session_id.is_some();
+    let sql = if scoped {
+        // Session logs page by the durable aggregate sequence, which is
+        // filtered in Rust because it is stored inside the event envelope.
+        "SELECT data FROM events WHERE session_id = ?1 ORDER BY seq"
+    } else {
+        match (after.is_some(), limit.is_some()) {
+            (true, true) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+            (true, false) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq",
+            (false, true) => "SELECT data FROM events ORDER BY seq LIMIT ?1",
+            (false, false) => "SELECT data FROM events ORDER BY seq",
+        }
     };
     let mut statement = match db.prepare(sql) {
         Ok(statement) => statement,
@@ -167,11 +170,13 @@ pub fn read(session_id: Option<&str>, after: Option<u64>, limit: Option<usize>) 
     if let Some(session) = session_id {
         values.push(rusqlite::types::Value::Text(session.to_string()));
     }
-    if let Some(after) = after {
-        values.push(rusqlite::types::Value::Integer(after as i64));
-    }
-    if let Some(limit) = limit {
-        values.push(rusqlite::types::Value::Integer(limit as i64));
+    if !scoped {
+        if let Some(after) = after {
+            values.push(rusqlite::types::Value::Integer(after as i64));
+        }
+        if let Some(limit) = limit {
+            values.push(rusqlite::types::Value::Integer(limit as i64));
+        }
     }
     let Ok(mut rows) = statement.query(rusqlite::params_from_iter(values)) else { return Vec::new() };
     let mut out = Vec::new();
@@ -182,7 +187,23 @@ pub fn read(session_id: Option<&str>, after: Option<u64>, limit: Option<usize>) 
             }
         }
     }
+    if scoped {
+        if let Some(after) = after {
+            out.retain(|value| durable_seq(value) > after);
+        }
+        if let Some(limit) = limit {
+            out.truncate(limit);
+        }
+    }
     out
+}
+
+fn durable_seq(value: &Value) -> u64 {
+    value
+        .pointer("/durable/seq")
+        .or_else(|| value.get("seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
