@@ -28,6 +28,9 @@ if yours live elsewhere.
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
 | `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
 | `opencode mcp list` | MCP server status |
+| `opencode service start\|stop\|status` | Run the HTTP server as a detached local service |
+| `opencode api METHOD PATH` | Call a running server |
+| `opencode workspace list\|create\|remove` | Manage logical workspaces and local environment bindings |
 | `opencode mcp add <name> [--url U] [--header K=V] [--env K=V] [--] <cmd...>` | Add a remote or local MCP server |
 | `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth |
 | `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins in the global config |
@@ -152,7 +155,10 @@ Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<pr
 and are indexed in `storage/sessions.db` for loading and listing. Durable
 events live in `storage/events.db`; the old `events.jsonl` log is imported on
 first use. Both databases migrate existing files automatically and run in WAL
-mode. Generated images are content-addressed under `storage/media` and served
+mode. Sessions can bind a local workspace, jobs and background work are stored
+in `storage/jobs.db`, snapshots are content-addressed under
+`storage/snapshots`, and configuration policies are enforced before tool
+permissions. Generated images are content-addressed under `storage/media` and served
 at `/api/experimental/media/:hash` only while a stored message, event, or
 inbox item still references them. Session messages are also normalized into the
 `messages` table for querying.

@@ -236,6 +236,13 @@ enum Cmd {
         #[command(subcommand)]
         command: WorkspaceCmd,
     },
+    /// Manage remote repository caches
+    Repository {
+        #[command(subcommand)]
+        command: RepositoryCmd,
+    },
+    /// Migrate legacy session history
+    Migrate,
     /// Debugging and troubleshooting
     Debug {
         #[command(subcommand)]
@@ -332,6 +339,18 @@ enum ServiceCmd {
     Stop,
     /// Show detached server status
     Status,
+}
+
+#[derive(Subcommand)]
+enum RepositoryCmd {
+    /// Clone or refresh a remote reference into the local cache
+    Cache {
+        repository: String,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        refresh: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -478,6 +497,12 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             WorkspaceCmd::List => cli::workspace_list(),
             WorkspaceCmd::Create { directory, provider, id } => cli::workspace_create(directory, &provider, id.as_deref()),
             WorkspaceCmd::Remove { id } => cli::workspace_remove(&id),
+        },
+        Some(Cmd::Migrate) => cli::migrate(),
+        Some(Cmd::Repository { command }) => match command {
+            RepositoryCmd::Cache { repository, branch, refresh } => {
+                cli::repository_cache(&repository, branch.as_deref(), refresh)
+            }
         },
         Some(Cmd::Debug { command }) => match command {
             DebugCmd::Paths => cli::debug_paths(),

@@ -759,6 +759,18 @@ pub fn workspace_remove(id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn repository_cache(repository: &str, branch: Option<&str>, refresh: bool) -> Result<()> {
+    let value = crate::repository::ensure(repository, branch, refresh)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+pub fn migrate() -> Result<()> {
+    let result = crate::migration::run();
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 pub async fn api_call(server: &str, method: &str, path: &str, data: Option<&str>) -> Result<()> {
     let url = format!(
         "{}/{}",

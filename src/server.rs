@@ -1531,6 +1531,9 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("GET", ["api", "experimental", "migration", "v1"]) => {
             Ok(json!({ "data": crate::migration::status() }))
         }
+        ("POST", ["api", "experimental", "migration", "v1"]) => {
+            Ok(json!({ "data": crate::migration::run() }))
+        }
         ("GET", ["api", "experimental", "artifacts", "providers"]) => Ok(json!({
             "data": [{ "id": "local", "name": "Local" }],
         })),
