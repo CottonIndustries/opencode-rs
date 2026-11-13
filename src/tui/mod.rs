@@ -1,13 +1,17 @@
 //! Interactive terminal UI, laid out after the TypeScript client's full-screen TUI
 //! (`packages/tui`): home screen, session view, composer, dialogs, toasts and sidebar.
 
+mod actions;
 pub mod dialog;
 pub mod draw;
 pub mod forms;
 pub mod highlight;
 pub mod keymap;
 pub mod markdown;
+mod navigation;
 pub mod prompt;
+mod reports;
+pub mod terminal;
 pub mod render;
 pub mod settings;
 mod tabs;
@@ -749,7 +753,7 @@ impl Ui {
     // ---------------------------------------------------------------- theme
 
     fn theme_dirs(&self) -> Vec<std::path::PathBuf> {
-        vec![crate::paths::get().config.clone(), self.app.worktree.join(".opencode"), self.app.directory.join(".opencode")]
+        vec![crate::paths::get().config.clone(), self.app.worktree.join(".opencode"), self.cwd().join(".opencode")]
     }
 
     fn set_theme(&mut self, name: &str) -> bool {
@@ -805,11 +809,23 @@ impl Ui {
         let thinking = if self.settings.thinking_shown() { "Collapse thinking" } else { "Expand thinking" };
         let mut v = vec![
             c("session.list", "Switch session", "Session", &["sessions", "resume", "continue"], false),
+            c("open.menu", "Open session or project", "Session", &["open", "projects", "project"], false),
             c("session.new", "New session", "Session", &["new"], in_session),
             c("session.clear", "Clear session", "Session", &["clear"], false),
             c("model.list", "Switch model", "Agent", &["models"], true),
             c("agent.list", "Switch agent", "Agent", &["agents"], false),
             c("mcp.list", "MCP servers", "Agent", &["mcps"], false),
+            c("usage.show", "View usage", "Agent", &["usage"], false),
+            c("provider.connect", "Connect an integration", "Integration", &["connect"], false),
+            c("opencode.highlights", "Show release highlights", "System", &["highlights"], false),
+            c("opencode.update", "Update OpenCode", "System", &["update"], false),
+            c("server.pair", "Pair device", "System", &["pair", "web"], false),
+            c("service.restart", "Restart service", "System", &["restart"], false),
+            c("location.reload", "Reload configuration", "System", &["reload"], false),
+            c("opencode.debug", "View debug info", "System", &["debug"], false),
+            c("plugins.list", "Plugins", "System", &["plugins"], false),
+            c("diff.open", "Open diff viewer", "VCS", &["diff"], false),
+            c("stats.open", "Usage statistics", "System", &["stats"], false),
             c("variant.cycle", "Variant cycle", "Agent", &[], false),
             hidden("agent.cycle", "Agent cycle", "Agent"),
             hidden("agent.cycle.reverse", "Agent cycle reverse", "Agent"),
@@ -842,20 +858,22 @@ impl Ui {
         if in_session {
             v.extend([
                 c("prompt.skills", "Skills", "Prompt", &["skills"], false),
+                c("session.cd", "Change working directory", "Session", &["cd"], false),
+                c("session.worktrees", "Manage workspaces", "Session", &["worktrees"], false),
+                c("session.terminal", "New terminal", "Session", &["terminal"], false),
+                c("session.aside", "Ask a side question", "Session", &["btw"], false),
                 c("session.rename", "Rename session", "Session", &["rename"], false),
                 c("session.timeline", "Jump to message", "Session", &["timeline"], false),
                 c("session.fork", "Fork session", "Session", &["fork"], false),
                 c("session.compact", "Compact session", "Session", &["compact"], false),
                 c("session.undo", "Undo previous message", "Session", &["undo"], false),
+                c("session.redo", "Redo", "Session", &["redo"], false),
                 c("messages.copy", "Copy last assistant message", "Session", &["copy"], false),
                 c("session.copy.id", "Copy session ID", "Session", &[], false),
                 c("session.copy", "Copy session transcript", "Session", &[], false),
                 c("session.export", "Export session transcript", "Session", &["export"], false),
                 c("session.verbosity.cycle", if self.settings.grouping() { "Show tool calls individually" } else { "Group related tool calls" }, "Session", &[], false),
             ]);
-            if !self.redo.is_empty() {
-                v.push(c("session.redo", "Redo", "Session", &["redo"], false));
-            }
         }
         for command in self.app.plugins.tui_commands() {
             let Some(name) = command.get("id").and_then(Value::as_str) else { continue };
@@ -912,6 +930,18 @@ impl Ui {
         match id {
             "command.palette.show" => self.open_palette(),
             "session.list" => self.open_sessions(false),
+            "open.menu" => self.open_open(),
+            "usage.show" => self.open_usage(),
+            "provider.connect" => self.open_connect(),
+            "opencode.highlights" => self.show_text("Release highlights", reports::highlights()),
+            "opencode.update" => self.show_text("Update", reports::update()),
+            "server.pair" => self.pair_device(),
+            "service.restart" => self.restart_service(),
+            "location.reload" => self.reload_config(),
+            "opencode.debug" => self.show_text("Debug", reports::debug(&self.app)),
+            "plugins.list" => self.show_text("Plugins", reports::plugins(&self.app)),
+            "diff.open" => self.open_diff(),
+            "stats.open" => self.open_stats(),
             "session.new" | "session.clear" => self.new_session(),
             "session.tab.next" => self.cycle_tab(1),
             "session.tab.previous" => self.cycle_tab(-1),
@@ -973,6 +1003,10 @@ impl Ui {
                 }
             }
             "prompt.skills" => self.open_skills(),
+            "session.cd" => self.open_cd(args),
+            "session.worktrees" => self.open_worktrees(),
+            "session.terminal" => self.open_terminal(),
+            "session.aside" => self.open_btw(args),
             "session.timeline" => self.open_timeline(Kind::Timeline),
             "session.fork" => self.open_timeline(Kind::Fork),
             "session.compact" => self.compact(),
@@ -1038,21 +1072,26 @@ impl Ui {
         self.dialog = None;
     }
 
-    fn open_session(&mut self, id: &str) {
-        match self.app.session(id) {
+    fn open_session(&mut self, value: &str) {
+        let loaded = match value.split_once('|') {
+            Some((project, id)) => self.app.session_in(project, id),
+            None => self.app.session(value),
+        };
+        match loaded {
             Ok(h) => {
+                let id = h.id();
                 self.handle = h;
                 self.route = Route::Session;
                 self.cache = None;
                 self.scroll = 0;
                 self.redo.clear();
-                self.visit(id);
+                self.visit(&id);
                 if let Some(a) = self.handle.with(|s| s.agent.clone()).filter(|a| self.app.agent(a).is_ok()) {
                     self.agent = a;
                 }
                 self.pick_model(None);
             }
-            Err(_) => self.toast(Variant::Error, None, format!("Session not found: {id}")),
+            Err(_) => self.toast(Variant::Error, None, format!("Session not found: {value}")),
         }
     }
 
@@ -1143,7 +1182,8 @@ impl Ui {
 
     fn export(&mut self) {
         let md = self.transcript_markdown(false, true);
-        let path = self.app.directory.join(format!("session-{}.md", crate::util::id("exp").trim_start_matches("exp_")));
+        let directory = self.cwd();
+        let path = directory.join(format!("session-{}.md", crate::util::id("exp").trim_start_matches("exp_")));
         match std::fs::write(&path, md) {
             Ok(_) => self.toast(Variant::Success, Some("Exported".into()), path.display().to_string()),
             Err(_) => self.toast(Variant::Error, None, "Failed to export session"),
@@ -1328,7 +1368,8 @@ impl Ui {
                     });
                     return;
                 }
-                let rendered = crate::command::render(&cmd, args.trim(), &self.app.directory, &self.app.worktree);
+                let directory = self.cwd();
+                let rendered = crate::command::render(&cmd, args.trim(), &directory, &self.app.worktree);
                 self.send(rendered, Some(&cmd));
                 return;
             }
@@ -1380,7 +1421,8 @@ impl Ui {
         self.shells.push(command.clone());
         tokio::spawn(async move {
             let shell = crate::tools::shell::detect();
-            let out = tokio::process::Command::new(&shell.program).args(&shell.args).arg(&command).current_dir(&app.directory).output().await;
+            let directory = handle.with(|session| session.directory.clone());
+            let out = tokio::process::Command::new(&shell.program).args(&shell.args).arg(&command).current_dir(&directory).output().await;
             let (text, code) = match out {
                 Ok(o) => (format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)), o.status.code().unwrap_or(-1)),
                 Err(e) => (e.to_string(), -1),
@@ -1654,6 +1696,190 @@ impl Ui {
         self.dialog = Some(Dialog::Select(Select::new(Kind::Settings, "Settings", opts)));
     }
 
+    fn show_text(&mut self, title: &str, text: String) {
+        self.dialog = Some(Dialog::Text { title: title.into(), text, scroll: 0, layout: Value::Null });
+    }
+
+    fn open_open(&mut self) {
+        let current = (self.route == Route::Session).then(|| self.sid());
+        let opts = navigation::open_options(&self.app, current.as_deref());
+        if opts.is_empty() {
+            self.info("No sessions found");
+            return;
+        }
+        let mut s = Select::new(Kind::Open, "Open session or project", opts);
+        s.size = Size::Large;
+        self.dialog = Some(Dialog::Select(s));
+    }
+
+    fn open_usage(&mut self) {
+        let local = reports::usage(&self.app, &self.handle);
+        self.show_text("Usage", local.clone());
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            let remote = reports::usage_limits().await;
+            app.emit(AppEvent::PluginPage {
+                title: "Usage".into(),
+                text: format!("{local}\n\n{remote}"),
+                layout: Value::Null,
+            });
+        });
+    }
+
+    fn open_diff(&mut self) {
+        self.show_text("Diff", "Reading the working tree...".into());
+        let app = self.app.clone();
+        let worker = app.clone();
+        let directory = self.handle.with(|session| session.directory.clone());
+        tokio::spawn(async move {
+            let text = tokio::task::spawn_blocking(move || reports::diff(&worker, &directory))
+                .await
+                .unwrap_or_else(|error| format!("Diff failed: {error}"));
+            app.emit(AppEvent::PluginPage { title: "Diff".into(), text, layout: Value::Null });
+        });
+    }
+
+    fn open_stats(&mut self) {
+        self.show_text("Usage statistics", "Reading session statistics...".into());
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            let text = tokio::task::spawn_blocking(reports::stats).await.unwrap_or_else(|error| format!("Statistics failed: {error}"));
+            app.emit(AppEvent::PluginPage { title: "Usage statistics".into(), text, layout: Value::Null });
+        });
+    }
+
+    fn open_connect(&mut self) {
+        let opts = actions::provider_choices(&self.app);
+        if opts.is_empty() {
+            self.info("No providers are available");
+            return;
+        }
+        self.dialog = Some(Dialog::Select(Select::new(Kind::Connect, "Connect an integration", opts)));
+    }
+
+    fn open_cd(&mut self, args: &str) {
+        if args.trim().is_empty() {
+            let mut editor = Editor::default();
+            editor.set(&self.handle.with(|s| s.directory.to_string_lossy().to_string()));
+            self.dialog = Some(Dialog::Rename(dialog::Prompt {
+                title: "Change working directory".into(),
+                editor,
+                target: "cd".into(),
+            }));
+            return;
+        }
+        self.change_directory(args.trim());
+    }
+
+    fn open_btw(&mut self, args: &str) {
+        if args.trim().is_empty() {
+            self.dialog = Some(Dialog::Rename(dialog::Prompt {
+                title: "Ask a side question".into(),
+                editor: Editor::default(),
+                target: "btw".into(),
+            }));
+            return;
+        }
+        self.ask_btw(args.trim().to_string());
+    }
+
+    fn open_worktrees(&mut self) {
+        let mut opts = navigation::workspace_options();
+        opts.push(Opt {
+            title: "Create workspace in current directory".into(),
+            category: "Actions".into(),
+            value: "workspace-new".into(),
+            ..Default::default()
+        });
+        let mut s = Select::new(Kind::Workspaces, "Workspaces", opts);
+        s.size = Size::Large;
+        self.dialog = Some(Dialog::Select(s));
+    }
+
+    fn open_terminal(&mut self) {
+        let cols = self.size.0.saturating_sub(8).max(40);
+        let rows = self.size.1.saturating_sub(8).max(10);
+        let directory = self.handle.with(|s| s.directory.clone());
+        match terminal::TerminalDialog::open(&self.sid(), &directory, cols, rows) {
+            Ok(term) => self.dialog = Some(Dialog::Terminal(term)),
+            Err(error) => self.toast(Variant::Error, None, format!("Terminal failed: {error}")),
+        }
+    }
+
+    fn pair_device(&mut self) {
+        let status = crate::service::status();
+        let url = status
+            .get("url")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| std::env::var("OPENCODE_SERVER_URL").ok());
+        let Some(url) = url else {
+            self.show_text("Pair device", format!("No background server is running.\n\n{}", actions::service_hint()));
+            return;
+        };
+        let password = std::env::var("OPENCODE_SERVER_PASSWORD").ok();
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            let text = match actions::pair(&url, password.as_deref()).await {
+                Ok(link) => format!("Pairing link:\n\n{link}\n\nThe link can be used once and expires in five minutes."),
+                Err(error) => format!("Pairing failed: {error}"),
+            };
+            app.emit(AppEvent::PluginPage { title: "Pair device".into(), text, layout: Value::Null });
+        });
+    }
+
+    fn restart_service(&mut self) {
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            let text = match actions::restart_service() {
+                Ok(text) => text,
+                Err(error) => format!("Restart failed: {error}"),
+            };
+            app.emit(AppEvent::PluginPage { title: "Service".into(), text, layout: Value::Null });
+        });
+    }
+
+    fn reload_config(&mut self) {
+        match self.app.reload_config() {
+            Ok(()) => {
+                self.cache = None;
+                self.toast(Variant::Success, None, "Configuration reloaded.");
+            }
+            Err(error) => self.toast(Variant::Error, None, format!("Configuration reload failed: {error}")),
+        }
+    }
+
+    fn change_directory(&mut self, directory: &str) {
+        match navigation::move_session(&self.handle, std::path::Path::new(directory)) {
+            Ok(()) => {
+                self.cache = None;
+                self.toast(Variant::Success, None, "Working directory changed.");
+            }
+            Err(error) => self.toast(Variant::Error, None, format!("Change directory failed: {error}")),
+        }
+    }
+
+    fn ask_btw(&mut self, question: String) {
+        let app = self.app.clone();
+        let sid = self.sid();
+        tokio::spawn(async move {
+            let text = match actions::btw(app.clone(), sid, question).await {
+                Ok(text) => text,
+                Err(error) => format!("Side question failed: {error}"),
+            };
+            app.emit(AppEvent::PluginPage { title: "btw".into(), text, layout: Value::Null });
+        });
+    }
+
+    fn open_provider_key(&mut self, value: &str) {
+        let provider = value.strip_prefix("provider:").unwrap_or(value).to_string();
+        self.dialog = Some(Dialog::Rename(dialog::Prompt {
+            title: format!("API key for {provider}"),
+            editor: Editor::default(),
+            target: format!("connect:{provider}"),
+        }));
+    }
+
     fn reopen_settings(&mut self, value: &str) {
         self.open_settings();
         if let Some(Dialog::Select(s)) = self.dialog.as_mut() {
@@ -1747,6 +1973,34 @@ impl Ui {
                 self.cache = None;
                 self.reopen_settings(&value);
             }
+            Kind::Open => {
+                self.dialog = None;
+                self.open_session(&value);
+            }
+            Kind::Connect => {
+                self.dialog = None;
+                self.open_provider_key(&value);
+            }
+            Kind::Workspaces => {
+                self.dialog = None;
+                if value == "workspace-new" {
+                    let mut editor = Editor::default();
+                    editor.set(&self.handle.with(|session| session.directory.to_string_lossy().to_string()));
+                    self.dialog = Some(Dialog::Rename(dialog::Prompt {
+                        title: "Workspace directory".into(),
+                        editor,
+                        target: "workspace".into(),
+                    }));
+                } else {
+                    match navigation::bind_workspace(&self.handle, &value) {
+                        Ok(()) => {
+                            self.cache = None;
+                            self.toast(Variant::Success, None, "Workspace connected.");
+                        }
+                        Err(error) => self.toast(Variant::Error, None, format!("Workspace failed: {error}")),
+                    }
+                }
+            }
             Kind::Skills => {
                 self.dialog = None;
                 let mention = format!("@{value} ");
@@ -1761,6 +2015,9 @@ impl Ui {
     fn close_dialog(&mut self) {
         if let Some(prev) = self.theme_before.take() {
             self.set_theme(&prev);
+        }
+        if let Some(Dialog::Terminal(term)) = &self.dialog {
+            term.close();
         }
         self.dialog = None;
     }
@@ -1798,6 +2055,14 @@ impl Ui {
                     _ if k.ctrl && k.name == "c" => Act::Close,
                     _ => Act::None,
                 },
+                Some(Dialog::Terminal(t)) => {
+                    if k.name == "escape" {
+                        Act::Close
+                    } else {
+                        let _ = t.key(ev);
+                        Act::None
+                    }
+                }
                 Some(Dialog::Rename(p)) => match k.name.as_str() {
                     "escape" => Act::Close,
                     "return" => Act::Rename(p.target.clone(), p.editor.text.trim().to_string()),
@@ -1871,7 +2136,37 @@ impl Ui {
             Act::Pick(kind, v) => self.dialog_select(kind, v),
             Act::Rename(target, title) => {
                 self.dialog = None;
-                if !title.is_empty() {
+                if let Some(provider) = target.strip_prefix("connect:") {
+                    match actions::save_provider_key(provider, &title) {
+                        Ok(()) => {
+                            *self.app.providers.write().unwrap() = crate::models::providers(&self.app.config());
+                            self.toast(Variant::Success, None, format!("API key saved for {provider}"));
+                        }
+                        Err(error) => self.toast(Variant::Error, None, format!("Could not save key: {error}")),
+                    }
+                } else if target == "cd" {
+                    if !title.is_empty() {
+                        self.change_directory(&title);
+                    }
+                } else if target == "btw" {
+                    if !title.is_empty() {
+                        self.ask_btw(title);
+                    }
+                } else if target == "workspace" {
+                    if !title.is_empty() {
+                        let base = self.handle.with(|session| session.directory.clone());
+                        match navigation::create_workspace(std::path::Path::new(&title), &base) {
+                            Ok(id) => match navigation::bind_workspace(&self.handle, &id) {
+                                Ok(()) => {
+                                    self.cache = None;
+                                    self.toast(Variant::Success, None, "Workspace created and connected.");
+                                }
+                                Err(error) => self.toast(Variant::Error, None, format!("Workspace failed: {error}")),
+                            },
+                            Err(error) => self.toast(Variant::Error, None, format!("Workspace creation failed: {error}")),
+                        }
+                    }
+                } else if !title.is_empty() {
                     self.rename(&target, &title);
                 }
             }
@@ -2164,7 +2459,8 @@ impl Ui {
                 }
                 let width = self.prompt_text_width() + 1;
                 let mut options = non_files;
-                for (p, _) in prompt::find_files(&self.app.directory, &query, 20) {
+                let directory = self.cwd();
+                for (p, _) in prompt::find_files(&directory, &query, 20) {
                     options.push(prompt::Option_ { display: draw::truncate_middle(&p, width.saturating_sub(4)), description: String::new(), label: "", value: p.clone(), action: Pick::Mention(p) });
                 }
                 options
@@ -2474,6 +2770,10 @@ impl Ui {
                 p.editor.insert(text.lines().next().unwrap_or(""));
                 return;
             }
+            Some(Dialog::Terminal(term)) => {
+                let _ = term.write(&text);
+                return;
+            }
             Some(_) => return,
             None => {}
         }
@@ -2611,6 +2911,19 @@ impl Ui {
                     let panel = dialog::draw_text(buf, area, &t, "Status", "esc", lines, false);
                     self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
                     cursor = None;
+                }
+                Dialog::Terminal(term) => {
+                    term.refresh();
+                    let lines: Vec<Line<'static>> = term
+                        .lines()
+                        .iter()
+                        .map(|line| Line::from(span(line.clone(), d_t.text, d_t.bg)))
+                        .collect();
+                    let title = if term.title().is_empty() { "Terminal" } else { term.title() };
+                    let (panel, position) =
+                        dialog::draw_terminal(buf, area, &t, title, "esc", lines, term.cursor());
+                    self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
+                    cursor = position;
                 }
                 Dialog::Text { title, text, scroll, layout } => {
                     let mut lines = plugin_layout_lines(layout, 60, &t, 0);
@@ -2950,10 +3263,19 @@ impl Ui {
         })
     }
 
+    fn cwd(&self) -> std::path::PathBuf {
+        if self.route == Route::Session {
+            self.handle.with(|session| session.directory.clone())
+        } else {
+            self.app.directory.clone()
+        }
+    }
+
     fn location_label(&self) -> String {
         let home = crate::paths::get().home.to_string_lossy().to_string();
-        let dir = draw::abbreviate_home(&self.app.directory.to_string_lossy(), &home);
-        match git_branch(&self.app.directory) {
+        let directory = self.cwd();
+        let dir = draw::abbreviate_home(&directory.to_string_lossy(), &home);
+        match git_branch(&directory) {
             Some(b) => format!("{dir}:{b}"),
             None => dir,
         }
@@ -3160,7 +3482,7 @@ impl Ui {
             return;
         }
         let home = crate::paths::get().home.to_string_lossy().to_string();
-        let base = self.app.directory.to_string_lossy().to_string();
+        let base = self.cwd().to_string_lossy().to_string();
         let app = self.app.clone();
         let child_busy = move |id: &str| app.session(id).map(|h| h.is_busy()).unwrap_or(false);
         let perm_tool = self.permissions.front().and_then(|p| p.tool_call_id.clone());
@@ -3322,7 +3644,7 @@ impl Ui {
         });
         let input = input.unwrap_or(Value::Null);
         let home = crate::paths::get().home.to_string_lossy().to_string();
-        let base = self.app.directory.to_string_lossy().to_string();
+        let base = self.cwd().to_string_lossy().to_string();
         let fmt = |p: &str| draw::format_path(p, &base, &home);
         let s = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let action = match req.action.as_str() {

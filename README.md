@@ -160,9 +160,13 @@ if yours live elsewhere.
     by ratatui; the full OpenTUI/Solid layout engine is not ported.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
-  commands (`/new /sessions /models /agents /skills /compact /variant /thinking
-  /details /export /init /review /help /quit` + custom), `@file` attachments,
-  `@skill` mentions, prompt history, queued messages. Project skills live in
+  commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants
+  /connect /settings /status /themes /help /exit /rename /timeline /fork
+  /compact /undo /redo /copy /export /cd /editor /skills /worktrees /terminal
+  /plugins /diff /stats /btw /reload /debug /pair /restart /highlights /update`
+  plus config/plugin commands), `@file` attachments, `@skill` mentions, prompt
+  history, queued messages, a persistent terminal dialog, diff and stats views,
+  workspace switching, side questions and config reload. Project skills live in
   `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
 
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`

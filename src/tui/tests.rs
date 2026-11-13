@@ -149,6 +149,61 @@ async fn draws_session_and_dialogs() {
 }
 
 #[tokio::test]
+async fn slash_commands_cover_upstream_set() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    let commands: Vec<String> = ui.slash_commands().into_iter().map(|(name, _, _)| name).collect();
+    for expected in [
+        "/sessions", "/new", "/clear", "/open", "/models", "/agents", "/usage", "/mcps",
+        "/variants", "/connect", "/highlights", "/settings", "/status", "/update", "/pair",
+        "/restart", "/reload", "/debug", "/themes", "/help", "/exit", "/rename", "/timeline",
+        "/fork", "/compact", "/undo", "/redo", "/copy", "/export", "/cd", "/editor", "/skills",
+        "/worktrees", "/terminal", "/plugins", "/diff", "/stats", "/btw",
+    ] {
+        assert!(commands.iter().any(|name| name == expected), "missing {expected}");
+    }
+}
+
+#[tokio::test]
+async fn terminal_command_opens_persistent_terminal() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.exec("session.terminal", "");
+    let Some(Dialog::Terminal(term)) = ui.dialog.as_ref() else {
+        panic!("terminal dialog did not open");
+    };
+    let _ = term.write("exit
+");
+    term.close();
+}
+
+#[tokio::test]
+async fn report_slash_commands_open_dialogs() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    for (command, title) in [
+        ("plugins.list", "Plugins"),
+        ("opencode.debug", "Debug"),
+        ("opencode.highlights", "Release highlights"),
+        ("opencode.update", "Update"),
+    ] {
+        ui.exec(command, "");
+        match ui.dialog.as_ref() {
+            Some(Dialog::Text { title: actual, .. }) => assert_eq!(actual, title),
+            _ => panic!("{command} did not open a text dialog"),
+        }
+    }
+    ui.open_connect();
+    assert!(matches!(ui.dialog, Some(Dialog::Select(_))));
+    ui.exec("session.cd", "");
+    assert!(matches!(ui.dialog, Some(Dialog::Rename(_))));
+    ui.exec("session.aside", "");
+    assert!(matches!(ui.dialog, Some(Dialog::Rename(_))));
+    ui.exec("session.worktrees", "");
+    assert!(matches!(ui.dialog, Some(Dialog::Select(_))));
+}
+
+#[tokio::test]
 async fn skills_command_opens_dialog_and_inserts_mention() {
     let mut ui = ui().await;
     ui.route = Route::Session;

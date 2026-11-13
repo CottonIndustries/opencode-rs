@@ -584,6 +584,15 @@ impl App {
         Ok(self.insert(s))
     }
 
+    /// Load a session from a specific stored project directory.
+    pub fn session_in(&self, project: &str, id: &str) -> Result<Arc<Handle>> {
+        if let Some(h) = self.sessions.lock().unwrap().get(id) {
+            return Ok(h.clone());
+        }
+        let s = session::load(project, id)?;
+        Ok(self.insert(s))
+    }
+
     pub fn forget_session(&self, id: &str) {
         self.sessions.lock().unwrap().remove(id);
     }

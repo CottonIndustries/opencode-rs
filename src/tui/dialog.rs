@@ -38,6 +38,9 @@ pub enum Kind {
     Mcp,
     Fork,
     Skills,
+    Open,
+    Connect,
+    Workspaces,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -181,6 +184,7 @@ pub enum Dialog {
     Help,
     Status,
     Rename(Prompt),
+    Terminal(super::terminal::TerminalDialog),
     Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
 }
 
@@ -366,6 +370,43 @@ pub fn draw_select(buf: &mut Buffer, area: Rect, theme: &Theme, s: &mut Select) 
 }
 
 /// A text dialog: title, body lines and an `ok` button (Help).
+/// A terminal dialog: larger panel, screen lines and an optional cursor.
+pub fn draw_terminal(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    title: &str,
+    close: &str,
+    body: Vec<Line<'static>>,
+    cursor: Option<(u16, u16)>,
+) -> (Rect, Option<(u16, u16)>) {
+    let t = &theme.dialog;
+    let visible = body.len().max(1);
+    let panel = panel_rect(area, Size::Large, (visible + 5) as u16);
+    draw::dim(buf, area, 150);
+    draw::fill(buf, panel, t.bg);
+    let x = panel.x + INSET;
+    let w = panel.width.saturating_sub(INSET * 2);
+    draw::draw_line(buf, x, panel.y + 1, w, &header(t, title, "", close, w as usize));
+    let mut y = panel.y + 3;
+    for line in body {
+        if y >= panel.y + panel.height.saturating_sub(1) {
+            break;
+        }
+        draw::draw_line(buf, x, y, w, &line);
+        y += 1;
+    }
+    let position = cursor.and_then(|(cx, cy)| {
+        let py = panel.y + 3 + cy;
+        if py >= panel.y + panel.height.saturating_sub(1) || cx >= w {
+            None
+        } else {
+            Some((x + cx, py))
+        }
+    });
+    (panel, position)
+}
+
 pub fn draw_text(buf: &mut Buffer, area: Rect, theme: &Theme, title: &str, close: &str, body: Vec<Line<'static>>, ok: bool) -> Rect {
     let t = &theme.dialog;
     let h = 1 + 1 + 1 + body.len() + if ok { 2 } else { 0 } + 1;
