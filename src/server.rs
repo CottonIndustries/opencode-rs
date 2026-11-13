@@ -1317,9 +1317,13 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
             Ok(json!({ "data": result }))
         }
-        ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": Value::Null })),
-        ("GET", ["api", "experimental", "voice", "models"]) => Ok(json!({ "data": { "models": [] } })),
-        ("POST", ["api", "experimental", "voice", "session"]) => Err(anyhow!("voice sessions are not supported")),
+        ("GET", ["api", "experimental", "usage", "limits"]) => {
+            Ok(json!({ "data": crate::account::usage_limits().await? }))
+        }
+        ("GET", ["api", "experimental", "voice", "models"]) => Ok(json!({ "data": crate::voice::models() })),
+        ("POST", ["api", "experimental", "voice", "session"]) => {
+            Ok(json!({ "data": crate::voice::session(&request.body).await? }))
+        }
         ("GET", ["api", "project"]) => Ok(json!({
             "data": [{
                 "id": app.project,
@@ -1493,7 +1497,6 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 "data": crate::job::list(session.as_deref(), kind.as_deref(), status.as_deref(), descendants),
             }))
         }
-        ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": null })),
         ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),
         ("GET", ["api", "experimental", "artifacts", "providers"]) => Ok(json!({
             "data": [{ "id": "local", "name": "Local" }],

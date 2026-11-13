@@ -1,5 +1,6 @@
 //! OpenCode — AI coding agent for the terminal (Rust rewrite).
 
+mod account;
 mod acp;
 mod agent;
 mod app;
@@ -35,6 +36,7 @@ mod tools;
 mod tui;
 mod util;
 mod vcs;
+mod voice;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
