@@ -31,6 +31,8 @@ if yours live elsewhere.
 | `opencode service start\|stop\|status` | Run the HTTP server as a detached local service |
 | `opencode api METHOD PATH` | Call a running server |
 | `opencode workspace list\|create\|remove` | Manage logical workspaces and local environment bindings |
+| `opencode repository cache` | Clone or refresh a remote repository cache |
+| `opencode migrate` | Index legacy session history |
 | `opencode mcp add <name> [--url U] [--header K=V] [--env K=V] [--] <cmd...>` | Add a remote or local MCP server |
 | `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth |
 | `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins in the global config |
@@ -157,7 +159,8 @@ events live in `storage/events.db`; the old `events.jsonl` log is imported on
 first use. Both databases migrate existing files automatically and run in WAL
 mode. Sessions can bind a local workspace, jobs and background work are stored
 in `storage/jobs.db`, snapshots are content-addressed under
-`storage/snapshots`, and configuration policies are enforced before tool
+`storage/snapshots`, configuration files are watched and reloaded when no
+plugins are active, and configuration policies are enforced before tool
 permissions. Generated images are content-addressed under `storage/media` and served
 at `/api/experimental/media/:hash` only while a stored message, event, or
 inbox item still references them. Session messages are also normalized into the
