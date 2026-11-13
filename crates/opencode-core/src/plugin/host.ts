@@ -1842,6 +1842,15 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
   const props = current.props ?? {}
   const children = props.children !== undefined ? props.children : current.children
   const type = typeof current.type === "string" ? current.type.toLowerCase() : ""
+  if (type === "br") {
+    budget.nodes += 1
+    return { type: "text", text: "\n" }
+  }
+  if (type === "image" || type.includes("canvas")) {
+    budget.nodes += 1
+    const alt = String(jsxProp(props, "alt", "text", "label") ?? "[image]")
+    return { type: "text", text: alt, segments: [{ text: alt, dim: true }] }
+  }
   const isText = type !== "textarea" && (type.includes("text") || type === "span" || type === "b" || type === "i" || type === "strong" || type === "em")
   if (isText) {
     const segments = jsxSegments(current)
@@ -2008,7 +2017,7 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
       : props.ref?.current?.scrollLeft !== undefined
       ? { scrollLeft: Number(props.ref.current.scrollLeft) }
       : {}),
-    ...(jsxProp(props, "visible") === false ? { hidden: true } : {}),
+    ...(jsxProp(props, "visible") === false || jsxProp(props, "display") === "none" ? { hidden: true } : {}),
   }
 }
 

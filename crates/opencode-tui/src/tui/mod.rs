@@ -2100,6 +2100,21 @@ impl Ui {
                                             }
                                         });
                                     }
+                                } else if control.kind == plugin_ui::ControlKind::Input {
+                                    let step = if k.name == "left" { -1 } else { 1 };
+                                    let cursor = (control.cursor as isize + step)
+                                        .clamp(0, control.value.chars().count() as isize)
+                                        as usize;
+                                    plugin_ui::set_control_cursor(layout, *focus, cursor);
+                                }
+                            }
+                            Act::None
+                        }
+                        "home" | "end" => {
+                            if let Some(control) = controls.get(*focus) {
+                                if control.kind == plugin_ui::ControlKind::Input {
+                                    let cursor = if k.name == "home" { 0 } else { control.value.chars().count() };
+                                    plugin_ui::set_control_cursor(layout, *focus, cursor);
                                 }
                             }
                             Act::None
@@ -2107,9 +2122,13 @@ impl Ui {
                         "backspace" => {
                             if let Some(control) = controls.get(*focus) {
                                 if control.kind == plugin_ui::ControlKind::Input {
-                                    let mut value = control.value.clone();
-                                    value.pop();
-                                    plugin_ui::set_control_value(layout, *focus, value.clone());
+                                    let mut chars: Vec<char> = control.value.chars().collect();
+                                    if control.cursor > 0 && control.cursor <= chars.len() {
+                                        chars.remove(control.cursor - 1);
+                                    }
+                                    let value: String = chars.into_iter().collect();
+                                    let cursor = control.cursor.saturating_sub(1);
+                                    plugin_ui::set_control_value_at(layout, *focus, value.clone(), cursor);
                                     if !page.is_empty() {
                                         let id = format!("tui-control-{focus}");
                                         let app = plugin_app.clone();
@@ -2131,9 +2150,11 @@ impl Ui {
                                 if !k.ctrl && !k.alt {
                                     if let Some(control) = controls.get(*focus) {
                                         if control.kind == plugin_ui::ControlKind::Input {
-                                            let mut value = control.value.clone();
-                                            value.push(c);
-                                            plugin_ui::set_control_value(layout, *focus, value.clone());
+                                            let mut chars: Vec<char> = control.value.chars().collect();
+                                            let cursor = control.cursor.min(chars.len());
+                                            chars.insert(cursor, c);
+                                            let value: String = chars.into_iter().collect();
+                                            plugin_ui::set_control_value_at(layout, *focus, value.clone(), cursor + 1);
                                             if !page.is_empty() {
                                                 let id = format!("tui-control-{focus}");
                                                 let app = plugin_app.clone();

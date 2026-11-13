@@ -1394,6 +1394,7 @@ pub struct Control {
     pub path: Vec<usize>,
     pub kind: ControlKind,
     pub value: String,
+    pub cursor: usize,
     pub options: Vec<String>,
     pub selected: usize,
 }
@@ -1419,6 +1420,9 @@ fn collect_controls(value: &Value, path: &mut Vec<usize>, out: &mut Vec<Control>
             path: path.clone(),
             kind: ControlKind::Input,
             value: value.get("value").and_then(Value::as_str).unwrap_or_default().to_string(),
+            cursor: number(value.get("cursor")).unwrap_or_else(|| {
+                value.get("value").and_then(Value::as_str).map(|value| value.chars().count()).unwrap_or(0)
+            }),
             options: Vec::new(),
             selected: 0,
         });
@@ -1432,6 +1436,7 @@ fn collect_controls(value: &Value, path: &mut Vec<usize>, out: &mut Vec<Control>
             path: path.clone(),
             kind: ControlKind::Select,
             value: String::new(),
+            cursor: 0,
             options,
             selected: number(value.get("selected")).unwrap_or(0),
         });
@@ -1454,12 +1459,26 @@ fn node_at_mut<'a>(value: &'a mut Value, path: &[usize]) -> Option<&'a mut Value
 }
 
 pub fn set_control_value(layout: &mut Value, index: usize, value: String) {
+    let cursor = value.chars().count();
+    set_control_value_at(layout, index, value, cursor);
+}
+
+pub fn set_control_value_at(layout: &mut Value, index: usize, value: String, cursor: usize) {
     let Some(control) = controls(layout).get(index).cloned() else {
         return;
     };
     if let Some(node) = node_at_mut(layout, &control.path) {
-        node["value"] = Value::String(value.clone());
-        node["cursor"] = Value::from(value.chars().count());
+        node["value"] = Value::String(value);
+        node["cursor"] = Value::from(cursor);
+    }
+}
+
+pub fn set_control_cursor(layout: &mut Value, index: usize, cursor: usize) {
+    let Some(control) = controls(layout).get(index).cloned() else {
+        return;
+    };
+    if let Some(node) = node_at_mut(layout, &control.path) {
+        node["cursor"] = Value::from(cursor);
     }
 }
 
