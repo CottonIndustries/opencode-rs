@@ -98,6 +98,8 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       return pluginList()
     case "tui.command.execute":
       return await executeTuiCommand(params)
+    case "tui.slots":
+      return await renderTuiSlots(params.input ?? {})
     case "integration.list":
       return projectIntegrations()
     case "integration.get": {
@@ -306,6 +308,7 @@ const plugins: PluginRecord[] = []
 const tuiPlugins: PluginRecord[] = []
 const tuiCommands = new Map<string, Json>()
 const tuiAliases = new Map<string, string>()
+const tuiSlots: Array<{ placement: string; render: Function; plugin: string }> = []
 const rpcs = new Map<string, { plugin: PluginRecord; definition: Json; handlers: Json }>()
 
 type HookEntry = {
@@ -1653,6 +1656,45 @@ function registerTuiCommand(plugin: PluginRecord, command: Json): () => void {
   return dispose
 }
 
+function jsxText(value: Json): string {
+  if (value === null || value === undefined || value === false || value === true) return ""
+  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") return String(value)
+  if (Array.isArray(value)) return value.map(jsxText).filter(Boolean).join("")
+  if (typeof value === "function") {
+    try {
+      return jsxText(value())
+    } catch {
+      return ""
+    }
+  }
+  if (typeof value === "object") {
+    if (value.text !== undefined) return jsxText(value.text)
+    if (value.children !== undefined) return jsxText(value.children)
+    if (value.props) {
+      const props = value.props
+      if (typeof props === "string") return props
+      if (props.children !== undefined) return jsxText(props.children)
+      if (props.text !== undefined) return jsxText(props.text)
+      if (props.content !== undefined) return jsxText(props.content)
+    }
+  }
+  return ""
+}
+
+async function renderTuiSlots(input: Json): Promise<Json[]> {
+  const out: Json[] = []
+  for (const slot of [...tuiSlots]) {
+    try {
+      const rendered = await settle(slot.render(input))
+      const text = jsxText(rendered).trim()
+      if (text) out.push({ placement: slot.placement, text, plugin: slot.plugin })
+    } catch (error) {
+      log("error", `tui slot ${slot.placement} failed: ${String(error)}`)
+    }
+  }
+  return out
+}
+
 function makeTuiContext(plugin: PluginRecord): Json {
   const prefix = `tui:${plugin.id}:`
   const memory = new Map<string, Json>()
@@ -1759,7 +1801,18 @@ function makeTuiContext(plugin: PluginRecord): Json {
       current: () => undefined,
       variant: { list: () => [], set: () => false },
     },
-    slot: noCleanup,
+    slot: (claim: Json) => {
+      const placement = claim?.prepend ?? claim?.append ?? claim?.before ?? claim?.after ?? claim?.replace
+      if (typeof placement !== "string" || typeof claim?.render !== "function") return () => {}
+      const entry = { placement, render: claim.render as Function, plugin: plugin.id }
+      tuiSlots.push(entry)
+      const dispose = () => {
+        const index = tuiSlots.indexOf(entry)
+        if (index >= 0) tuiSlots.splice(index, 1)
+      }
+      plugin.registrations.push(dispose)
+      return dispose
+    },
   }
   return {
     options: plugin.options,

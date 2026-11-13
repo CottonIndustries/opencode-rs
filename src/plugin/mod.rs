@@ -1148,6 +1148,15 @@ impl Manager {
         self.request("tui.command.execute", json!({ "name": name, "input": input })).await
     }
 
+    /// Render the TUI plugin slot tree. The host extracts text from JSX so the
+    /// Rust TUI can display it without an OpenTUI renderer.
+    pub async fn tui_slots(&self, input: Value) -> Vec<Value> {
+        let Ok(value) = self.request("tui.slots", json!({ "input": input })).await else {
+            return Vec::new();
+        };
+        value.as_array().cloned().unwrap_or_default()
+    }
+
     pub fn websearch_providers(&self) -> Vec<(String, String)> {
         self.websearch.read().unwrap().clone()
     }

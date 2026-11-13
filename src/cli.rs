@@ -385,6 +385,7 @@ pub fn debug_paths() -> Result<()> {
 }
 
 pub async fn debug_plugins() -> Result<()> {
+    std::env::set_var("OPENCODE_TUI", "1");
     let app = App::init(cwd()).await?;
     for error in app.plugins.errors() {
         eprintln!("warning: {error}");
@@ -416,6 +417,13 @@ pub async fn debug_plugins() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+    let slots = app
+        .plugins
+        .tui_slots(serde_json::json!({ "sessionID": "debug", "mode": "normal", "showDetails": true }))
+        .await;
+    if !slots.is_empty() {
+        println!("{}", serde_json::to_string_pretty(&slots)?);
     }
     Ok(())
 }

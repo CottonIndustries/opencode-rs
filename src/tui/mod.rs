@@ -226,6 +226,9 @@ struct Ui {
     size: (u16, u16),
     theme_before: Option<String>,
     pending_editor: bool,
+    plugin_status: String,
+    plugin_sidebar: Vec<String>,
+    plugin_slots_at: Instant,
 }
 
 fn titlecase(s: &str) -> String {
@@ -372,6 +375,9 @@ impl Ui {
             size: (80, 24),
             theme_before: None,
             pending_editor: false,
+            plugin_status: String::new(),
+            plugin_sidebar: Vec::new(),
+            plugin_slots_at: Instant::now(),
         };
         let name = ui.settings.theme();
         ui.set_theme(&name);
@@ -1950,6 +1956,44 @@ impl Ui {
         }
     }
 
+    async fn refresh_plugin_slots(&mut self) -> bool {
+        if self.plugin_slots_at.elapsed() < Duration::from_secs(2) {
+            return false;
+        }
+        self.plugin_slots_at = Instant::now();
+        let input = json!({
+            "sessionID": self.sid(),
+            "mode": if self.shell { "shell" } else { "normal" },
+            "showDetails": true,
+        });
+        let slots = self.app.plugins.tui_slots(input).await;
+        let mut status = String::new();
+        let mut sidebar = Vec::new();
+        for slot in slots {
+            let placement = slot.get("placement").and_then(Value::as_str).unwrap_or_default();
+            let text = slot.get("text").and_then(Value::as_str).unwrap_or_default().trim();
+            if text.is_empty() {
+                continue;
+            }
+            match placement {
+                "home.footer.status" | "prompt.footer.status" | "prompt.footer" | "home.footer" => {
+                    if !status.is_empty() {
+                        status.push_str("  ·  ");
+                    }
+                    status.push_str(&text.replace('\n', " "));
+                }
+                "sidebar.content" | "sidebar.footer" => {
+                    sidebar.extend(text.lines().map(|line| line.to_string()));
+                }
+                _ => {}
+            }
+        }
+        let changed = self.plugin_status != status || self.plugin_sidebar != sidebar;
+        self.plugin_status = status;
+        self.plugin_sidebar = sidebar;
+        changed
+    }
+
     fn plugin_binding(&self, key: &keymap::Key, leader: bool) -> Option<String> {
         for command in self.app.plugins.tui_commands() {
             let Some(id) = command.get("id").and_then(Value::as_str) else { continue };
@@ -2686,7 +2730,11 @@ impl Ui {
                 spans.extend([span("esc ", t.text, bg), span("interrupt", t.muted, bg)]);
             }
         } else {
-            spans.push(span(draw::truncate_path(&self.location_label(), left_w), t.muted, bg));
+            let mut label = self.location_label();
+            if !self.plugin_status.is_empty() {
+                label = format!("{label}  ·  {}", self.plugin_status);
+            }
+            spans.push(span(draw::truncate(&label, left_w), t.muted, bg));
         }
         let lw: usize = spans.iter().map(|s| draw::width(&s.content)).sum();
         spans.push(span(" ".repeat(w.saturating_sub(lw + rw)), t.text, bg));
@@ -2965,6 +3013,15 @@ impl Ui {
             }
             sections.push(s);
         }
+        if !self.plugin_sidebar.is_empty() {
+            let mut s = vec![line(vec![Span::styled("Plugins", ts)], bg)];
+            for text in &self.plugin_sidebar {
+                for wrapped in draw::wrap(&[span(text.clone(), t.muted, bg)], inner_w.max(1), draw::Wrap::Word) {
+                    s.push(line(wrapped, bg));
+                }
+            }
+            sections.push(s);
+        }
         let n = sections.len();
         for (i, s) in sections.into_iter().enumerate() {
             lines.extend(s);
@@ -3212,6 +3269,7 @@ impl Ui {
             app.mcp.tools().await;
             app.emit(AppEvent::Notice { message: String::new() });
         });
+        self.refresh_plugin_slots().await;
         let mut events = self.app.subscribe();
         let mut tick = tokio::time::interval(TICK);
         if let Some(p) = initial {
@@ -3273,6 +3331,9 @@ impl Ui {
                     }
                     if animating || !self.toasts.is_empty() {
                         self.frame += 1;
+                        dirty = true;
+                    }
+                    if self.refresh_plugin_slots().await {
                         dirty = true;
                     }
                 }
