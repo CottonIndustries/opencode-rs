@@ -101,7 +101,7 @@ if yours live elsewhere.
   (new, load with history replay, resume, fork, list, delete, close), model / effort / mode
   selectors, streamed text, thinking and tool calls with locations and before/after diffs,
   permission prompts on the tool call, cancel, `/compact` and custom slash commands,
-  embedded context and images, client MCP servers (stdio and HTTP), usage updates.
+  embedded context and images, client MCP servers (stdio, HTTP, and client-hosted WebSocket), usage updates.
   Requests identify as `acp`, as upstream does in this mode. Zed setup:
   `"agent_servers": { "OpenCode (Rust)": { "type": "custom", "command": "C:/path/to/opencode.exe", "args": ["acp"] } }`
 - **Plugins** (V2 and legacy V1): a Deno sidecar loads TypeScript/JavaScript
@@ -153,7 +153,9 @@ and are indexed in `storage/sessions.db` for loading and listing. Durable
 events live in `storage/events.db`; the old `events.jsonl` log is imported on
 first use. Both databases migrate existing files automatically and run in WAL
 mode. Generated images are content-addressed under `storage/media` and served
-at `/api/experimental/media/:hash`.
+at `/api/experimental/media/:hash` only while a stored message, event, or
+inbox item still references them. Session messages are also normalized into the
+`messages` table for querying.
 
 ## Not ported
 
@@ -164,18 +166,19 @@ OAuth (ChatGPT and GitHub Copilot device login are available through
 `baseURL`. Shell permission parsing uses a quote-aware splitter instead of
 tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
-authorization are not part of it. Remote workspace/environment drivers, voice,
-account and usage-limit services, and the full OpenTUI/Solid plugin layout
-engine are not ported.
+authorization are not part of it. Remote workspace/environment drivers and the
+full OpenTUI/Solid plugin layout engine are not ported.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
 RPC endpoints are available through the API and plugin host. `opencode serve`
 covers sessions (prompt, command, shell, fork, revert, compact, diff, forms,
 inbox, permissions, environment, move, generate), messages, agents, providers,
-models, projects, plugins, MCP (including add/connect/disconnect), filesystem
+models, projects, plugins, MCP (including add/connect/disconnect and client
+WebSocket attachments), filesystem
 read/list/find/write, background shells and jobs, scheduled tasks, web search,
 image/decision generation with media blobs, artifacts, PTY and persistent
-terminals, VCS and worktrees, durable session logs and V2 events over SSE,
+terminals, Console usage limits, realtime
+voice sessions, VCS and worktrees, durable session logs and V2 events over SSE,
 plugin references, and
 pairing/auth. Integrations and credentials are handled by plugins and exposed
 through their HTTP routes; `aisdk` SDK/language hooks pass options through, but
