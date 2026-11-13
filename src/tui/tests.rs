@@ -148,3 +148,23 @@ async fn draws_session_and_dialogs() {
     assert!(screen.contains("/models"));
 }
 
+#[test]
+fn plugin_layout_flattens_rows_and_columns() {
+    let layout = serde_json::json!({
+        "type": "box",
+        "direction": "column",
+        "children": [
+            { "type": "text", "text": "one" },
+            {
+                "type": "box",
+                "direction": "row",
+                "children": [
+                    { "type": "text", "text": "two" },
+                    { "type": "text", "text": "three" }
+                ]
+            }
+        ]
+    });
+    assert_eq!(super::layout_plain_lines(&layout, 0), vec!["one", "two  three"]);
+}
+
