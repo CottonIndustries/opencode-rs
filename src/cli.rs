@@ -294,77 +294,11 @@ pub async fn session_import(file: &str, replace: bool) -> Result<()> {
 }
 
 pub async fn stats(days: Option<i64>, as_json: bool) -> Result<()> {
-    let root = crate::paths::get().storage().join("session");
-    let since = days.map(|d| {
-        let start = chrono::Local::now().date_naive() - chrono::Duration::days(d);
-        start.and_hms_opt(0, 0, 0).unwrap().and_local_timezone(chrono::Local).unwrap().timestamp_millis()
-    });
-    let mut sessions = 0;
-    let mut messages = 0;
-    let mut usage = crate::session::Usage::default();
-    let mut cost = 0.0;
-    let mut tools: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
-    let mut models: std::collections::BTreeMap<String, (u64, f64)> = Default::default();
-    for proj in std::fs::read_dir(&root).into_iter().flatten().flatten() {
-        for f in std::fs::read_dir(proj.path()).into_iter().flatten().flatten() {
-            let Ok(bytes) = std::fs::read(f.path()) else { continue };
-            let Ok(s) = serde_json::from_slice::<crate::session::Session>(&bytes) else { continue };
-            if since.is_some_and(|t| s.time_updated < t) {
-                continue;
-            }
-            sessions += 1;
-            for m in &s.messages {
-                if since.is_some_and(|t| m.time < t) {
-                    continue;
-                }
-                messages += 1;
-                usage.add(&m.usage);
-                cost += m.cost;
-                if let Some(model) = &m.model {
-                    if m.role == crate::session::Role::Assistant {
-                        let e = models.entry(model.clone()).or_default();
-                        e.0 += 1;
-                        e.1 += m.cost;
-                    }
-                }
-                for p in &m.parts {
-                    if let crate::session::Part::Tool { name, state, .. } = p {
-                        let e = tools.entry(name.clone()).or_default();
-                        e.0 += 1;
-                        if matches!(state, crate::session::ToolState::Error { .. }) {
-                            e.1 += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let data = crate::stats::data(days)?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&json!({ "sessions": sessions, "messages": messages, "usage": usage, "cost": cost, "models": models, "tools": tools }))?);
-        return Ok(());
-    }
-    println!("Sessions      {sessions}");
-    println!("Messages      {messages}");
-    println!("Input tokens  {}", usage.input);
-    println!("Output tokens {}", usage.output);
-    println!("Cache read    {}", usage.cache_read);
-    println!("Cache write   {}", usage.cache_write);
-    println!("Cost          ${cost:.4}");
-    if !models.is_empty() {
-        println!("\nModels");
-        let mut v: Vec<_> = models.into_iter().collect();
-        v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-        for (m, (n, c)) in v.into_iter().take(10) {
-            println!("  {m:<50} {n:>6} msgs  ${c:.4}");
-        }
-    }
-    if !tools.is_empty() {
-        println!("\nTools");
-        let mut v: Vec<_> = tools.into_iter().collect();
-        v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-        for (t, (n, e)) in v.into_iter().take(15) {
-            println!("  {t:<30} {n:>6} calls  {e:>4} errors");
-        }
+        println!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        print!("{}", crate::stats::format(&data));
     }
     Ok(())
 }

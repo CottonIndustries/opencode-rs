@@ -43,6 +43,7 @@ mod share;
 mod session;
 mod snapshot;
 mod state;
+mod stats;
 mod tools;
 mod tui;
 mod util;
