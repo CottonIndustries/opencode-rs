@@ -28,7 +28,9 @@ pub fn get() -> &'static Paths {
             .unwrap_or_else(|| PathBuf::from("."));
         let data = env_dir("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local").join("share")).join(APP);
         let cache = env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache")).join(APP);
-        let config = env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")).join(APP);
+        let config = env_dir("OPENCODE_CONFIG_DIR").unwrap_or_else(|| {
+            env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")).join(APP)
+        });
         let state = env_dir("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local").join("state")).join(APP);
         let tmp = std::env::temp_dir().join(APP);
         let log = data.join("log");
@@ -44,6 +46,21 @@ impl Paths {
     }
     pub fn auth_file(&self) -> PathBuf {
         self.data.join("auth.json")
+    }
+    /// Main SQLite database, honoring OPENCODE_DB like upstream.
+    pub fn db_file(&self) -> PathBuf {
+        match std::env::var_os("OPENCODE_DB") {
+            Some(value) if value == ":memory:" => PathBuf::from(":memory:"),
+            Some(value) => {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    self.data.join(path)
+                }
+            }
+            None => self.data.join("opencode.db"),
+        }
     }
     pub fn storage(&self) -> PathBuf {
         self.data.join("storage")

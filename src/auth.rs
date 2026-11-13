@@ -70,7 +70,7 @@ fn credential_from_value(value: &serde_json::Value) -> Option<Credential> {
 /// accounts used by auth switch.
 pub fn entries() -> Vec<Entry> {
     let mut out = Vec::new();
-    let path = crate::paths::get().data.join("opencode.db");
+    let path = crate::paths::get().db_file();
     if path.is_file() {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
         if let Ok(db) = rusqlite::Connection::open_with_flags(&path, flags) {
@@ -126,7 +126,7 @@ pub fn switch(provider: &str, target: &str) -> Result<Entry> {
         .or_else(|| entries.iter().find(|entry| entry.id == target || entry.label == target))
         .ok_or_else(|| anyhow::anyhow!("credential not found: {target}"))?
         .clone();
-    if let Ok(db) = rusqlite::Connection::open(crate::paths::get().data.join("opencode.db")) {
+    if let Ok(db) = rusqlite::Connection::open(crate::paths::get().db_file()) {
         let _ = db.execute("UPDATE credential SET active = 0 WHERE integration_id = ?1", [&entry.provider]);
         let _ = db.execute("UPDATE credential SET active = 1 WHERE id = ?1", [&entry.id]);
     }
@@ -173,7 +173,7 @@ pub fn import(values: &[serde_json::Value]) -> Result<(usize, usize)> {
 /// Stored credentials: auth.json first, then API keys saved by the TypeScript
 /// client in its `opencode.db` (read-only; OAuth entries there need refresh flows and are skipped).
 pub fn all() -> BTreeMap<String, Credential> {
-    let mut out = from_database(&crate::paths::get().data.join("opencode.db"));
+    let mut out = from_database(&crate::paths::get().db_file());
     out.extend(from_file());
     out
 }
