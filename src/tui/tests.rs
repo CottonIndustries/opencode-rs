@@ -178,6 +178,41 @@ async fn terminal_command_opens_persistent_terminal() {
 }
 
 #[tokio::test]
+async fn tab_close_button_renders_on_hover_and_closes() {
+    let mut ui = ui().await;
+    ui.tabs.clear();
+    let a = ui.app.new_session(None);
+    a.save();
+    let b = ui.app.new_session(None);
+    b.save();
+    let (aid, bid) = (a.id(), b.id());
+    ui.open_session(&aid);
+    ui.open_session(&bid);
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let top = dump(&t).lines().next().unwrap_or_default().to_string();
+    assert!(!top.contains('✕'), "close mark should be hidden without hover: {top:?}");
+    let (column, _, id) = ui.hits.tab_close.iter().find(|(_, _, id)| *id == aid).cloned().expect("close button hit box");
+    ui.on_mouse(event::MouseEvent {
+        kind: MouseEventKind::Moved,
+        column,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    assert!(dump(&t).lines().next().unwrap_or_default().contains('✕'), "close mark missing on hover");
+    ui.on_mouse(event::MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(!ui.tabs.contains(&id));
+    assert_eq!(ui.sid(), bid);
+}
+
+#[tokio::test]
 async fn report_slash_commands_open_dialogs() {
     let mut ui = ui().await;
     ui.route = Route::Session;

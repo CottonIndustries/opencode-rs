@@ -162,6 +162,7 @@ struct Hits {
     clicks: Vec<(usize, usize, String)>,
     dialog: Option<dialog::Placed>,
     tabs: Vec<(u16, u16, String)>,
+    tab_close: Vec<(u16, u16, String)>,
     jump: Option<Rect>,
     auto: Vec<(u16, usize)>,
     perm_options: Vec<(Rect, usize)>,
@@ -218,6 +219,8 @@ struct Ui {
     saved_tabs: Vec<String>,
     /// closed tabs with their former position, most recent last
     closed_tabs: Vec<(String, usize)>,
+    /// tab under the mouse pointer; the close mark only shows while hovering
+    tab_hover: Option<String>,
     /// sessions in visit order, most recent last
     tab_history: Vec<String>,
     /// terminal title and default background as last sent (OSC 0 / OSC 11)
@@ -519,6 +522,7 @@ impl Ui {
             tabs: vec![],
             saved_tabs: vec![],
             closed_tabs: vec![],
+            tab_hover: None,
             tab_history: vec![],
             chrome: Default::default(),
             redo: vec![],
@@ -627,8 +631,15 @@ impl Ui {
             }
             return;
         }
-        let target = self.sid();
+        self.close_tab_id(&self.sid());
+    }
+
+    /// Close a specific tab. Closing the active tab returns to the previous visit, then a
+    /// neighbour, then a fresh session; closing another tab leaves the current session alone.
+    fn close_tab_id(&mut self, target: &str) {
+        let target = target.to_string();
         let Some(index) = self.tabs.iter().position(|t| *t == target) else { return };
+        let active = self.route == Route::Session && self.sid() == target;
         self.tabs.remove(index);
         self.closed_tabs.retain(|(id, _)| *id != target);
         self.closed_tabs.push((target.clone(), index));
@@ -636,6 +647,9 @@ impl Ui {
             self.closed_tabs.remove(0);
         }
         self.tab_history.retain(|t| *t != target);
+        if !active {
+            return;
+        }
         let next = self.last_visited_tab().or_else(|| self.tabs.get(index).or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i))).cloned());
         match next {
             Some(id) => self.open_session(&id),
@@ -2686,6 +2700,12 @@ impl Ui {
                 self.scroll_by(if up { 3 } else { -3 });
             }
             MouseEventKind::Moved => {
+                let hover = if y == 0 && self.dialog.is_none() {
+                    self.hits.tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|(_, _, id)| id.clone())
+                } else {
+                    None
+                };
+                self.tab_hover = hover;
                 if let (Some(Dialog::Select(s)), Some(p)) = (self.dialog.as_mut(), self.hits.dialog.as_ref()) {
                     if let Some((_, i)) = p.rows.iter().find(|(ry, _)| *ry == y) {
                         if inside(p.list) && s.selected != *i {
@@ -2728,6 +2748,14 @@ impl Ui {
                     let k = Key { ctrl: false, alt: false, shift: false, name: "return".into() };
                     self.permission_key(&k, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                     return;
+                }
+                if let Some((_, _, id)) = self.hits.tab_close.iter().find(|(a, b, _)| x >= *a && x < *b && y == 0).cloned() {
+                    // The close mark only exists while the tab is hovered, so a click at that
+                    // cell without a preceding motion must select the tab rather than close it.
+                    if self.tab_hover.as_deref() == Some(id.as_str()) {
+                        self.close_tab_id(&id);
+                        return;
+                    }
                 }
                 if let Some((_, _, id)) = self.hits.tabs.iter().find(|(a, b, _)| x >= *a && x < *b && y == 0).cloned() {
                     if id == "+" {
@@ -2965,15 +2993,26 @@ impl Ui {
             let title = h.with(|s| if s.has_default_title() { "New session".to_string() } else { s.title.clone() });
             let active = cur.as_deref() == Some(id.as_str());
             let w = 32u16.min((area.x + area.width).saturating_sub(x + 3));
-            if w < 6 {
+            if w < 8 {
                 break;
             }
             let bg = if active { t.raised_high } else { t.bg };
             let dot = if h.is_busy() { SPINNER[(self.frame / 2) % SPINNER.len()] } else { " " };
             let ts = if active { draw::bold(draw::st(t.text, bg)) } else { draw::st(t.muted, bg) };
-            let spans = vec![span(" ", t.text, bg), span(dot, t.hue("interactive", 200), bg), span(" ", t.text, bg), Span::styled(draw::truncate(&title, w as usize - 4), ts)];
+            let xs = if active { draw::bold(draw::st(t.text, bg)) } else { draw::st(t.muted, bg) };
+            let close = if self.tab_hover.as_deref() == Some(id.as_str()) { "✕" } else { " " };
+            let spans = vec![
+                span(" ", t.text, bg),
+                span(dot, t.hue("interactive", 200), bg),
+                span(" ", t.text, bg),
+                Span::styled(draw::truncate(&title, w as usize - 6), ts),
+                span(" ", t.text, bg),
+                Span::styled(close, xs),
+                span(" ", t.text, bg),
+            ];
             draw::draw_line(buf, x, area.y, w, &line(spans, bg));
-            self.hits.tabs.push((x, x + w, id));
+            self.hits.tabs.push((x, x + w, id.clone()));
+            self.hits.tab_close.push((x + w - 2, x + w - 1, id));
             x += w;
         }
         if self.route == Route::Home {
