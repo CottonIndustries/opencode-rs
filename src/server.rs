@@ -38,6 +38,7 @@ struct Request {
     authorization: Option<String>,
     cookie: Option<String>,
     accept: Option<String>,
+    if_none_match: Option<String>,
     websocket_key: Option<String>,
     upgrade: bool,
     body: Value,
@@ -70,6 +71,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let mut authorization = None;
     let mut cookie = None;
     let mut accept = None;
+    let mut if_none_match = None;
     let mut websocket_key = None;
     let mut upgrade = false;
     for line in lines {
@@ -85,6 +87,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             }
             if name.eq_ignore_ascii_case("accept") {
                 accept = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("if-none-match") {
+                if_none_match = Some(value.trim().to_string());
             }
             if name.eq_ignore_ascii_case("sec-websocket-key") {
                 websocket_key = Some(value.trim().to_string());
@@ -109,7 +114,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     } else {
         serde_json::from_slice(&raw_body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, authorization, cookie, accept, websocket_key, upgrade, body, raw_body }))
+    Ok(Some(Request { method, path, authorization, cookie, accept, if_none_match, websocket_key, upgrade, body, raw_body }))
 }
 
 fn authorized(request: &Request, password: &str, port: u16) -> bool {
@@ -257,7 +262,7 @@ async fn handle(
     if request.method == "GET" {
         if let Some(hash) = parsed.path().strip_prefix("/api/experimental/media/") {
             if let Some((data, mime)) = crate::media::get(hash) {
-                return write_bytes(&mut stream, 200, "OK", &mime, &data).await;
+                return write_media(&mut stream, &request, hash, &mime, &data).await;
             }
             return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Media not found" } }), None).await;
         }
@@ -421,6 +426,65 @@ async fn write_bytes(
 ) -> Result<()> {
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn write_media(
+    stream: &mut TcpStream,
+    request: &Request,
+    hash: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    let etag = format!("\"{hash}\"");
+    let cache = "public, max-age=31536000, immutable";
+    if request
+        .if_none_match
+        .as_deref()
+        .is_some_and(|value| value.split(',').any(|item| item.trim() == etag || item.trim() == "*"))
+    {
+        let head = format!(
+            "HTTP/1.1 304 Not Modified
+
+etag: {etag}
+
+cache-control: {cache}
+
+access-control-allow-origin: *
+
+connection: close
+
+
+
+"
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
+    let head = format!(
+        "HTTP/1.1 200 OK
+
+content-type: {content_type}
+
+content-length: {}
+
+etag: {etag}
+
+cache-control: {cache}
+
+access-control-allow-origin: *
+
+connection: close
+
+
+
+",
         body.len()
     );
     stream.write_all(head.as_bytes()).await?;
@@ -733,9 +797,38 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             Ok(json!({ "data": true }))
         }
         ("GET", ["api", "session", id, "message"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
             let handle = app.session(id)?;
-            let messages = handle.with(|session| crate::plugin::session_messages_json(&session.messages));
-            Ok(json!({ "data": messages }))
+            let mut messages = handle
+                .with(|session| crate::plugin::session_messages_json(&session.messages))
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(kind) = query_value(&parsed, "type") {
+                messages.retain(|message| message.get("type").and_then(Value::as_str) == Some(kind.as_str()));
+            }
+            if query_value(&parsed, "order").as_deref() == Some("desc") {
+                messages.reverse();
+            }
+            if let Some(cursor) = query_value(&parsed, "cursor") {
+                if let Some(index) = messages.iter().position(|message| message.get("id").and_then(Value::as_str) == Some(cursor.as_str())) {
+                    messages.drain(..=index);
+                }
+            }
+            let limit = query_value(&parsed, "limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|limit| *limit > 0)
+                .unwrap_or(50)
+                .min(200);
+            let has_more = messages.len() > limit;
+            messages.truncate(limit);
+            Ok(json!({
+                "data": messages,
+                "cursor": {
+                    "previous": messages.first().and_then(|message| message.get("id")).cloned(),
+                    "next": has_more.then(|| messages.last().and_then(|message| message.get("id")).cloned()).flatten(),
+                }
+            }))
         }
         ("POST", ["api", "session", id, "prompt"] | ["api", "session", id, "message"]) => {
             let handle = app.session(id)?;
