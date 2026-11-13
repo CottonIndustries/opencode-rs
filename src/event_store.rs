@@ -1,51 +1,86 @@
 //! Append-only durable event log.
 //!
-//! The log is deliberately small: every plugin-facing event that survives a
-//! restart is appended as one JSON object per line. Ephemeral stream deltas are
-//! skipped because they are reconstructed from persisted message state.
+//! Events are stored in SQLite so `session.log` can page a session's history
+//! by sequence without scanning a file. The legacy JSONL log is imported once
+//! when the database is first created, so existing installations keep their
+//! replayable history.
 
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-static FILE: OnceLock<Mutex<File>> = OnceLock::new();
-static SEQ: OnceLock<AtomicU64> = OnceLock::new();
+static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
 fn path() -> PathBuf {
+    crate::paths::get().storage().join("events.db")
+}
+
+fn legacy_path() -> PathBuf {
     crate::paths::get().storage().join("events.jsonl")
 }
 
-fn open() -> Option<&'static Mutex<File>> {
-    if let Some(file) = FILE.get() {
-        return Some(file);
+fn open() -> Option<&'static Mutex<Connection>> {
+    if let Some(db) = DB.get() {
+        return Some(db);
     }
     let path = path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = OpenOptions::new().create(true).append(true).read(true).open(&path).ok()?;
-    let _ = FILE.set(Mutex::new(file));
-    let next = FILE
-        .get()
-        .and_then(|file| {
-            file.lock()
-                .ok()
-                .and_then(|file| BufReader::new(&*file).lines().map_while(Result::ok).last())
-                .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-                .and_then(|value| value.get("seq").and_then(Value::as_u64))
-                .map(|seq| seq + 1)
-        })
-        .unwrap_or(1);
-    let _ = SEQ.set(AtomicU64::new(next));
-    FILE.get()
+    let mut connection = Connection::open(&path).ok()?;
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS events (
+                seq INTEGER PRIMARY KEY,
+                session_id TEXT,
+                type TEXT NOT NULL,
+                created INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS events_session ON events(session_id, seq);
+            CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
+            UPDATE events
+               SET session_id = COALESCE(json_extract(data, '$.properties.sessionID'), json_extract(data, '$.properties.info.id'))
+             WHERE (session_id IS NULL OR session_id = '')
+               AND json_extract(data, '$.properties.info.id') IS NOT NULL;",
+        )
+        .ok()?;
+    migrate(&mut connection);
+    let _ = DB.set(Mutex::new(connection));
+    DB.get()
 }
 
-fn next_seq() -> u64 {
-    let _ = open();
-    SEQ.get().map(|seq| seq.fetch_add(1, Ordering::SeqCst)).unwrap_or(1)
+/// Import the old JSONL log once, preserving sequence numbers where possible.
+fn migrate(connection: &mut Connection) {
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap_or(0);
+    if count > 0 {
+        return;
+    }
+    let Ok(file) = std::fs::File::open(legacy_path()) else { return };
+    let Ok(transaction) = connection.transaction() else { return };
+    let mut next = 1i64;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+        let seq = event.get("seq").and_then(Value::as_u64).map(|seq| seq as i64).unwrap_or(next);
+        next = next.max(seq + 1);
+        let session = event
+            .pointer("/properties/sessionID")
+            .or_else(|| event.pointer("/properties/info/id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let ty = event.get("type").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        let created = event.get("created").and_then(Value::as_i64).unwrap_or_else(crate::util::now_ms);
+        let _ = transaction.execute(
+            "INSERT OR IGNORE INTO events(seq, session_id, type, created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![seq, session, ty, created, event.to_string()],
+        );
+    }
+    let _ = transaction.commit();
 }
 
 fn ephemeral(ty: &str) -> bool {
@@ -66,7 +101,7 @@ fn ephemeral(ty: &str) -> bool {
 }
 
 /// Append an event to the durable log. The event is updated in place with
-/// `seq` and a `durable` envelope when it belongs to a session.
+/// `seq`, `created` and a `durable` envelope when it belongs to a session.
 pub fn append(event: &mut Value) {
     let ty = event.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
     if ephemeral(&ty) {
@@ -74,55 +109,77 @@ pub fn append(event: &mut Value) {
     }
     let session = event
         .pointer("/properties/sessionID")
+        .or_else(|| event.pointer("/properties/info/id"))
         .and_then(Value::as_str)
         .map(String::from);
-    let seq = next_seq();
+    let Some(db) = open() else { return };
+    let Ok(mut db) = db.lock() else { return };
+    let Ok(transaction) = db.transaction() else { return };
+    let seq: i64 = transaction
+        .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |row| row.get(0))
+        .unwrap_or(1);
     event["seq"] = json!(seq);
-    event["created"] = event
+    let created = event
         .get("created")
-        .cloned()
-        .unwrap_or_else(|| json!(crate::util::now_ms()));
-    if let Some(session) = session {
+        .and_then(Value::as_i64)
+        .unwrap_or_else(crate::util::now_ms);
+    event["created"] = json!(created);
+    if let Some(session) = &session {
+        let aggregate: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) + 1 FROM events WHERE session_id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
         event["durable"] = json!({
             "aggregateID": session,
-            "seq": seq,
+            "seq": aggregate,
             "version": 1,
         });
     }
-    let Ok(line) = serde_json::to_string(event) else { return };
-    if let Some(file) = open() {
-        if let Ok(mut file) = file.lock() {
-            let _ = writeln!(file, "{line}");
-            let _ = file.flush();
-        }
-    }
+    let _ = transaction.execute(
+        "INSERT INTO events(seq, session_id, type, created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![seq, session.clone().unwrap_or_default(), ty, created, event.to_string()],
+    );
+    let _ = transaction.commit();
 }
 
 /// Read persisted events, optionally scoped to one session and sequence cursor.
 pub fn read(session_id: Option<&str>, after: Option<u64>, limit: Option<usize>) -> Vec<Value> {
-    let Some(file) = open() else { return Vec::new() };
-    let Ok(file) = file.lock() else { return Vec::new() };
-    let reader = BufReader::new(&*file);
+    let Some(db) = open() else { return Vec::new() };
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let sql = match (session_id.is_some(), after.is_some(), limit.is_some()) {
+        (true, true, true) => "SELECT data FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
+        (true, true, false) => "SELECT data FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq",
+        (true, false, true) => "SELECT data FROM events WHERE session_id = ?1 ORDER BY seq LIMIT ?2",
+        (true, false, false) => "SELECT data FROM events WHERE session_id = ?1 ORDER BY seq",
+        (false, true, true) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        (false, true, false) => "SELECT data FROM events WHERE seq > ?1 ORDER BY seq",
+        (false, false, true) => "SELECT data FROM events ORDER BY seq LIMIT ?1",
+        (false, false, false) => "SELECT data FROM events ORDER BY seq",
+    };
+    let mut statement = match db.prepare(sql) {
+        Ok(statement) => statement,
+        Err(_) => return Vec::new(),
+    };
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(session) = session_id {
+        values.push(rusqlite::types::Value::Text(session.to_string()));
+    }
+    if let Some(after) = after {
+        values.push(rusqlite::types::Value::Integer(after as i64));
+    }
+    if let Some(limit) = limit {
+        values.push(rusqlite::types::Value::Integer(limit as i64));
+    }
+    let Ok(mut rows) = statement.query(rusqlite::params_from_iter(values)) else { return Vec::new() };
     let mut out = Vec::new();
-    for line in reader.lines().map_while(Result::ok) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-        if let Some(after) = after {
-            if value.get("seq").and_then(Value::as_u64).unwrap_or(0) <= after {
-                continue;
+    while let Ok(Some(row)) = rows.next() {
+        if let Ok(text) = row.get::<_, String>(0) {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                out.push(value);
             }
-        }
-        if let Some(session_id) = session_id {
-            let matches = value
-                .pointer("/properties/sessionID")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id == session_id);
-            if !matches {
-                continue;
-            }
-        }
-        out.push(value);
-        if limit.is_some_and(|limit| out.len() >= limit) {
-            break;
         }
     }
     out
@@ -136,5 +193,20 @@ mod tests {
     fn ephemeral_events_are_not_written() {
         assert!(ephemeral("session.text.delta"));
         assert!(!ephemeral("session.step.ended"));
+    }
+
+    #[test]
+    fn durable_events_round_trip_by_session() {
+        let session = format!("ses_event_test_{}", crate::util::id("x"));
+        let mut event = json!({
+            "id": "evt_test",
+            "type": "session.updated",
+            "properties": { "sessionID": session },
+        });
+        append(&mut event);
+        let items = read(Some(&session), None, Some(10));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["durable"]["aggregateID"], session);
+        assert!(read(Some(&session), Some(items[0]["seq"].as_u64().unwrap()), None).is_empty());
     }
 }

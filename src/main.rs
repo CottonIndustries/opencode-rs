@@ -282,6 +282,10 @@ enum DebugCmd {
         #[arg(default_value = "")]
         input: String,
     },
+    /// Show durable session events
+    Events {
+        session: Option<String>,
+    },
 }
 
 fn cwd() -> PathBuf {
@@ -352,6 +356,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             DebugCmd::Plugins => cli::debug_plugins().await,
             DebugCmd::PluginTool { name, input } => cli::debug_plugin_tool(&name, &input).await,
             DebugCmd::PluginTui { name, input } => cli::debug_plugin_tui(&name, &input).await,
+            DebugCmd::Events { session } => cli::debug_events(session.as_deref()),
         },
     }
 }

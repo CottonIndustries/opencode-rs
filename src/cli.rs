@@ -470,6 +470,12 @@ pub async fn debug_plugin_tui(name: &str, input: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn debug_events(session: Option<&str>) -> Result<()> {
+    let events = crate::event_store::read(session, None, Some(100));
+    println!("{}", serde_json::to_string_pretty(&events)?);
+    Ok(())
+}
+
 pub async fn debug_config() -> Result<()> {
     let app = App::init(cwd()).await?;
     eprintln!("Files: {}", app.config_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", "));
