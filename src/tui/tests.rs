@@ -288,13 +288,16 @@ async fn mcp_auth_dialog_shows_url_and_closes() {
     ui.on_app_event(AppEvent::McpAuth {
         name: "context7".into(),
         url: "https://clerk.context7.com/oauth/authorize?client_id=test&state=abc".into(),
-        opened: false,
+        instructions: "Authorize context7 in your browser. This window will close automatically.".into(),
+        handle: None,
     });
     let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
     t.draw(|f| ui.draw(f)).unwrap();
     let screen = dump(&t);
-    assert!(screen.contains("MCP sign-in: context7"), "missing title in {screen:?}");
+    assert!(screen.contains("Authorize context7 in your browser"), "missing instructions in {screen:?}");
     assert!(screen.contains("clerk.context7.com"), "missing sign-in URL in {screen:?}");
+    assert!(screen.contains("Redirect URL"), "missing redirect URL field in {screen:?}");
+    assert!(screen.contains("Waiting for authorization"), "missing waiting text in {screen:?}");
     ui.on_app_event(AppEvent::McpAuthDone { name: "context7".into(), error: Some("access denied".into()) });
     assert!(ui.dialog.is_none(), "sign-in dialog stayed open after failure");
 }

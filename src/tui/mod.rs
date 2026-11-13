@@ -180,6 +180,8 @@ enum Act {
     Rename(String, String),
     RenameOpen(String, String),
     McpAuthOpen(String),
+    McpAuthCopy(String),
+    McpAuthSubmit(String),
     Sessions(bool),
     Delete(String),
     Favorite(String, usize),
@@ -1669,7 +1671,7 @@ impl Ui {
                     Some(crate::mcp::Status::Connected { .. }) => "Connected",
                     Some(crate::mcp::Status::Disabled) => "Disabled",
                     Some(crate::mcp::Status::Failed(_)) => "Error",
-                    Some(crate::mcp::Status::NeedsAuth(_)) => "Sign in",
+                    Some(crate::mcp::Status::NeedsAuth(_)) => "Sign in required",
                     None => "Connecting",
                 };
                 Opt { title: n.clone(), footer: status.into(), value: n, ..Default::default() }
@@ -1681,8 +1683,7 @@ impl Ui {
     }
 
     /// Start the OAuth flow for a remote MCP server. Discovery and registration run off the UI
-    /// thread; the browser opens as soon as the authorization URL exists, and the dialog keeps the
-    /// URL visible while the local callback waits.
+    /// thread; the dialog shows the authorization URL and the user opens it with enter.
     fn start_mcp_auth(&mut self, name: String) {
         let Some(config) = self.app.config().mcp.get(&name).cloned() else {
             self.toast(Variant::Error, None, format!("MCP server not configured: {name}"));
@@ -1690,8 +1691,8 @@ impl Ui {
         };
         let app = self.app.clone();
         self.dialog = Some(Dialog::Text {
-            title: format!("MCP sign-in: {name}"),
-            text: format!("Starting sign-in for {name}..."),
+            title: name.clone(),
+            text: "Starting authorization...".into(),
             scroll: 0,
             layout: Value::Null,
         });
@@ -1704,8 +1705,9 @@ impl Ui {
                 }
             };
             let url = sign_in.url.clone();
-            let opened = crate::mcp_oauth::open_browser(&url).is_ok();
-            app.emit(AppEvent::McpAuth { name: name.clone(), url, opened });
+            let handle = sign_in.handle();
+            let instructions = format!("Authorize {name} in your browser. This window will close automatically.");
+            app.emit(AppEvent::McpAuth { name: name.clone(), url, instructions, handle: Some(std::sync::Arc::new(handle)) });
             if let Err(error) = crate::mcp_oauth::finish(sign_in).await {
                 app.emit(AppEvent::McpAuthDone { name, error: Some(error.to_string()) });
                 return;
@@ -2108,6 +2110,11 @@ impl Ui {
         if let Some(Dialog::Terminal(term)) = &self.dialog {
             term.close();
         }
+        if let Some(Dialog::McpAuth(auth)) = &self.dialog {
+            if let Some(handle) = &auth.handle {
+                handle.cancel();
+            }
+        }
         self.dialog = None;
     }
 
@@ -2123,14 +2130,7 @@ impl Ui {
                         Act::None
                     }
                 }
-                Some(Dialog::Text { title, text, scroll, .. }) => match k.name.as_str() {
-                    "o" if title.starts_with("MCP sign-in: ") => text
-                        .lines()
-                        .find_map(|line| {
-                            let line = line.trim();
-                            (line.starts_with("http://") || line.starts_with("https://")).then(|| Act::McpAuthOpen(line.to_string()))
-                        })
-                        .unwrap_or(Act::None),
+                Some(Dialog::Text { scroll, .. }) => match k.name.as_str() {
                     "escape" | "return" => Act::Close,
                     "up" => {
                         *scroll = scroll.saturating_sub(1);
@@ -2159,6 +2159,22 @@ impl Ui {
                         Act::None
                     }
                 }
+                Some(Dialog::McpAuth(a)) => match k.name.as_str() {
+                    "escape" => Act::Close,
+                    "return" => {
+                        let text = a.editor.text.trim().to_string();
+                        if text.is_empty() {
+                            Act::McpAuthOpen(a.url.clone())
+                        } else {
+                            Act::McpAuthSubmit(text)
+                        }
+                    }
+                    "c" if a.editor.text.is_empty() => Act::McpAuthCopy(a.url.clone()),
+                    _ => {
+                        edit_key(&mut a.editor, k, ev, km, false);
+                        Act::None
+                    }
+                },
                 Some(Dialog::Rename(p)) => match k.name.as_str() {
                     "escape" => Act::Close,
                     "return" => Act::Rename(p.target.clone(), p.editor.text.trim().to_string()),
@@ -2232,8 +2248,26 @@ impl Ui {
             Act::Pick(kind, v) => self.dialog_select(kind, v),
             Act::McpAuthOpen(url) => match crate::mcp_oauth::open_browser(&url) {
                 Ok(()) => self.toast(Variant::Info, None, "Opened the sign-in page in your browser."),
-                Err(error) => self.toast(Variant::Error, None, format!("Could not open browser: {error}")),
+                Err(_) => self.toast(Variant::Error, None, "Could not open the browser. Copy the URL and continue manually."),
             },
+            Act::McpAuthCopy(url) => {
+                copy_to_clipboard(&url);
+                self.toast(Variant::Info, None, "Copied to clipboard");
+            }
+            Act::McpAuthSubmit(value) => {
+                let result = match self.dialog.as_mut() {
+                    Some(Dialog::McpAuth(auth)) => match &auth.handle {
+                        Some(handle) => handle.submit(&value),
+                        None => Err(anyhow::anyhow!("this sign-in attempt is no longer available")),
+                    },
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    if let Some(Dialog::McpAuth(auth)) = self.dialog.as_mut() {
+                        auth.error = Some(error.to_string());
+                    }
+                }
+            }
             Act::Rename(target, title) => {
                 self.dialog = None;
                 if let Some(provider) = target.strip_prefix("connect:") {
@@ -2888,6 +2922,10 @@ impl Ui {
                 let _ = term.write(&text);
                 return;
             }
+            Some(Dialog::McpAuth(a)) => {
+                a.editor.insert(text.lines().next().unwrap_or(""));
+                return;
+            }
             Some(_) => return,
             None => {}
         }
@@ -2931,31 +2969,31 @@ impl Ui {
             AppEvent::PluginPage { title, text, layout } => {
                 self.dialog = Some(Dialog::Text { title, text, layout, scroll: 0 });
             }
-            AppEvent::McpAuth { name, url, opened } => {
-                let lead = if opened {
-                    "A browser window was opened. Complete the sign-in there."
-                } else {
-                    "Open this URL in your browser to sign in:"
-                };
-                self.dialog = Some(Dialog::Text {
-                    title: format!("MCP sign-in: {name}"),
-                    text: format!("{lead}
-
-{url}
-
-Press o to open the link again. Waiting for the browser callback..."),
-                    scroll: 0,
-                    layout: Value::Null,
-                });
+            AppEvent::McpAuth { name, url, instructions, handle } => {
+                self.dialog = Some(Dialog::McpAuth(dialog::McpAuth {
+                    name,
+                    url,
+                    instructions,
+                    editor: Editor::default(),
+                    error: None,
+                    handle,
+                }));
             }
             AppEvent::McpAuthDone { name, error } => {
-                let title = format!("MCP sign-in: {name}");
-                if matches!(&self.dialog, Some(Dialog::Text { title: current, .. }) if current == &title) {
+                let was_open = matches!(&self.dialog, Some(Dialog::McpAuth(auth)) if auth.name == name)
+                    || matches!(&self.dialog, Some(Dialog::Text { title, .. }) if title == &name);
+                if was_open {
                     self.dialog = None;
                 }
                 match error {
+                    Some(error) if error.contains("cancelled") => {}
                     Some(error) => self.toast(Variant::Error, None, format!("MCP {name}: {error}")),
-                    None => self.toast(Variant::Success, None, format!("MCP server {name} connected.")),
+                    None => {
+                        self.toast(Variant::Success, None, format!("MCP server {name} connected."));
+                        if was_open {
+                            self.open_mcp();
+                        }
+                    }
                 }
             }
             AppEvent::Toast { title, message, variant } => {
@@ -3066,6 +3104,11 @@ Press o to open the link again. Waiting for the browser callback..."),
                         dialog::draw_terminal(buf, area, &t, title, "esc", lines, term.cursor());
                     self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
                     cursor = position;
+                }
+                Dialog::McpAuth(auth) => {
+                    let (panel, position) = dialog::draw_mcp_auth(buf, area, &t, auth);
+                    self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
+                    cursor = Some(position);
                 }
                 Dialog::Text { title, text, scroll, layout } => {
                     let mut lines = plugin_layout_lines(layout, 60, &t, 0);

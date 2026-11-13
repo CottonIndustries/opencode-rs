@@ -8,6 +8,7 @@ use super::theme::{Theme, Tokens};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
+use std::sync::Arc;
 
 pub const INSET: u16 = 3;
 pub const LIST_INSET: u16 = 4;
@@ -179,12 +180,23 @@ pub struct Prompt {
     pub target: String,
 }
 
+/// Remote MCP OAuth sign-in dialog: waiting text, authorization link, and a redirect URL field.
+pub struct McpAuth {
+    pub name: String,
+    pub url: String,
+    pub instructions: String,
+    pub editor: Editor,
+    pub error: Option<String>,
+    pub handle: Option<Arc<crate::mcp_oauth::SignInHandle>>,
+}
+
 pub enum Dialog {
     Select(Select),
     Help,
     Status,
     Rename(Prompt),
     Terminal(super::terminal::TerminalDialog),
+    McpAuth(McpAuth),
     Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
 }
 
@@ -428,7 +440,72 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, theme: &Theme, title: &str, close
     panel
 }
 
-/// `DialogPrompt`: title, a single-line field and an enter hint.
+/// MCP OAuth dialog: instructions, link and a redirect URL field, matching the upstream integration
+/// sign-in view.
+pub fn draw_mcp_auth(buf: &mut Buffer, area: Rect, theme: &Theme, p: &McpAuth) -> (Rect, (u16, u16)) {
+    let t = &theme.dialog;
+    let w = width(Size::Medium).saturating_sub(INSET * 2);
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.extend(draw::paragraph(&[span(p.instructions.clone(), t.muted, t.bg)], w as usize, draw::Wrap::Word, t.bg));
+    body.push(line(vec![], t.bg));
+    body.extend(draw::paragraph(
+        &[Span::styled(p.url.clone(), draw::st(theme.markdown.link, t.bg))],
+        w as usize,
+        draw::Wrap::Char,
+        t.bg,
+    ));
+    body.push(line(vec![], t.bg));
+    body.extend(draw::paragraph(
+        &[span(
+            "Waiting for authorization... Press enter to open the link. If the browser can't reach this machine, paste the URL it was redirected to.".to_string(),
+            t.muted,
+            t.bg,
+        )],
+        w as usize,
+        draw::Wrap::Word,
+        t.bg,
+    ));
+    if let Some(error) = &p.error {
+        body.push(line(vec![], t.bg));
+        body.extend(draw::paragraph(&[span(error.clone(), t.error.base, t.bg)], w as usize, draw::Wrap::Word, t.bg));
+    }
+    let input_y = 3 + body.len() as u16 + 1;
+    let panel = panel_rect(area, Size::Medium, input_y + 3);
+    draw::dim(buf, area, 150);
+    draw::fill(buf, panel, t.bg);
+    let x = panel.x + INSET;
+    draw::draw_line(buf, x, panel.y + 1, w, &header(t, &p.name, "", "esc", w as usize));
+    for (i, l) in body.iter().enumerate() {
+        draw::draw_line(buf, x, panel.y + 3 + i as u16, w, l);
+    }
+    let field = if p.editor.text.is_empty() {
+        line(vec![span("Redirect URL", t.muted, t.bg)], t.bg)
+    } else {
+        line(vec![span(p.editor.text.clone(), t.text_formfield.focused, t.bg)], t.bg)
+    };
+    draw::draw_line(buf, x, panel.y + input_y, w, &field);
+    let hint = if p.editor.text.is_empty() {
+        line(vec![
+            span("enter ", t.text, t.bg),
+            span("open  ", t.muted, t.bg),
+            span("c ", t.text, t.bg),
+            span("copy link  ", t.muted, t.bg),
+            span("esc ", t.text, t.bg),
+            span("cancel", t.muted, t.bg),
+        ], t.bg)
+    } else {
+        line(vec![
+            span("enter ", t.text, t.bg),
+            span("submit  ", t.muted, t.bg),
+            span("esc ", t.text, t.bg),
+            span("cancel", t.muted, t.bg),
+        ], t.bg)
+    };
+    draw::draw_line(buf, x, panel.y + input_y + 2, w, &hint);
+    let cursor_x = draw::width(&p.editor.text[..p.editor.cursor]).min(w as usize) as u16;
+    (panel, (x + cursor_x, panel.y + input_y))
+}
+
 pub fn draw_prompt(buf: &mut Buffer, area: Rect, theme: &Theme, p: &Prompt) -> (u16, u16) {
     let t = &theme.dialog;
     let panel = panel_rect(area, Size::Medium, 7);

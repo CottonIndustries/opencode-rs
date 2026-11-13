@@ -34,7 +34,7 @@ if yours live elsewhere.
 | `opencode repository cache` | Clone or refresh a remote repository cache |
 | `opencode migrate` | Index legacy session history |
 | `opencode mcp add <name> [--url U] [--header K=V] [--env K=V] [--] <cmd...>` | Add a remote or local MCP server |
-| `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth; the TUI /mcps dialog starts the same flow and opens the sign-in page in your browser |
+| `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth; the TUI /mcps dialog starts the same flow, shows the sign-in link, and opens it with enter |
 | `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins; `check` compares pinned npm targets with the registry and `update` rewrites them |
 | `opencode pair [--url U]` | Create a single-use pairing link for a running server (`/auth/connect/:code`) |
 | `opencode skills` | List available built-in, project and global skills |

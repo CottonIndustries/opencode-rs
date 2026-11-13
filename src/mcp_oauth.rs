@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
 use crate::config::McpConfig;
 
@@ -49,6 +50,52 @@ pub struct SignIn {
     discovery: Discovery,
     resource: String,
     scope: String,
+    paste_tx: mpsc::UnboundedSender<Result<String, String>>,
+    paste_rx: mpsc::UnboundedReceiver<Result<String, String>>,
+}
+
+/// Lets a UI submit the redirect URL when the browser cannot reach the local callback listener.
+#[derive(Clone)]
+pub struct SignInHandle {
+    state: String,
+    paste_tx: mpsc::UnboundedSender<Result<String, String>>,
+}
+
+impl std::fmt::Debug for SignInHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignInHandle").field("state", &self.state).finish()
+    }
+}
+
+impl SignIn {
+    pub fn handle(&self) -> SignInHandle {
+        SignInHandle { state: self.state.clone(), paste_tx: self.paste_tx.clone() }
+    }
+}
+
+impl SignInHandle {
+    pub fn cancel(&self) {
+        let _ = self.paste_tx.send(Err("OAuth authorization cancelled".into()));
+    }
+
+    /// Validate a pasted redirect URL and hand its code to the waiting finish() call.
+    pub fn submit(&self, pasted: &str) -> Result<()> {
+        let text = pasted.trim();
+        let url = url::Url::parse(text).map_err(|_| anyhow!("Paste the full URL from the browser's address bar"))?;
+        let parameters: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+        if parameters.get("state").map(String::as_str) != Some(self.state.as_str()) {
+            return Err(anyhow!("This URL belongs to a different sign-in"));
+        }
+        if let Some(error) = parameters.get("error_description").or_else(|| parameters.get("error")) {
+            let _ = self.paste_tx.send(Err(error.clone()));
+            return Ok(());
+        }
+        let Some(code) = parameters.get("code") else {
+            return Err(anyhow!("The URL does not contain an authorization code"));
+        };
+        self.paste_tx.send(Ok(code.clone())).map_err(|_| anyhow!("Sign-in attempt ended"))?;
+        Ok(())
+    }
 }
 
 fn credential_key(server: &str) -> String {
@@ -358,6 +405,7 @@ pub async fn begin(server: &str, config: &McpConfig) -> Result<SignIn> {
     let verifier = base64_url(&random_bytes(32));
     let challenge = base64_url(&Sha256::digest(verifier.as_bytes()));
     let state = base64_url(&random_bytes(16));
+    let (paste_tx, paste_rx) = mpsc::unbounded_channel();
     let scope = oauth_string(&oauth, "scope", "scope")
         .or_else(|| (!discovery.scopes.is_empty()).then(|| discovery.scopes.join(" ")))
         .unwrap_or_default();
@@ -388,6 +436,8 @@ pub async fn begin(server: &str, config: &McpConfig) -> Result<SignIn> {
         discovery,
         resource,
         scope,
+        paste_tx,
+        paste_rx,
     })
 }
 
@@ -404,9 +454,20 @@ pub async fn finish(sign_in: SignIn) -> Result<()> {
         discovery,
         resource,
         scope,
+        mut paste_rx,
         ..
     } = sign_in;
-    let code = tokio::time::timeout(CALLBACK_TIMEOUT, wait_for_code(listener, &state)).await;
+    let code = tokio::time::timeout(CALLBACK_TIMEOUT, async {
+        tokio::select! {
+            result = wait_for_code(listener, &state) => result,
+            pasted = paste_rx.recv() => match pasted {
+                Some(Ok(code)) => Ok(code),
+                Some(Err(error)) => Err(anyhow!(error)),
+                None => Err(anyhow!("OAuth authorization cancelled")),
+            },
+        }
+    })
+    .await;
     let code = match code {
         Ok(Ok(code)) => code,
         Ok(Err(error)) => return Err(error),
@@ -530,6 +591,16 @@ mod tests {
         assert!(!challenge.contains('='));
         assert!(!challenge.contains('+'));
         assert!(!challenge.contains('/'));
+    }
+
+    #[tokio::test]
+    async fn pasted_redirect_is_validated_and_forwarded() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = SignInHandle { state: "abc".into(), paste_tx: tx };
+        assert!(handle.submit("http://127.0.0.1/callback?state=abc&code=xyz").is_ok());
+        assert_eq!(rx.recv().await, Some(Ok("xyz".to_string())));
+        assert!(handle.submit("http://127.0.0.1/callback?state=other&code=xyz").is_err());
+        assert!(handle.submit("http://127.0.0.1/callback?state=abc").is_err());
     }
 
     #[test]

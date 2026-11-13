@@ -37,7 +37,12 @@ pub enum AppEvent {
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
     PluginPage { title: String, text: String, layout: serde_json::Value },
-    McpAuth { name: String, url: String, opened: bool },
+    McpAuth {
+        name: String,
+        url: String,
+        instructions: String,
+        handle: Option<Arc<crate::mcp_oauth::SignInHandle>>,
+    },
     McpAuthDone { name: String, error: Option<String> },
 }
 
