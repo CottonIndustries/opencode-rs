@@ -1271,6 +1271,9 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
             Ok(json!({ "data": result }))
         }
+        ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": Value::Null })),
+        ("GET", ["api", "experimental", "voice", "models"]) => Ok(json!({ "data": { "models": [] } })),
+        ("POST", ["api", "experimental", "voice", "session"]) => Err(anyhow!("voice sessions are not supported")),
         ("GET", ["api", "project"]) => Ok(json!({
             "data": [{
                 "id": app.project,
