@@ -148,6 +148,28 @@ async fn draws_session_and_dialogs() {
     assert!(screen.contains("/models"));
 }
 
+#[tokio::test]
+async fn skills_command_opens_dialog_and_inserts_mention() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    assert!(ui.slash_commands().iter().any(|(display, _, _)| display == "/skills"));
+    ui.exec("prompt.skills", "");
+    let Some(Dialog::Select(select)) = ui.dialog.as_ref() else {
+        panic!("skills dialog did not open");
+    };
+    assert_eq!(select.kind, Kind::Skills);
+    assert!(select.options.iter().any(|option| option.value == "opencode"));
+    ui.dialog_select(Kind::Skills, "opencode".into());
+    assert_eq!(ui.editor.text, "@opencode ");
+    ui.exec("prompt.skills", "");
+    ui.dialog_select(Kind::Skills, "opencode".into());
+    assert_eq!(ui.editor.text, "@opencode ");
+    let parts = crate::run::expand_mentions(&ui.app, "@opencode explain plugins");
+    assert!(parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains("<skill_content"))));
+    let skills = crate::run::skill_mentions(&ui.app, "@opencode explain plugins").unwrap();
+    assert_eq!(skills[0]["id"], "opencode");
+}
+
 #[test]
 fn plugin_layout_flattens_rows_and_columns() {
     let layout = serde_json::json!({

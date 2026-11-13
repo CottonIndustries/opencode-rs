@@ -37,6 +37,7 @@ pub enum Kind {
     Settings,
     Mcp,
     Fork,
+    Skills,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -24,6 +24,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("command.palette.show", "ctrl+p"),
     ("help.show", "none"),
     ("prompt.editor", "<leader>e"),
+    ("prompt.skills", "none"),
     ("theme.switch", "none"),
     ("session.sidebar.toggle", "<leader>b"),
     ("opencode.status", "<leader>s"),

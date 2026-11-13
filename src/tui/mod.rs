@@ -841,6 +841,7 @@ impl Ui {
         v.push(variant);
         if in_session {
             v.extend([
+                c("prompt.skills", "Skills", "Prompt", &["skills"], false),
                 c("session.rename", "Rename session", "Session", &["rename"], false),
                 c("session.timeline", "Jump to message", "Session", &["timeline"], false),
                 c("session.fork", "Fork session", "Session", &["fork"], false),
@@ -971,6 +972,7 @@ impl Ui {
                     self.rename(&id, args.trim());
                 }
             }
+            "prompt.skills" => self.open_skills(),
             "session.timeline" => self.open_timeline(Kind::Timeline),
             "session.fork" => self.open_timeline(Kind::Fork),
             "session.compact" => self.compact(),
@@ -1315,6 +1317,7 @@ impl Ui {
                         let text = crate::command::render_mcp(&app, &cmd, &args).await;
                         let mut msg = Message::user_text(text.clone());
                         msg.parts.extend(crate::run::expand_mentions(&app, &text));
+                        msg.skills = crate::run::skill_mentions(&app, &text);
                         let opts = PromptOptions {
                             agent: cmd.agent.clone().or(Some(agent)),
                             model: cmd.model.clone().or(model),
@@ -1349,6 +1352,7 @@ impl Ui {
         }
         let mut msg = Message::user_text(text.clone());
         msg.parts.extend(crate::run::expand_mentions(&self.app, &text));
+        msg.skills = crate::run::skill_mentions(&self.app, &text);
         let opts = PromptOptions {
             agent: cmd.and_then(|c| c.agent.clone()).or_else(|| Some(self.agent.clone())),
             model: cmd.and_then(|c| c.model.clone()).or_else(|| self.model.clone()),
@@ -1546,6 +1550,30 @@ impl Ui {
         self.dialog = Some(Dialog::Select(Select::new(Kind::Agents, "Select agent", opts)));
     }
 
+    fn open_skills(&mut self) {
+        let mut skills = self.app.skills();
+        skills.sort_by(|a, b| a.id.cmp(&b.id));
+        if skills.is_empty() {
+            self.toast(Variant::Warning, None, "No skills available");
+            return;
+        }
+        let width = skills.iter().map(|skill| skill.name.chars().count()).max().unwrap_or(0);
+        let opts: Vec<Opt> = skills
+            .into_iter()
+            .map(|skill| Opt {
+                title: format!("{:width$}", skill.name, width = width),
+                description: skill.description,
+                current: self.editor.text.split_whitespace().any(|word| word == format!("@{}", skill.id)),
+                value: skill.id,
+                ..Default::default()
+            })
+            .collect();
+        let mut s = Select::new(Kind::Skills, "Skills", opts);
+        s.placeholder = "Search skills".into();
+        s.size = Size::Large;
+        self.dialog = Some(Dialog::Select(s));
+    }
+
     fn open_variants(&mut self) {
         let Some(m) = self.current_model() else { return };
         let vs = m.variants();
@@ -1718,6 +1746,13 @@ impl Ui {
                 }
                 self.cache = None;
                 self.reopen_settings(&value);
+            }
+            Kind::Skills => {
+                self.dialog = None;
+                let mention = format!("@{value} ");
+                if !self.editor.text.split_whitespace().any(|word| word == format!("@{value}")) {
+                    self.editor.insert(&mention);
+                }
             }
             Kind::Mcp => {}
         }
@@ -1989,6 +2024,10 @@ impl Ui {
         }
         if in_session && self.keys.matches("session.rename", &k, false) {
             self.exec("session.rename", "");
+            return;
+        }
+        if in_session && self.keys.matches("prompt.skills", &k, false) {
+            self.exec("prompt.skills", "");
             return;
         }
         if k.name == "escape" {

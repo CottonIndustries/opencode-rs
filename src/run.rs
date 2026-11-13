@@ -4,7 +4,7 @@ use crate::app::{App, AppEvent, AskMode, PromptOptions};
 use crate::session::{FilePart, Message, Part};
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -48,16 +48,45 @@ pub fn attach(path: &Path, display: &str) -> Result<Vec<Part>> {
     Ok(vec![Part::Text { text: format!("\n\nAttached file: {}\n\n{}", path.display(), text), synthetic: true }])
 }
 
-/// Expand `@path` mentions into attachments.
-pub fn expand_mentions(app: &App, text: &str) -> Vec<Part> {
+fn mention_ids(text: &str) -> Vec<String> {
     let re = regex::Regex::new(r"(?:^|\s)@([^\s]+)").unwrap();
+    re.captures_iter(text)
+        .map(|capture| capture[1].trim_end_matches([',', '.', ')', ';', ':']).to_string())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// Skill attachments selected with `@id` for the V2 message shape.
+pub fn skill_mentions(app: &App, text: &str) -> Option<Value> {
+    let skills = app.skills();
+    let mut out: Vec<Value> = Vec::new();
+    for id in mention_ids(text) {
+        let Some(skill) = skills.iter().find(|skill| skill.id == id) else { continue };
+        if out.iter().any(|item| item.get("id").and_then(Value::as_str) == Some(skill.id.as_str())) {
+            continue;
+        }
+        out.push(json!({ "id": skill.id, "name": skill.name }));
+    }
+    (!out.is_empty()).then(|| Value::Array(out))
+}
+
+/// Expand `@path` and `@skill` mentions into message parts.
+pub fn expand_mentions(app: &App, text: &str) -> Vec<Part> {
+    let skills = app.skills();
+    let mut selected = std::collections::HashSet::new();
     let mut parts = Vec::new();
-    for c in re.captures_iter(text) {
-        let raw = c[1].trim_end_matches([',', '.', ')', ';', ':']);
-        let p = crate::util::resolve(&app.directory, raw);
+    for raw in mention_ids(text) {
+        let p = crate::util::resolve(&app.directory, &raw);
         if p.exists() {
-            if let Ok(mut a) = attach(&p, raw) {
+            if let Ok(mut a) = attach(&p, &raw) {
                 parts.append(&mut a);
+            }
+        } else if let Some(skill) = skills.iter().find(|skill| skill.id == raw) {
+            if selected.insert(skill.id.clone()) {
+                parts.push(Part::Text {
+                    text: crate::tools::skill::render(skill),
+                    synthetic: true,
+                });
             }
         }
     }
@@ -216,6 +245,7 @@ pub async fn run(app: Arc<App>, args: RunArgs) -> Result<()> {
 
     let mut msg = Message::user_text(text.clone());
     msg.parts.extend(expand_mentions(&app, &text));
+    msg.skills = skill_mentions(&app, &text);
     for f in &args.files {
         let p = crate::util::resolve(&app.directory, f);
         msg.parts.extend(attach(&p, f)?);
