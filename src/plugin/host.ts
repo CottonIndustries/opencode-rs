@@ -1818,7 +1818,17 @@ function makeTuiContext(plugin: PluginRecord): Json {
       },
       current: () => ({ type: "home" }),
     },
-    panel: { open: () => false, close: () => {}, current: () => undefined },
+    panel: {
+      open: (name: string, options: Json) => {
+        void request("tui.panel", {
+          name,
+          presentation: options?.presentation ?? "panel",
+        }).catch((error: unknown) => log("error", `tui panel failed: ${String(error)}`))
+        return true
+      },
+      close: () => {},
+      current: () => undefined,
+    },
     tabs: {
       enabled: () => false,
       list: () => [],

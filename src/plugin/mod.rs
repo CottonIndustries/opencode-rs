@@ -2008,6 +2008,33 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             app.emit(crate::app::AppEvent::PluginPage { title, text });
             Ok(Value::Null)
         }
+        "tui.panel" => {
+            let name = first.get("name").and_then(Value::as_str).unwrap_or("plugin").to_string();
+            let session = first
+                .get("sessionID")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let slots = app
+                .plugins
+                .tui_slots(json!({
+                    "sessionID": session,
+                    "name": name,
+                    "presentation": first.get("presentation").and_then(Value::as_str).unwrap_or("panel"),
+                    "focused": true,
+                }))
+                .await;
+            let text = slots
+                .iter()
+                .filter(|slot| slot.get("placement").and_then(Value::as_str) == Some("session.panel"))
+                .filter_map(|slot| slot.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !text.trim().is_empty() {
+                app.emit(crate::app::AppEvent::PluginPage { title: name, text });
+            }
+            Ok(Value::Null)
+        }
         "tui.dialog" => {
             let kind = first.get("type").and_then(Value::as_str).unwrap_or("alert");
             let title = first
