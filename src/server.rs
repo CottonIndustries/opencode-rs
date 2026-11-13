@@ -289,7 +289,9 @@ async fn handle(
     if request.method == "GET" {
         if let Some(hash) = parsed.path().strip_prefix("/api/experimental/media/") {
             if let Some((data, mime)) = crate::media::get(hash) {
-                return write_media(&mut stream, &request, hash, &mime, &data).await;
+                if crate::media::referenced(hash) {
+                    return write_media(&mut stream, &request, hash, &mime, &data).await;
+                }
             }
             return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Media not found" } }), None).await;
         }
@@ -826,11 +828,17 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("GET", ["api", "session", id, "message"]) => {
             let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
             let handle = app.session(id)?;
-            let mut messages = handle
-                .with(|session| crate::plugin::session_messages_json(&session.messages))
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let stored = crate::db::messages(id);
+            let projected = if stored.is_empty() {
+                handle.with(|session| crate::plugin::session_messages_json(&session.messages))
+            } else {
+                let parsed: Vec<crate::session::Message> = stored
+                    .iter()
+                    .filter_map(|text| serde_json::from_str(text).ok())
+                    .collect();
+                crate::plugin::session_messages_json(&parsed)
+            };
+            let mut messages = projected.as_array().cloned().unwrap_or_default();
             if let Some(kind) = query_value(&parsed, "type") {
                 messages.retain(|message| message.get("type").and_then(Value::as_str) == Some(kind.as_str()));
             }

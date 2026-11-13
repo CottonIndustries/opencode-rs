@@ -34,7 +34,17 @@ pub fn connection() -> Option<&'static Mutex<Connection>> {
                 updated INTEGER NOT NULL,
                 data TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project, updated DESC);",
+            CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project, updated DESC);
+            CREATE TABLE IF NOT EXISTS messages (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                created INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_id)
+            );
+            CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, ordinal);",
         )
         .ok()?;
     let _ = DB.set(Mutex::new(connection));
@@ -49,6 +59,38 @@ pub fn save(id: &str, project: &str, updated: i64, data: &str) {
          ON CONFLICT(id) DO UPDATE SET project = excluded.project, updated = excluded.updated, data = excluded.data",
         params![id, project, updated, data],
     );
+}
+
+pub fn save_messages(session_id: &str, messages: &[serde_json::Value]) {
+    let Some(db) = connection() else { return };
+    let Ok(mut db) = db.lock() else { return };
+    let Ok(transaction) = db.transaction() else { return };
+    if transaction.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id]).is_err() {
+        return;
+    }
+    for (ordinal, message) in messages.iter().enumerate() {
+        let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else { continue };
+        let role = message.get("role").and_then(serde_json::Value::as_str).unwrap_or("user");
+        let created = message.get("time").and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let data = message.to_string();
+        let _ = transaction.execute(
+            "INSERT INTO messages(session_id, message_id, ordinal, role, created, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session_id, id, ordinal as i64, role, created, data],
+        );
+    }
+    let _ = transaction.commit();
+}
+
+pub fn messages(session_id: &str) -> Vec<String> {
+    let Some(db) = connection() else { return Vec::new() };
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(mut statement) = db.prepare("SELECT data FROM messages WHERE session_id = ?1 ORDER BY ordinal") else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map(params![session_id], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.flatten().collect()
 }
 
 pub fn load(id: &str) -> Option<String> {
@@ -72,7 +114,19 @@ pub fn list(project: &str) -> Vec<String> {
 pub fn delete(id: &str) -> bool {
     let Some(db) = connection() else { return false };
     let Ok(db) = db.lock() else { return false };
+    let _ = db.execute("DELETE FROM messages WHERE session_id = ?1", params![id]);
     db.execute("DELETE FROM sessions WHERE id = ?1", params![id]).is_ok_and(|rows| rows > 0)
+}
+
+pub fn contains(text: &str) -> bool {
+    let Some(db) = connection() else { return false };
+    let Ok(db) = db.lock() else { return false };
+    db.query_row(
+        "SELECT 1 FROM sessions WHERE data LIKE '%' || ?1 || '%' LIMIT 1",
+        params![text],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 pub fn count(project: &str) -> i64 {
@@ -80,4 +134,26 @@ pub fn count(project: &str) -> i64 {
     let Ok(db) = db.lock() else { return 0 };
     db.query_row("SELECT COUNT(*) FROM sessions WHERE project = ?1", params![project], |row| row.get(0))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn messages_round_trip() {
+        let session = crate::util::id("ses_test");
+        let items = vec![
+            json!({ "id": "msg_one", "role": "user", "time": 1, "parts": [] }),
+            json!({ "id": "msg_two", "role": "assistant", "time": 2, "parts": [] }),
+        ];
+        save_messages(&session, &items);
+        let stored = messages(&session);
+        assert_eq!(stored.len(), 2);
+        assert!(stored[0].contains("msg_one"));
+        assert!(stored[1].contains("msg_two"));
+        delete(&session);
+        assert!(messages(&session).is_empty());
+    }
 }

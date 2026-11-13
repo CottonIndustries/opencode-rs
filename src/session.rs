@@ -435,6 +435,17 @@ fn file(project: &str, id: &str) -> PathBuf {
     dir(project).join(format!("{id}.json"))
 }
 
+fn index(s: &Session, text: &str) -> Result<()> {
+    crate::db::save(&s.id, &s.project, s.time_updated, text);
+    let messages = s
+        .messages
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    crate::db::save_messages(&s.id, &messages);
+    Ok(())
+}
+
 pub fn save(s: &Session) -> Result<()> {
     let d = dir(&s.project);
     std::fs::create_dir_all(&d)?;
@@ -442,7 +453,7 @@ pub fn save(s: &Session) -> Result<()> {
     let tmp = d.join(format!("{}.json.tmp", s.id));
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, file(&s.project, &s.id))?;
-    crate::db::save(&s.id, &s.project, s.time_updated, &String::from_utf8_lossy(&bytes));
+    index(s, &String::from_utf8_lossy(&bytes))?;
     Ok(())
 }
 
@@ -455,7 +466,8 @@ pub fn load(project: &str, id: &str) -> Result<Session> {
     let p = file(project, id);
     if p.is_file() {
         let session: Session = serde_json::from_slice(&std::fs::read(p)?)?;
-        crate::db::save(&session.id, &session.project, session.time_updated, &serde_json::to_string(&session)?);
+        let text = serde_json::to_string(&session)?;
+        index(&session, &text)?;
         return Ok(session);
     }
     // search all projects
@@ -465,7 +477,8 @@ pub fn load(project: &str, id: &str) -> Result<Session> {
             let p = e.path().join(format!("{id}.json"));
             if p.is_file() {
                 let session: Session = serde_json::from_slice(&std::fs::read(p)?)?;
-                crate::db::save(&session.id, &session.project, session.time_updated, &serde_json::to_string(&session)?);
+                let text = serde_json::to_string(&session)?;
+                index(&session, &text)?;
                 return Ok(session);
             }
         }
@@ -538,7 +551,7 @@ pub fn list(project: &str) -> Vec<Summary> {
                 }
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     if let Ok(session) = serde_json::from_str::<Session>(&text) {
-                        crate::db::save(&session.id, &session.project, session.time_updated, &text);
+                        let _ = index(&session, &text);
                     }
                 }
             }
