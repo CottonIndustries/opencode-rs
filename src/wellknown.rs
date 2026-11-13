@@ -130,6 +130,34 @@ pub fn remove(origin: &str) {
     let _ = std::fs::remove_file(directory().join(format!("{}.json", key(&origin))));
 }
 
+fn convert(config: Value) -> Value {
+    let Some(object) = config.as_object() else { return config };
+    let Some(providers) = object.get("providers").and_then(Value::as_object) else {
+        return config;
+    };
+    let mut provider = serde_json::Map::new();
+    for (id, item) in providers {
+        let mut value = serde_json::Map::new();
+        if let Some(name) = item.get("name") {
+            value.insert("name".into(), name.clone());
+        }
+        if let Some(package) = item.get("package").or_else(|| item.get("npm")) {
+            value.insert("npm".into(), package.clone());
+        }
+        if let Some(models) = item.get("models") {
+            value.insert("models".into(), models.clone());
+        }
+        if let Some(settings) = item.get("settings") {
+            value.insert("options".into(), settings.clone());
+        }
+        provider.insert(id.clone(), Value::Object(value));
+    }
+    let mut out = object.clone();
+    out.remove("providers");
+    out.insert("provider".into(), Value::Object(provider));
+    Value::Object(out)
+}
+
 pub fn configs() -> Vec<Value> {
     let mut out = Vec::new();
     for origin in sources() {
@@ -138,7 +166,7 @@ pub fn configs() -> Vec<Value> {
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
         if let Some(configs) = value.get("configs").and_then(Value::as_array) {
-            out.extend(configs.iter().filter(|config| config.is_object()).cloned());
+            out.extend(configs.iter().filter(|config| config.is_object()).cloned().map(convert));
         }
     }
     out
