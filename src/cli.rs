@@ -418,6 +418,17 @@ pub async fn debug_plugins() -> Result<()> {
                 .join(", ")
         );
     }
+    let pages = app.plugins.tui_pages();
+    if !pages.is_empty() {
+        println!(
+            "TUI pages: {}",
+            pages
+                .iter()
+                .filter_map(|page| page.get("name").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let slots = app
         .plugins
         .tui_slots(serde_json::json!({ "sessionID": "debug", "mode": "normal", "showDetails": true }))

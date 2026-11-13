@@ -180,6 +180,7 @@ pub enum Dialog {
     Help,
     Status,
     Rename(Prompt),
+    Text { title: String, text: String, scroll: usize },
 }
 
 /// Geometry shared by drawing and mouse hit testing.

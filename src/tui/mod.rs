@@ -724,6 +724,18 @@ impl Ui {
                 palette: true,
             });
         }
+        for page in self.app.plugins.tui_pages() {
+            let Some(id) = page.get("id").and_then(Value::as_str) else { continue };
+            let name = page.get("name").and_then(Value::as_str).unwrap_or(id);
+            v.push(Command {
+                id: format!("tui.page:{id}"),
+                title: name.to_string(),
+                category: "Plugin".into(),
+                slash: Vec::new(),
+                suggested: false,
+                palette: true,
+            });
+        }
         v
     }
 
@@ -833,6 +845,20 @@ impl Ui {
                 self.toast(Variant::Success, None, "Session transcript copied to clipboard!");
             }
             "session.export" => self.export(),
+            id if id.starts_with("tui.page:") => {
+                let page = id["tui.page:".len()..].to_string();
+                let app = self.app.clone();
+                tokio::spawn(async move {
+                    match app.plugins.execute_tui_page(&page, Value::Null).await {
+                        Ok(value) => {
+                            let title = value.get("title").and_then(Value::as_str).unwrap_or(&page).to_string();
+                            let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                            app.emit(AppEvent::PluginPage { title, text });
+                        }
+                        Err(error) => app.emit(AppEvent::Notice { message: format!("Plugin page failed: {error}") }),
+                    }
+                });
+            }
             id if id.starts_with("tui:") => {
                 let name = id["tui:".len()..].to_string();
                 let input = args.trim().to_string();
@@ -1564,6 +1590,27 @@ impl Ui {
                         Act::None
                     }
                 }
+                Some(Dialog::Text { scroll, .. }) => match k.name.as_str() {
+                    "escape" | "return" => Act::Close,
+                    "up" => {
+                        *scroll = scroll.saturating_sub(1);
+                        Act::None
+                    }
+                    "down" => {
+                        *scroll += 1;
+                        Act::None
+                    }
+                    "pageup" => {
+                        *scroll = scroll.saturating_sub(12);
+                        Act::None
+                    }
+                    "pagedown" => {
+                        *scroll += 12;
+                        Act::None
+                    }
+                    _ if k.ctrl && k.name == "c" => Act::Close,
+                    _ => Act::None,
+                },
                 Some(Dialog::Rename(p)) => match k.name.as_str() {
                     "escape" => Act::Close,
                     "return" => Act::Rename(p.target.clone(), p.editor.text.trim().to_string()),
@@ -2266,6 +2313,9 @@ impl Ui {
             AppEvent::Error { session, message } if session == sid => self.toast(Variant::Error, None, message),
             AppEvent::Busy { session, busy: false } if session == sid => self.interrupt = None,
             AppEvent::Notice { message } if !message.is_empty() && !message.starts_with("Compacting") => self.info(message),
+            AppEvent::PluginPage { title, text } => {
+                self.dialog = Some(Dialog::Text { title, text, scroll: 0 });
+            }
             AppEvent::Toast { title, message, variant } => {
                 let variant = match variant.as_str() {
                     "success" => Variant::Success,
@@ -2358,6 +2408,25 @@ impl Ui {
                         }
                     }
                     let panel = dialog::draw_text(buf, area, &t, "Status", "esc", lines, false);
+                    self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
+                    cursor = None;
+                }
+                Dialog::Text { title, text, scroll } => {
+                    let mut lines = Vec::new();
+                    for paragraph in text.split('\n') {
+                        if paragraph.is_empty() {
+                            lines.push(line(vec![], d_t.bg));
+                        } else {
+                            lines.extend(draw::paragraph(
+                                &[span(paragraph.to_string(), d_t.text, d_t.bg)],
+                                60,
+                                draw::Wrap::Word,
+                                d_t.bg,
+                            ));
+                        }
+                    }
+                    let visible: Vec<Line<'static>> = lines.into_iter().skip(*scroll).collect();
+                    let panel = dialog::draw_text(buf, area, &t, title, "esc", visible, false);
                     self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
                     cursor = None;
                 }

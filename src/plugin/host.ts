@@ -100,6 +100,12 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       return await executeTuiCommand(params)
     case "tui.slots":
       return await renderTuiSlots(params.input ?? {})
+    case "tui.page": {
+      const page = tuiPages.get(String(params.id))
+      if (!page) throw new Error(`TUI page not found: ${String(params.id)}`)
+      const rendered = await settle(page.render({ data: params.data }))
+      return { title: page.name, text: jsxText(rendered) }
+    }
     case "integration.list":
       return projectIntegrations()
     case "integration.get": {
@@ -309,6 +315,7 @@ const tuiPlugins: PluginRecord[] = []
 const tuiCommands = new Map<string, Json>()
 const tuiAliases = new Map<string, string>()
 const tuiSlots: Array<{ placement: string; render: Function; plugin: string }> = []
+const tuiPages = new Map<string, { name: string; render: Function; plugin: string }>()
 const rpcs = new Map<string, { plugin: PluginRecord; definition: Json; handlers: Json }>()
 
 type HookEntry = {
@@ -1627,6 +1634,10 @@ function tuiCommandList(): Json[] {
   }))
 }
 
+function tuiPageList(): Json[] {
+  return [...tuiPages.entries()].map(([id, page]) => ({ id, name: page.name, plugin: page.plugin }))
+}
+
 function registerTuiCommand(plugin: PluginRecord, command: Json): () => void {
   const title = typeof command.title === "string" && command.title.trim() ? command.title.trim() : "Plugin command"
   const id = typeof command.id === "string" && command.id.trim() ? command.id.trim() : `tui.${plugin.id}.${slug(title)}`
@@ -1787,7 +1798,26 @@ function makeTuiContext(plugin: PluginRecord): Json {
     dialog,
     toast,
     format: { path: (value: string) => value },
-    router: { register: noCleanup, navigate: () => {}, current: () => ({ type: "home" }) },
+    router: {
+      register: (page: Json) => {
+        if (typeof page?.name !== "string" || typeof page?.render !== "function") return () => {}
+        const entry = { name: page.name, render: page.render as Function, plugin: plugin.id }
+        tuiPages.set(page.name, entry)
+        const dispose = () => tuiPages.delete(page.name)
+        plugin.registrations.push(dispose)
+        scheduleStateChanged()
+        return dispose
+      },
+      navigate: (destination: Json) => {
+        if (destination?.type !== "plugin") return
+        const id = destination.id ?? destination.name
+        if (typeof id !== "string") return
+        void request("tui.navigate", { id, data: destination.data }).catch((error: unknown) =>
+          log("error", `tui navigate failed: ${String(error)}`),
+        )
+      },
+      current: () => ({ type: "home" }),
+    },
     panel: { open: () => false, close: () => {}, current: () => undefined },
     tabs: {
       enabled: () => false,
@@ -3303,7 +3333,7 @@ function domainSnapshot(): Json {
     defaultAgent: registry.defaultAgent,
     defaultModel: registry.defaultModel,
     config: initialState.config,
-    tui: { commands: tuiCommandList() },
+    tui: { commands: tuiCommandList(), pages: tuiPageList() },
   }
 }
 

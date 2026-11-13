@@ -703,6 +703,7 @@ pub struct Manager {
     websearch: RwLock<Vec<(String, String)>>,
     websearch_default: RwLock<Option<Value>>,
     tui: RwLock<Vec<Value>>,
+    tui_pages: RwLock<Vec<Value>>,
     errors: Vec<String>,
     events: tokio::sync::broadcast::Sender<Value>,
 }
@@ -965,6 +966,7 @@ impl Manager {
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
             tui: RwLock::new(Vec::new()),
+            tui_pages: RwLock::new(Vec::new()),
             errors: Vec::new(),
             events: tokio::sync::broadcast::channel(4096).0,
         }
@@ -978,6 +980,7 @@ impl Manager {
             websearch: RwLock::new(Vec::new()),
             websearch_default: RwLock::new(None),
             tui: RwLock::new(Vec::new()),
+            tui_pages: RwLock::new(Vec::new()),
             errors,
             events: tokio::sync::broadcast::channel(4096).0,
         }
@@ -1138,10 +1141,21 @@ impl Manager {
         if let Some(Value::Array(commands)) = state.pointer("/tui/commands") {
             *self.tui.write().unwrap() = commands.clone();
         }
+        if let Some(Value::Array(pages)) = state.pointer("/tui/pages") {
+            *self.tui_pages.write().unwrap() = pages.clone();
+        }
     }
 
     pub fn tui_commands(&self) -> Vec<Value> {
         self.tui.read().unwrap().clone()
+    }
+
+    pub fn tui_pages(&self) -> Vec<Value> {
+        self.tui_pages.read().unwrap().clone()
+    }
+
+    pub async fn execute_tui_page(&self, id: &str, data: Value) -> Result<Value> {
+        self.request("tui.page", json!({ "id": id, "data": data })).await
     }
 
     pub async fn execute_tui_command(&self, name: &str, input: Value) -> Result<Value> {
@@ -1384,6 +1398,7 @@ async fn start(
         websearch: RwLock::new(Vec::new()),
         websearch_default: RwLock::new(None),
         tui: RwLock::new(Vec::new()),
+        tui_pages: RwLock::new(Vec::new()),
         errors: Vec::new(),
         events: tokio::sync::broadcast::channel(4096).0,
     };
@@ -1985,6 +2000,14 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             }))
         }
         "app.init" => Ok(json!(true)),
+        "tui.navigate" => {
+            let id = first.get("id").and_then(Value::as_str).ok_or_else(|| anyhow!("tui.navigate requires id"))?;
+            let page = app.plugins.execute_tui_page(id, first.get("data").cloned().unwrap_or(Value::Null)).await?;
+            let title = page.get("title").and_then(Value::as_str).unwrap_or(id).to_string();
+            let text = page.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            app.emit(crate::app::AppEvent::PluginPage { title, text });
+            Ok(Value::Null)
+        }
         "tui.dialog" => {
             let kind = first.get("type").and_then(Value::as_str).unwrap_or("alert");
             let title = first
