@@ -251,6 +251,8 @@ enum Cmd {
     },
     /// Migrate legacy session history
     Migrate,
+    /// List available skills
+    Skills,
     /// Debugging and troubleshooting
     Debug {
         #[command(subcommand)]
@@ -551,6 +553,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
                 cli::repository_cache(&repository, branch.as_deref(), refresh)
             }
         },
+        Some(Cmd::Skills) => cli::debug_skills().await,
         Some(Cmd::Debug { command }) => match command {
             DebugCmd::Paths => cli::debug_paths(),
             DebugCmd::Config => cli::debug_config().await,
