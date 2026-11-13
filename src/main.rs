@@ -226,6 +226,9 @@ enum AuthCmd {
         /// API key (prompted when omitted)
         #[arg(long)]
         key: Option<String>,
+        /// OpenCode Console server for device login
+        #[arg(long)]
+        server: Option<String>,
     },
     /// Remove stored credentials
     Logout { provider: Option<String> },
@@ -356,7 +359,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             let dir = cli.project.unwrap_or_else(cwd);
             tui::start(dir, cli.tui.into()).await
         }
-        Some(Cmd::Acp { login: true }) => cli::auth_login(None, None).await,
+        Some(Cmd::Acp { login: true }) => cli::auth_login(None, None, None).await,
         Some(Cmd::Acp { login: false }) => acp::serve().await,
         Some(Cmd::Pair { url, password }) => cli::pair(&url, password).await,
         Some(Cmd::Serve { hostname, port, password, dir }) => {
@@ -376,7 +379,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Auth { command }) => match command {
             AuthCmd::List => cli::auth_list().await,
-            AuthCmd::Login { provider, key } => cli::auth_login(provider, key).await,
+            AuthCmd::Login { provider, key, server } => cli::auth_login(provider, key, server).await,
             AuthCmd::Logout { provider } => cli::auth_logout(provider).await,
         },
         Some(Cmd::Session { command }) => match command {

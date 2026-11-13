@@ -89,7 +89,7 @@ fn prompt_line(label: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-pub async fn auth_login(provider: Option<String>, key: Option<String>) -> Result<()> {
+pub async fn auth_login(provider: Option<String>, key: Option<String>, server: Option<String>) -> Result<()> {
     let catalog = crate::models::catalog();
     let provider = match provider {
         Some(p) => p,
@@ -102,8 +102,13 @@ pub async fn auth_login(provider: Option<String>, key: Option<String>) -> Result
     if provider.is_empty() {
         return Err(anyhow!("no provider given"));
     }
-    if key.is_none() && matches!(provider.as_str(), "openai" | "chatgpt" | "github-copilot" | "copilot") {
-        return crate::provider::oauth::login(&provider).await;
+    if key.is_none()
+        && matches!(
+            provider.as_str(),
+            "openai" | "chatgpt" | "github-copilot" | "copilot" | "opencode" | "opencode-console" | "console"
+        )
+    {
+        return crate::provider::oauth::login(&provider, server.as_deref()).await;
     }
     if catalog.get(&provider).is_none() {
         eprintln!("Note: {provider} is not in the models.dev catalog; configure it under \"provider\" in opencode.json.");
