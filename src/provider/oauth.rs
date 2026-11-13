@@ -498,6 +498,13 @@ async fn console_login(server: Option<&str>) -> Result<()> {
         },
     )?;
     eprintln!("Signed in to OpenCode Console as {email}");
+    match crate::console::sync().await {
+        Ok(summary) => eprintln!(
+            "Synced Console workspace: {} providers, {} instructions, {} skills",
+            summary["providers"], summary["instructions"], summary["skills"]
+        ),
+        Err(error) => eprintln!("Signed in, but Console workspace sync failed: {error}"),
+    }
     Ok(())
 }
 

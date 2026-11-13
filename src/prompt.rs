@@ -172,6 +172,10 @@ pub async fn instructions_in(app: &App, directory: &Path) -> Option<String> {
             blocks.push(format!("Instructions from: {}\n{}", f.display(), c));
         }
     }
+    for (id, content) in crate::console::instructions() {
+        blocks.push(format!("Instructions from: OpenCode Console instruction {id}
+{content}"));
+    }
     for url in app.config().instructions.iter().filter(|p| p.starts_with("http")) {
         let res = crate::http::send(crate::http::client().get(url).timeout(std::time::Duration::from_secs(5))).await;
         if let Ok(r) = res {

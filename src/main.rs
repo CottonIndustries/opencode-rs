@@ -10,7 +10,9 @@ mod cli;
 mod command;
 mod config;
 mod config_watch;
+mod console;
 mod db;
+mod debug_dump;
 mod engine;
 mod event_store;
 mod formatter;
@@ -25,7 +27,9 @@ mod migration;
 mod models;
 mod paths;
 mod permission;
+mod permission_saved;
 mod plugin;
+mod plugin_package;
 mod policy;
 mod prompt;
 mod provider;
@@ -44,6 +48,7 @@ mod tui;
 mod util;
 mod vcs;
 mod voice;
+mod wellknown;
 mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -270,6 +275,25 @@ enum AuthCmd {
     },
     /// Remove stored credentials
     Logout { provider: Option<String> },
+    /// Export stored credentials as JSON
+    Export {
+        /// Only export this provider
+        target: Option<String>,
+    },
+    /// Import credentials from a JSON file or stdin
+    Import {
+        /// File to read; stdin when omitted
+        file: Option<String>,
+    },
+    /// Switch the active credential for a provider
+    Switch {
+        /// Provider or integration ID
+        target: String,
+        /// Credential ID or label
+        credential: String,
+    },
+    /// Refresh hosted OpenCode Console configuration, instructions and skills
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -384,9 +408,15 @@ enum PluginCmd {
     /// Remove a plugin package from the global configuration
     Remove { package: String },
     /// Check configured package plugins for updates
-    Check,
+    Check {
+        /// Only check this target
+        target: Option<String>,
+    },
     /// Update configured package plugins
-    Update,
+    Update {
+        /// Only update this target
+        target: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -477,6 +507,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             AuthCmd::List => cli::auth_list().await,
             AuthCmd::Login { provider, key, server } => cli::auth_login(provider, key, server).await,
             AuthCmd::Logout { provider } => cli::auth_logout(provider).await,
+            AuthCmd::Export { target } => cli::auth_export(target.as_deref()),
+            AuthCmd::Import { file } => cli::auth_import(file.as_deref()),
+            AuthCmd::Switch { target, credential } => cli::auth_switch(&target, &credential),
+            AuthCmd::Sync => cli::auth_sync().await,
         },
         Some(Cmd::Session { command }) => match command {
             SessionCmd::List { max_count, format } => cli::session_list(max_count, &format).await,
@@ -495,8 +529,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             PluginCmd::List => cli::plugin_list().await,
             PluginCmd::Add { package } => cli::plugin_add(&package),
             PluginCmd::Remove { package } => cli::plugin_remove(&package),
-            PluginCmd::Check => cli::plugin_check().await,
-            PluginCmd::Update => cli::plugin_update().await,
+            PluginCmd::Check { target } => cli::plugin_check(target.as_deref()).await,
+            PluginCmd::Update { target } => cli::plugin_update(target.as_deref()).await,
         },
         Some(Cmd::Api { method, path, data, server, password }) => {
             cli::api_call(&server, &method, &path, data.as_deref(), password.as_deref()).await

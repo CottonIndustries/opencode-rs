@@ -47,7 +47,130 @@ impl Credential {
     }
 }
 
-/// Stored credentials: `auth.json` first, then API keys saved by the TypeScript
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+    pub credential: Credential,
+    pub active: bool,
+}
+
+fn credential_from_value(value: &serde_json::Value) -> Option<Credential> {
+    if value.get("type").and_then(|value| value.as_str()) == Some("key") {
+        return value
+            .get("key")
+            .and_then(|value| value.as_str())
+            .map(|key| Credential::Api { key: key.to_string(), metadata: None });
+    }
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Every credential known to this installation, including inactive database
+/// accounts used by auth switch.
+pub fn entries() -> Vec<Entry> {
+    let mut out = Vec::new();
+    let path = crate::paths::get().data.join("opencode.db");
+    if path.is_file() {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if let Ok(db) = rusqlite::Connection::open_with_flags(&path, flags) {
+            let _ = db.busy_timeout(std::time::Duration::from_millis(500));
+            let statement = db.prepare(
+                "SELECT id, integration_id, label, value, coalesce(active, 0) FROM credential ORDER BY time_updated",
+            );
+            if let Ok(mut statement) = statement {
+                let rows = statement.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                });
+                for (id, provider, label, value, active) in rows.into_iter().flatten().flatten() {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&value) else { continue };
+                    if let Some(credential) = credential_from_value(&value) {
+                        out.push(Entry {
+                            id,
+                            provider: provider.trim_end_matches('/').to_string(),
+                            label,
+                            credential,
+                            active: active != 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for (provider, credential) in from_file() {
+        if out.iter().any(|entry| entry.provider == provider && entry.credential.secret() == credential.secret()) {
+            continue;
+        }
+        out.push(Entry {
+            id: format!("file:{provider}"),
+            provider: provider.clone(),
+            label: provider,
+            credential,
+            active: true,
+        });
+    }
+    out
+}
+
+pub fn switch(provider: &str, target: &str) -> Result<Entry> {
+    let entries = entries();
+    let entry = entries
+        .iter()
+        .find(|entry| entry.provider == provider && (entry.id == target || entry.label == target))
+        .or_else(|| entries.iter().find(|entry| entry.id == target || entry.label == target))
+        .ok_or_else(|| anyhow::anyhow!("credential not found: {target}"))?
+        .clone();
+    if let Ok(db) = rusqlite::Connection::open(crate::paths::get().data.join("opencode.db")) {
+        let _ = db.execute("UPDATE credential SET active = 0 WHERE integration_id = ?1", [&entry.provider]);
+        let _ = db.execute("UPDATE credential SET active = 1 WHERE id = ?1", [&entry.id]);
+    }
+    set(&entry.provider, entry.credential.clone())?;
+    Ok(entry)
+}
+
+/// Merge exported credentials into the local store. Existing providers are
+/// skipped so an import never replaces the active account.
+pub fn import(values: &[serde_json::Value]) -> Result<(usize, usize)> {
+    let mut map = from_file();
+    let mut imported = 0;
+    let mut skipped = 0;
+    for value in values {
+        let provider = value
+            .get("provider")
+            .or_else(|| value.get("integrationID"))
+            .or_else(|| value.get("integration_id"))
+            .and_then(|value| value.as_str());
+        let Some(provider) = provider else {
+            skipped += 1;
+            continue;
+        };
+        let provider = provider.trim_end_matches('/');
+        if map.contains_key(provider) {
+            skipped += 1;
+            continue;
+        }
+        let raw = value
+            .get("credential")
+            .or_else(|| value.get("value"))
+            .unwrap_or(value);
+        let Some(credential) = credential_from_value(raw) else {
+            skipped += 1;
+            continue;
+        };
+        map.insert(provider.to_string(), credential);
+        imported += 1;
+    }
+    write(&map)?;
+    Ok((imported, skipped))
+}
+
+/// Stored credentials: auth.json first, then API keys saved by the TypeScript
 /// client in its `opencode.db` (read-only; OAuth entries there need refresh flows and are skipped).
 pub fn all() -> BTreeMap<String, Credential> {
     let mut out = from_database(&crate::paths::get().data.join("opencode.db"));

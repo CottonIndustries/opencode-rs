@@ -613,6 +613,11 @@ impl App {
         }
         let approved: Vec<(String, String)> = handle.with(|s| s.approved.clone());
         rules.extend(approved.iter().map(|(a, r)| permission::rule(a, r, Effect::Allow)));
+        rules.extend(
+            crate::permission_saved::rules(&self.project)
+                .into_iter()
+                .map(|(a, r)| permission::rule(&a, &r, Effect::Allow)),
+        );
 
         let mut asks = false;
         for resource in resources {
@@ -716,6 +721,7 @@ impl App {
         match reply {
             Reply::Once => Ok(()),
             Reply::Always => {
+                let _ = crate::permission_saved::add(&self.project, action, &save);
                 handle.with(|s| {
                     for p in &save {
                         s.approved.push((action.to_string(), p.clone()));

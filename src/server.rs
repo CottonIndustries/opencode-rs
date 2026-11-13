@@ -1268,8 +1268,23 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         ("GET", ["api", "plugin"]) => Ok(json!({ "data": app.plugins.list() })),
         ("GET", ["api", "plugin", "gui"]) => Ok(json!({ "data": Value::Null })),
-        ("POST", ["api", "plugin", "check"]) => Ok(json!({ "data": app.plugins.list() })),
-        ("POST", ["api", "plugin", "update"]) => Ok(Value::Null),
+        ("POST", ["api", "plugin", "check"]) => {
+            let target = request.body.get("target").and_then(Value::as_str);
+            let items = crate::plugin_package::inspect(app, target).await?;
+            Ok(json!({
+                "data": items.iter().map(crate::plugin_package::plugin_info).collect::<Vec<_>>()
+            }))
+        }
+        ("POST", ["api", "plugin", "update"]) => {
+            let targets: Vec<String> = request
+                .body
+                .get("targets")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).map(String::from).collect())
+                .unwrap_or_default();
+            crate::plugin_package::update(app, &targets).await?;
+            Ok(Value::Null)
+        }
         ("GET", ["api", "reference"]) => {
             let value = app.plugins.request("reference.list", json!({})).await?;
             Ok(json!({ "data": if value.is_null() { json!([]) } else { value } }))
@@ -1310,7 +1325,20 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("GET", ["api", "permission", "request"]) => Ok(json!({
             "data": app.pending_permissions().iter().map(permission_json).collect::<Vec<_>>(),
         })),
-        ("GET", ["api", "permission", "saved"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "permission", "saved"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let project = query_value(&parsed, "projectID");
+            Ok(json!({ "data": crate::permission_saved::list(project.as_deref()) }))
+        }
+        ("PATCH", ["api", "permission", "saved", saved_id]) => {
+            let action = request.body.get("action").and_then(Value::as_str);
+            let resource = request.body.get("resource").and_then(Value::as_str);
+            Ok(json!({ "data": crate::permission_saved::update(saved_id, action, resource)? }))
+        }
+        ("DELETE", ["api", "permission", "saved", saved_id]) => {
+            crate::permission_saved::remove(saved_id)?;
+            Ok(Value::Null)
+        }
         ("POST", ["api", "experimental", "generate", "text"] | ["api", "experimental", "generate"]) => {
             let result = crate::plugin::client_call(app, "generate.text", vec![request.body.clone()]).await?;
             Ok(json!({ "data": { "text": result.get("text").cloned().unwrap_or(Value::Null) } }))
@@ -1322,6 +1350,14 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("POST", ["api", "experimental", "generate", "decisions"]) => {
             let result = crate::plugin::client_call(app, "generate.decisions", vec![request.body.clone()]).await?;
             Ok(json!({ "data": result }))
+        }
+        ("POST", ["api", "debug", "heap-dump"]) => {
+            Ok(json!({ "data": crate::debug_dump::dump(app)? }))
+        }
+        ("POST", ["api", "experimental", "integration", "wellknown"]) => {
+            let url = request.body.get("url").and_then(Value::as_str).ok_or_else(|| anyhow!("url is required"))?;
+            crate::wellknown::add(url).await?;
+            Ok(Value::Null)
         }
         ("GET", ["api", "experimental", "usage", "limits"]) => {
             Ok(json!({ "data": crate::account::usage_limits().await? }))

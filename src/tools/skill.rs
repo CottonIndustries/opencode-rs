@@ -79,6 +79,7 @@ pub fn discover(config: &Config, dirs: &[PathBuf], directory: &Path) -> Vec<Skil
         scan(&d.join("skill"), &mut out);
         scan(&d.join("skills"), &mut out);
     }
+    scan(&crate::console::skills_dir(), &mut out);
     for s in &config.skills {
         if s.starts_with("http://") || s.starts_with("https://") {
             continue;

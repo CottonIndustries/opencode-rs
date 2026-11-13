@@ -160,6 +160,67 @@ pub async fn auth_logout(provider: Option<String>) -> Result<()> {
     Ok(())
 }
 
+pub fn auth_export(target: Option<&str>) -> Result<()> {
+    let entries: Vec<_> = crate::auth::entries()
+        .into_iter()
+        .filter(|entry| target.is_none_or(|target| entry.provider == target || entry.id == target || entry.label == target))
+        .collect();
+    if entries.is_empty() {
+        return Err(anyhow!("no credentials found"));
+    }
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        eprintln!("Warning: the output contains secrets; redirect it to a file or pipe it to auth import");
+    }
+    let values: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "provider": entry.provider,
+                "label": entry.label,
+                "value": entry.credential,
+                "active": entry.active,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&values)?);
+    Ok(())
+}
+
+pub fn auth_import(file: Option<&str>) -> Result<()> {
+    let text = match file {
+        Some(file) => std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?,
+        None => {
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err(anyhow!("pass a file or pipe auth export output into stdin"));
+            }
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            text
+        }
+    };
+    let values: Vec<serde_json::Value> = serde_json::from_str(&text).context("parsing credentials")?;
+    let (imported, skipped) = crate::auth::import(&values)?;
+    println!(
+        "Imported {imported} credential{}{}",
+        if imported == 1 { "" } else { "s" },
+        if skipped == 0 { String::new() } else { format!(", skipped {skipped}") }
+    );
+    Ok(())
+}
+
+pub fn auth_switch(target: &str, credential: &str) -> Result<()> {
+    let entry = crate::auth::switch(target, credential)?;
+    println!("Switched {} to {} ({})", entry.provider, entry.label, entry.id);
+    Ok(())
+}
+
+pub async fn auth_sync() -> Result<()> {
+    let summary = crate::console::sync().await?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 fn ago(ms: i64) -> String {
     let d = (crate::util::now_ms() - ms) / 1000;
     match d {
@@ -531,20 +592,57 @@ pub fn plugin_remove(package: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn plugin_check() -> Result<()> {
+pub async fn plugin_check(target: Option<&str>) -> Result<()> {
     let app = App::init(cwd()).await?;
-    for plugin in app.plugins.list() {
-        println!(
-            "{} {}",
-            plugin.get("id").and_then(|value| value.as_str()).unwrap_or("plugin"),
-            plugin.pointer("/state/status").and_then(|value| value.as_str()).unwrap_or("unknown")
-        );
+    let items = crate::plugin_package::inspect(&app, target).await?;
+    if items.is_empty() {
+        println!("No package plugins found");
+        return Ok(());
+    }
+    for runtime in ["Server", "TUI"] {
+        let rows: Vec<_> = items.iter().filter(|item| item.runtime == runtime).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        println!("{runtime}");
+        for item in rows {
+            let version = item.version.as_deref().map(|version| format!(" {version}")).unwrap_or_default();
+            let status = if item.error.is_some() {
+                "check failed"
+            } else if item.outdated {
+                "update available"
+            } else {
+                "current"
+            };
+            println!("  {}{} ({status})", item.name, version);
+        }
+    }
+    if items.iter().any(|item| item.error.is_some()) {
+        return Err(anyhow!("one or more plugins could not be checked"));
     }
     Ok(())
 }
 
-pub async fn plugin_update() -> Result<()> {
-    println!("Package plugins resolve their configured targets at startup; no update was needed.");
+pub async fn plugin_update(target: Option<&str>) -> Result<()> {
+    let app = App::init(cwd()).await?;
+    let items = crate::plugin_package::inspect(&app, target).await?;
+    for item in items.iter().filter(|item| item.error.is_some()) {
+        eprintln!(
+            "Failed to check {} plugin {:?}: {}",
+            item.runtime,
+            item.name,
+            item.error.as_deref().unwrap_or_default()
+        );
+    }
+    let targets: Vec<String> = target.map(|target| vec![target.to_string()]).unwrap_or_default();
+    let updated = crate::plugin_package::update(&app, &targets).await?;
+    if updated.is_empty() {
+        println!("No plugin updates available");
+    } else {
+        for target in updated {
+            println!("Updated plugin {:?}", target);
+        }
+    }
     Ok(())
 }
 

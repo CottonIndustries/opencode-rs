@@ -312,6 +312,15 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
     let mut raw = Value::Object(Map::new());
     let mut files = Vec::new();
     let mut directories = vec![paths.config.clone()];
+    // Integration sources are the lowest config layer; local and project
+    // configuration is merged over them. Their policies are applied last.
+    let mut source_policies = Vec::new();
+    for source in crate::wellknown::configs().into_iter().chain(crate::console::configs()) {
+        if let Some(policies) = source.get("policies").and_then(Value::as_array) {
+            source_policies.extend(policies.iter().cloned());
+        }
+        merge(&mut raw, source);
+    }
 
     let add = |raw: &mut Value, files: &mut Vec<PathBuf>, p: PathBuf| -> Result<()> {
         if p.is_file() {
@@ -363,6 +372,17 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
     }
     if let Ok(dir) = std::env::var("OPENCODE_CONFIG_DIR") {
         directories.push(PathBuf::from(dir));
+    }
+
+    if !source_policies.is_empty() {
+        let policies = raw
+            .as_object_mut()
+            .expect("configuration is an object")
+            .entry("policies")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(existing) = policies {
+            existing.extend(source_policies);
+        }
     }
 
     // normalize legacy fields
