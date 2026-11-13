@@ -220,7 +220,7 @@ enum AuthCmd {
     /// List stored credentials and detected environment keys
     #[command(alias = "ls")]
     List,
-    /// Store an API key for a provider
+    /// Log in to a provider with OAuth or store an API key
     Login {
         provider: Option<String>,
         /// API key (prompted when omitted)
