@@ -384,6 +384,109 @@ pub fn debug_paths() -> Result<()> {
     Ok(())
 }
 
+fn plugin_config_path() -> std::path::PathBuf {
+    crate::paths::get().config.join("opencode.json")
+}
+
+fn read_plugin_config(path: &std::path::Path) -> Result<serde_json::Value> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let value: serde_json::Value = serde_json::from_str(&text).context("parsing plugin configuration")?;
+            if !value.is_object() {
+                return Err(anyhow!("plugin configuration must be an object"));
+            }
+            Ok(value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_plugin_config(path: &std::path::Path, value: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn plugin_entry_matches(entry: &serde_json::Value, package: &str) -> bool {
+    entry.as_str() == Some(package) || entry.get("package").and_then(|value| value.as_str()) == Some(package)
+}
+
+pub async fn plugin_list() -> Result<()> {
+    let app = App::init(cwd()).await?;
+    for error in app.plugins.errors() {
+        eprintln!("warning: {error}");
+    }
+    let plugins = app.plugins.list();
+    if plugins.is_empty() {
+        println!("No plugins configured.");
+    } else {
+        println!("{}", serde_json::to_string_pretty(&plugins)?);
+    }
+    Ok(())
+}
+
+pub fn plugin_add(package: &str) -> Result<()> {
+    if package.trim().is_empty() {
+        return Err(anyhow!("plugin package is required"));
+    }
+    let path = plugin_config_path();
+    let mut config = read_plugin_config(&path)?;
+    let plugins = config
+        .as_object_mut()
+        .unwrap()
+        .entry("plugins")
+        .or_insert_with(|| serde_json::json!([]));
+    let array = plugins.as_array_mut().ok_or_else(|| anyhow!("plugins configuration must be an array"))?;
+    if array.iter().any(|entry| plugin_entry_matches(entry, package)) {
+        println!("Plugin \"{package}\" is already configured in {}", path.display());
+        return Ok(());
+    }
+    array.push(serde_json::json!(package));
+    write_plugin_config(&path, &config)?;
+    println!("Plugin \"{package}\" added to {}", path.display());
+    Ok(())
+}
+
+pub fn plugin_remove(package: &str) -> Result<()> {
+    let path = plugin_config_path();
+    let mut config = read_plugin_config(&path)?;
+    let Some(plugins) = config.get_mut("plugins").and_then(|value| value.as_array_mut()) else {
+        println!("Plugin \"{package}\" is not configured");
+        return Ok(());
+    };
+    let before = plugins.len();
+    plugins.retain(|entry| !plugin_entry_matches(entry, package));
+    if plugins.len() == before {
+        println!("Plugin \"{package}\" is not configured");
+        return Ok(());
+    }
+    write_plugin_config(&path, &config)?;
+    println!("Plugin \"{package}\" removed from {}", path.display());
+    Ok(())
+}
+
+pub async fn plugin_check() -> Result<()> {
+    let app = App::init(cwd()).await?;
+    for plugin in app.plugins.list() {
+        println!(
+            "{} {}",
+            plugin.get("id").and_then(|value| value.as_str()).unwrap_or("plugin"),
+            plugin.pointer("/state/status").and_then(|value| value.as_str()).unwrap_or("unknown")
+        );
+    }
+    Ok(())
+}
+
+pub async fn plugin_update() -> Result<()> {
+    println!("Package plugins resolve their configured targets at startup; no update was needed.");
+    Ok(())
+}
+
 pub async fn debug_plugins() -> Result<()> {
     std::env::set_var("OPENCODE_TUI", "1");
     let app = App::init(cwd()).await?;

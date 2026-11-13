@@ -199,6 +199,11 @@ enum Cmd {
         #[command(subcommand)]
         command: McpCmd,
     },
+    /// Manage plugins
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCmd,
+    },
     /// Debugging and troubleshooting
     Debug {
         #[command(subcommand)]
@@ -254,6 +259,21 @@ enum McpCmd {
     Auth { name: String },
     /// Forget a remote MCP server's OAuth credentials
     Logout { name: String },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List configured and discovered plugins
+    #[command(alias = "ls")]
+    List,
+    /// Add a plugin package to the global configuration
+    Add { package: String },
+    /// Remove a plugin package from the global configuration
+    Remove { package: String },
+    /// Check configured package plugins for updates
+    Check,
+    /// Update configured package plugins
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -347,6 +367,13 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Cmd::Mcp { command: McpCmd::List }) => cli::mcp_list().await,
         Some(Cmd::Mcp { command: McpCmd::Auth { name } }) => cli::mcp_auth(&name).await,
         Some(Cmd::Mcp { command: McpCmd::Logout { name } }) => cli::mcp_logout(&name),
+        Some(Cmd::Plugin { command }) => match command {
+            PluginCmd::List => cli::plugin_list().await,
+            PluginCmd::Add { package } => cli::plugin_add(&package),
+            PluginCmd::Remove { package } => cli::plugin_remove(&package),
+            PluginCmd::Check => cli::plugin_check().await,
+            PluginCmd::Update => cli::plugin_update().await,
+        },
         Some(Cmd::Debug { command }) => match command {
             DebugCmd::Paths => cli::debug_paths(),
             DebugCmd::Config => cli::debug_config().await,
