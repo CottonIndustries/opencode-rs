@@ -1724,7 +1724,8 @@ async fn plugin_generate(
         let handle = app.session(session_id)?;
         let registry = crate::tools::registry(app, &agent, &sel.model).await;
         let names: Vec<String> = registry.iter().map(|tool| tool.name().to_string()).collect();
-        system = crate::prompt::system(app, &agent, &sel.model, &names).await;
+        let directory = handle.with(|session| session.directory.clone());
+        system = crate::prompt::system_in(app, &agent, &sel.model, &names, &directory).await;
         let entries: Vec<String> = handle.with(|session| {
             session
                 .instruction_entries

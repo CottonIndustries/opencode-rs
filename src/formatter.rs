@@ -31,11 +31,12 @@ pub async fn format(app: &crate::app::App, file: &Path) -> Result<bool> {
         if command.is_empty() {
             continue;
         }
+        let cwd = file.parent().map(Path::to_path_buf).unwrap_or_else(|| app.directory.clone());
         let file = file.to_string_lossy().to_string();
         let mut process = tokio::process::Command::new(&command[0]);
         process
             .args(command.iter().skip(1).map(|argument| argument.replace("$FILE", &file)))
-            .current_dir(&app.directory)
+            .current_dir(cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

@@ -933,7 +933,8 @@ async fn step_once(
 ) -> Result<StepResult> {
     let sid = handle.id();
     let names: Vec<String> = active.iter().map(|t| t.name().to_string()).collect();
-    let mut system = crate::prompt::system(app, agent, &sel.model, &names).await;
+    let directory = handle.with(|session| session.directory.clone());
+    let mut system = crate::prompt::system_in(app, agent, &sel.model, &names, &directory).await;
     let entries: Vec<String> = handle.with(|session| {
         session
             .instruction_entries
@@ -1621,7 +1622,8 @@ pub async fn compact(app: &Arc<App>, handle: &Arc<Handle>, agent: &Agent, sel: &
     messages.push(Message::user_text(prompt));
     let compaction = app.agent("compaction").unwrap_or_else(|_| agent.clone());
     let names: Vec<String> = registry.iter().map(|t| t.name().to_string()).collect();
-    let mut system = crate::prompt::system(app, &compaction, &sel.model, &names).await;
+    let directory = handle.with(|session| session.directory.clone());
+    let mut system = crate::prompt::system_in(app, &compaction, &sel.model, &names, &directory).await;
     let specs = registry.iter().map(|t| tools::spec(t.as_ref())).collect();
     app.emit(AppEvent::Notice { message: "Compacting conversation…".into() });
     let cancel = CancellationToken::new();

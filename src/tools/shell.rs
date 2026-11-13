@@ -381,7 +381,7 @@ impl Tool for Shell {
             command = next.to_string();
         }
         if let Some(next) = shell_event.get("cwd").and_then(Value::as_str) {
-            cwd = crate::util::resolve(&ctx.app.directory, next);
+            cwd = crate::util::resolve(&ctx.directory(), next);
         }
         if let Some(next) = shell_event.get("timeout").and_then(Value::as_u64) {
             timeout = next;

@@ -92,11 +92,11 @@ fn alternate(path: &Path) -> Option<PathBuf> {
 
 /// AGENTS.md files between the read target and the project root that are not yet loaded.
 fn nested_instructions(ctx: &Context, target: &Path) -> Option<String> {
-    if !crate::util::contains(&ctx.app.directory, target) {
+    if !crate::util::contains(&ctx.directory(), target) {
         return None;
     }
     let start = if target.is_dir() { target.to_path_buf() } else { target.parent()?.to_path_buf() };
-    let root = crate::util::normalize(&ctx.app.directory);
+    let root = crate::util::normalize(&ctx.directory());
     let mut found = Vec::new();
     let mut cur = Some(start.as_path());
     while let Some(d) = cur {

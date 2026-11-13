@@ -86,11 +86,15 @@ fn platform() -> &'static str {
 }
 
 pub fn environment(app: &App) -> String {
+    environment_in(app, &app.directory)
+}
+
+pub fn environment_in(app: &App, directory: &Path) -> String {
     let tmp = crate::paths::get().tmp.display().to_string();
     [
         "Here is some useful information about the environment you are running in:".to_string(),
         "<env>".into(),
-        format!("  Working directory: {}", app.directory.display()),
+        format!("  Working directory: {}", directory.display()),
         format!("  Workspace root folder: {}", app.worktree.display()),
         format!("  Is directory a git repo: {}", if app.is_git { "yes" } else { "no" }),
         format!("  Platform: {}", platform()),
@@ -106,13 +110,17 @@ pub fn date() -> String {
 
 /// AGENTS.md files from the working directory up to the worktree root, plus global.
 pub fn instruction_files(app: &App) -> Vec<PathBuf> {
+    instruction_files_in(app, &app.directory)
+}
+
+pub fn instruction_files_in(app: &App, directory: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let global = crate::paths::get().config.join("AGENTS.md");
     if global.is_file() {
         out.push(global);
     }
     let mut chain = Vec::new();
-    let mut cur: Option<&Path> = Some(&app.directory);
+    let mut cur: Option<&Path> = Some(directory);
     while let Some(d) = cur {
         let f = d.join("AGENTS.md");
         if f.is_file() {
@@ -154,8 +162,12 @@ pub fn instruction_files(app: &App) -> Vec<PathBuf> {
 }
 
 pub async fn instructions(app: &App) -> Option<String> {
+    instructions_in(app, &app.directory).await
+}
+
+pub async fn instructions_in(app: &App, directory: &Path) -> Option<String> {
     let mut blocks = Vec::new();
-    for f in instruction_files(app) {
+    for f in instruction_files_in(app, directory) {
         if let Ok(c) = std::fs::read_to_string(&f) {
             blocks.push(format!("Instructions from: {}\n{}", f.display(), c));
         }
@@ -230,9 +242,19 @@ pub fn skills_block(skills: &[crate::tools::skill::Skill]) -> String {
 
 /// Full system prompt as separate blocks (stable content first for caching).
 pub async fn system(app: &App, agent: &Agent, model: &Model, tools: &[String]) -> Vec<String> {
+    system_in(app, agent, model, tools, &app.directory).await
+}
+
+pub async fn system_in(
+    app: &App,
+    agent: &Agent,
+    model: &Model,
+    tools: &[String],
+    directory: &Path,
+) -> Vec<String> {
     let mut out = vec![base_prompt(agent, model, tools)];
-    let mut ctx = vec![environment(app)];
-    if let Some(i) = instructions(app).await {
+    let mut ctx = vec![environment_in(app, directory)];
+    if let Some(i) = instructions_in(app, directory).await {
         ctx.push(i);
     }
     if let Some(references) = references_block(app).await {

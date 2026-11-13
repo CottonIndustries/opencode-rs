@@ -67,14 +67,20 @@ pub struct Context {
 }
 
 impl Context {
+    /// The session's working directory, which may differ from the application
+    /// root after a move or a workspace binding.
+    pub fn directory(&self) -> PathBuf {
+        self.handle.with(|session| session.directory.clone())
+    }
+
     pub fn resolve(&self, p: &str) -> PathBuf {
         let p = p.trim();
         let p = if p.is_empty() || p == "undefined" || p == "null" { "." } else { p };
-        crate::util::resolve(&self.app.directory, p)
+        crate::util::resolve(&self.directory(), p)
     }
 
     pub fn display(&self, p: &Path) -> String {
-        crate::util::relative(&self.app.directory, p)
+        crate::util::relative(&self.directory(), p)
     }
 
     pub async fn ask(&self, action: &str, resources: &[String], save: &[String], title: String, metadata: Value) -> Result<()> {
@@ -84,7 +90,7 @@ impl Context {
     /// Require `external_directory` permission for paths outside the project.
     pub async fn authorize_external(&self, path: &Path) -> Result<()> {
         let inside = crate::util::contains(&self.app.worktree, path)
-            || crate::util::contains(&self.app.directory, path)
+            || crate::util::contains(&self.directory(), path)
             || crate::util::contains(&crate::paths::get().tmp, path);
         if inside {
             return Ok(());
@@ -243,7 +249,7 @@ impl Tool for PluginTool {
             "agent": ctx.agent.id,
             "messageID": ctx.message_id,
             "id": ctx.call_id,
-            "directory": ctx.app.directory.to_string_lossy(),
+            "directory": ctx.directory().to_string_lossy(),
             "worktree": ctx.app.worktree.to_string_lossy(),
         });
         let result = ctx.app.plugins.execute_tool(&self.id, &ctx.call_id, input, context).await?;
