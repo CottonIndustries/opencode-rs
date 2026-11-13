@@ -255,6 +255,24 @@ enum McpCmd {
     /// List MCP servers and their status
     #[command(alias = "ls")]
     List,
+    /// Add an MCP server to configuration
+    Add {
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+        /// HTTP header as name=value
+        #[arg(long = "header")]
+        header: Vec<String>,
+        /// Environment variable as name=value
+        #[arg(long = "env")]
+        env: Vec<String>,
+        /// Write to the global configuration instead of the project
+        #[arg(long)]
+        global: bool,
+        /// Local server command and arguments after --
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
     /// Authorize a remote MCP server with OAuth
     Auth { name: String },
     /// Forget a remote MCP server's OAuth credentials
@@ -365,6 +383,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         },
         Some(Cmd::Stats { days, json }) => cli::stats(days, json).await,
         Some(Cmd::Mcp { command: McpCmd::List }) => cli::mcp_list().await,
+        Some(Cmd::Mcp { command: McpCmd::Add { name, url, header, env, global, command } }) => {
+            cli::mcp_add(&name, url, &header, &env, global, &command)
+        }
         Some(Cmd::Mcp { command: McpCmd::Auth { name } }) => cli::mcp_auth(&name).await,
         Some(Cmd::Mcp { command: McpCmd::Logout { name } }) => cli::mcp_logout(&name),
         Some(Cmd::Plugin { command }) => match command {

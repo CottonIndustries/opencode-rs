@@ -384,6 +384,79 @@ pub fn debug_paths() -> Result<()> {
     Ok(())
 }
 
+pub fn mcp_add(
+    name: &str,
+    url: Option<String>,
+    headers: &[String],
+    environment: &[String],
+    global: bool,
+    command: &[String],
+) -> Result<()> {
+    if url.is_some() && !command.is_empty() {
+        return Err(anyhow!("provide either --url or a command after --, not both"));
+    }
+    if url.is_none() && command.is_empty() {
+        return Err(anyhow!("provide either --url or a command after --"));
+    }
+    if url.is_some() && !environment.is_empty() {
+        return Err(anyhow!("--env is only valid for local MCP servers"));
+    }
+    if !command.is_empty() && !headers.is_empty() {
+        return Err(anyhow!("--header is only valid for remote MCP servers"));
+    }
+    let values = |items: &[String]| -> Result<serde_json::Map<String, serde_json::Value>> {
+        let mut map = serde_json::Map::new();
+        for item in items {
+            let (key, value) = item
+                .split_once('=')
+                .ok_or_else(|| anyhow!("expected name=value, got {item}"))?;
+            map.insert(key.to_string(), serde_json::json!(value));
+        }
+        Ok(map)
+    };
+    let mut server = match url {
+        Some(url) => {
+            if url::Url::parse(&url).is_err() {
+                return Err(anyhow!("invalid URL: {url}"));
+            }
+            let mut server = serde_json::json!({ "type": "remote", "url": url });
+            let headers = values(headers)?;
+            if !headers.is_empty() {
+                server["headers"] = serde_json::Value::Object(headers);
+            }
+            server
+        }
+        None => {
+            let mut server = serde_json::json!({ "type": "local", "command": command });
+            let environment = values(environment)?;
+            if !environment.is_empty() {
+                server["environment"] = serde_json::Value::Object(environment);
+            }
+            server
+        }
+    };
+    if !name.trim().is_empty() {
+        server["enabled"] = serde_json::json!(true);
+    }
+    let path = if global {
+        crate::paths::get().config.join("opencode.json")
+    } else {
+        cwd().join("opencode.json")
+    };
+    let mut config = read_plugin_config(&path)?;
+    let object = config.as_object_mut().unwrap();
+    let mcp = object.entry("mcp").or_insert_with(|| serde_json::json!({}));
+    let mcp = mcp.as_object_mut().ok_or_else(|| anyhow!("mcp configuration must be an object"))?;
+    let servers = mcp.entry("servers").or_insert_with(|| serde_json::json!({}));
+    let servers = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("mcp.servers configuration must be an object"))?;
+    servers.insert(name.to_string(), server);
+    write_plugin_config(&path, &config)?;
+    println!("MCP server \"{name}\" added to {}", path.display());
+    Ok(())
+}
+
 fn plugin_config_path() -> std::path::PathBuf {
     crate::paths::get().config.join("opencode.json")
 }
