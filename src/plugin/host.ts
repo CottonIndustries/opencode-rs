@@ -1732,6 +1732,40 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
       ...(background ? { background } : {}),
     }
   }
+  if (type.includes("input") || type === "textarea") {
+    const text = String(props.value ?? props.placeholder ?? props.defaultValue ?? "")
+    if (!text) return null
+    budget.nodes += 1
+    return { type: "text", text, ...(props.placeholder && !props.value ? { dim: true } : {}) }
+  }
+  if (type.includes("select")) {
+    const options = Array.isArray(props.options) ? props.options : []
+    const selected = props.value ?? props.selected
+    const text = options
+      .map((option: Json) => (typeof option === "string" ? option : String(option?.label ?? option?.value ?? "")))
+      .filter(Boolean)
+      .join(" ")
+    if (!text) return null
+    budget.nodes += 1
+    return { type: "text", text: selected === undefined ? text : String(selected) + ": " + text, dim: !selected }
+  }
+  if (type.includes("spinner")) {
+    budget.nodes += 1
+    return { type: "text", text: String(props.text ?? props.label ?? "working..."), dim: true }
+  }
+  if (type.includes("progress")) {
+    const value = Number(props.value ?? 0)
+    const max = Number(props.max ?? 100) || 100
+    const filled = Math.max(0, Math.min(10, Math.round((value / max) * 10)))
+    budget.nodes += 1
+    return { type: "text", text: "[" + "#".repeat(filled) + "-".repeat(10 - filled) + "] " + Math.round((value / max) * 100) + "%" }
+  }
+  if (type.includes("markdown") || type === "code") {
+    const text = jsxText(props.content ?? children ?? value)
+    if (!text.trim()) return null
+    budget.nodes += 1
+    return { type: "text", text }
+  }
   if (children === undefined) {
     const text = jsxText(value)
     if (!text.trim()) return null
