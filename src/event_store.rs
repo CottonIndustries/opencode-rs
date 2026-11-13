@@ -149,6 +149,17 @@ pub fn append(event: &mut Value) {
 }
 
 /// Read persisted events, optionally scoped to one session and sequence cursor.
+pub fn contains(text: &str) -> bool {
+    let Some(db) = open() else { return false };
+    let Ok(db) = db.lock() else { return false };
+    db.query_row(
+        "SELECT 1 FROM events WHERE data LIKE '%' || ?1 || '%' LIMIT 1",
+        params![text],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 pub fn read(session_id: Option<&str>, after: Option<u64>, limit: Option<usize>) -> Vec<Value> {
     let Some(db) = open() else { return Vec::new() };
     let Ok(db) = db.lock() else { return Vec::new() };
