@@ -2578,6 +2578,7 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
             let id = session_id().ok_or_else(|| anyhow!("session.remove requires sessionID"))?;
             app.session(&id)?;
             pty::manager().kill(&id);
+            crate::job::cancel_session(&id);
             crate::provider::ws_transport::close(&id).await;
             crate::session::delete(&app.project, &id)?;
             app.forget_session(&id);
