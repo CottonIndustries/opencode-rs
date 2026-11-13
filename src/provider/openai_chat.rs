@@ -125,12 +125,61 @@ fn zai_tool_stream(provider_id: &str, base_url: &str, model_id: &str) -> bool {
     zai && !matches!(model_id.to_lowercase().as_str(), "glm-4.5" | "glm-4.5-air" | "glm-4.5-flash" | "glm-4.5v")
 }
 
+fn azure_provider(req: &Request, base: &str) -> bool {
+    req.provider.npm.eq_ignore_ascii_case("@ai-sdk/azure")
+        || req.provider.id.eq_ignore_ascii_case("azure")
+        || base.contains(".openai.azure.com")
+        || base.contains(".cognitiveservices.azure.com")
+        || base.contains(".services.ai.azure.com")
+}
+
+fn option_string(req: &Request, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| req.provider.options.extra.get(*name).and_then(Value::as_str).map(String::from))
+}
+
+/// Azure addresses a deployment instead of a model and carries the API
+/// version in the query string.
+fn azure_url(base: &str, model: &str, api_version: Option<&str>) -> String {
+    let base = base.trim_end_matches('/');
+    let (path, query) = match base.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (base, None),
+    };
+    let mut url = if path.ends_with("/chat/completions") {
+        path.to_string()
+    } else if path.contains("/deployments/") {
+        format!("{path}/chat/completions")
+    } else if path.ends_with("/openai") {
+        format!("{path}/deployments/{model}/chat/completions")
+    } else {
+        format!("{path}/openai/deployments/{model}/chat/completions")
+    };
+    if let Some(query) = query {
+        url.push('?');
+        url.push_str(query);
+    } else if let Some(version) = api_version {
+        url.push_str("?api-version=");
+        url.push_str(version);
+    }
+    url
+}
+
 pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     let base = req
         .provider
         .base_url(&req.model)
         .ok_or_else(|| anyhow!("provider {} has no API URL; set provider.{}.options.baseURL", req.provider.id, req.provider.id))?;
-    let url = if base.ends_with("/chat/completions") { base.clone() } else { format!("{base}/chat/completions") };
+    let azure = azure_provider(&req, &base);
+    let url = if azure {
+        let version = option_string(&req, &["apiVersion", "api-version"]);
+        azure_url(&base, &req.model.id, version.as_deref())
+    } else if base.ends_with("/chat/completions") {
+        base.clone()
+    } else {
+        format!("{base}/chat/completions")
+    };
 
     // fields go in the order of the upstream request schema
     let messages = convert(&req);
@@ -204,7 +253,11 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     let mut headers: Vec<(String, String)> = vec![("content-type".into(), "application/json".into())];
     headers.extend(super::client_headers(&req));
     if let Some(k) = req.provider.key.as_deref().filter(|k| !k.is_empty()) {
-        headers.push(("authorization".into(), format!("Bearer {k}")));
+        if azure {
+            headers.push(("api-key".into(), k.to_string()));
+        } else {
+            headers.push(("authorization".into(), format!("Bearer {k}")));
+        }
     }
     if req.provider.id == "openrouter" {
         headers.push(("HTTP-Referer".into(), "https://opencode.ai/".into()));
@@ -317,4 +370,25 @@ pub async fn stream(req: Request, tx: Tx) -> Result<()> {
     };
     let _ = tx.send(Event::Finish(f.into()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_azure_deployment_urls() {
+        assert_eq!(
+            azure_url("https://res.openai.azure.com", "gpt-4o", Some("2024-10-21")),
+            "https://res.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            azure_url("https://res.openai.azure.com/openai", "gpt-4o", None),
+            "https://res.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
+        );
+        assert_eq!(
+            azure_url("https://res.openai.azure.com/openai/deployments/prod?api-version=2024", "ignored", None),
+            "https://res.openai.azure.com/openai/deployments/prod/chat/completions?api-version=2024"
+        );
+    }
 }
