@@ -74,11 +74,21 @@ if yours live elsewhere.
 - **Credentials**: env vars from the catalog, `provider.<id>.options.apiKey`,
   `auth.json`, and API keys saved by the TypeScript client in `opencode.db`
   (read-only).
-- **Config**: `opencode.json`/`.jsonc` (global, `OPENCODE_CONFIG`, project chain,
-  `.opencode/`, `OPENCODE_CONFIG_CONTENT`), `{env:}`/`{file:}` substitution,
-  custom providers/models, `agent`, `command`, `permission`, `mcp`, `tools`,
-  `instructions`, `skills`, `lsp`, `compaction`, `formatter`,
-  `experimental.todo`, `experimental.schedules` and `experimental.codemode`.
+- **Config**: the same global, project and system locations as upstream opencode:
+  `opencode.json`/`.jsonc` in `~/.config/opencode` (or `OPENCODE_CONFIG_DIR`),
+  `%ProgramData%\opencode` / `/etc/opencode` / `/Library/Application Support/opencode`,
+  the project chain down to `.opencode/`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`,
+  and upstream's V2 plural keys (`providers`, `agents`, `commands`, `permissions`,
+  `mcp.servers`, `skills.paths`/`skills.urls`) are normalized. Supports
+  `{env:}`/`{file:}` substitution, custom providers/models, `agent`, `command`,
+  `permission`, `mcp`, `tools`, `instructions`, `skills` (local paths and URL
+  sources), `lsp`, `compaction`, `formatter`, `experimental.todo`,
+  `experimental.schedules` and `experimental.codemode`. The credential database
+  honours `OPENCODE_DB` and defaults to `<data>/opencode.db`, so existing
+  upstream API keys, OAuth credentials and MCP OAuth tokens keep working.
+  Skills are discovered from each config root's `skill/` and `skills/` folders,
+  project `.opencode/`, and the shared `~/.claude` / `~/.agents` roots,
+  including upstream's `SKILL.md` or root `.md` layouts and URL skill sources.
 - **Agents**: `build`, `general`, `explore` (+ hidden `title`, `summary`,
   `compaction`) and custom agents from config or `agent/*.md`.
 - **Tools** with the original descriptions and schemas: `shell` (Git Bash /
