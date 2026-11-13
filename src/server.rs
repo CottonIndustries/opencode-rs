@@ -335,7 +335,7 @@ async fn handle(
     }
     if request.method == "POST" && parsed.path() == "/api/experimental/fs/write" {
         let path = query_value(&parsed, "path").unwrap_or_default();
-        return fs_write(stream, &request, &path).await;
+        return fs_write(stream, &app, &request, &path).await;
     }
     let segments: Vec<String> = parsed
         .path_segments()
@@ -453,17 +453,20 @@ async fn fs_read(mut stream: TcpStream, app: &App, path: &str) -> Result<()> {
     write_bytes(&mut stream, 200, "OK", &content_type, &bytes).await
 }
 
-async fn fs_write(mut stream: TcpStream, request: &Request, path: &str) -> Result<()> {
+async fn fs_write(mut stream: TcpStream, app: &App, request: &Request, path: &str) -> Result<()> {
     if path.is_empty() {
         write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "path is required" } }), None).await?;
         return Ok(());
     }
-    let target = std::path::PathBuf::from(path);
+    let target = fs_target(&app.directory, path);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&target, &request.raw_body)?;
-    write_response(&mut stream, 200, json!({ "data": { "path": target.to_string_lossy() } })).await
+    let resolved = std::fs::canonicalize(&target)
+        .map(|path| crate::app::strip_unc(&path))
+        .unwrap_or(target);
+    write_response(&mut stream, 200, json!({ "data": { "path": resolved.to_string_lossy() } })).await
 }
 
 async fn write_bytes(
@@ -632,21 +635,6 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             }
             entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
             Ok(json!({ "data": entries }))
-        }
-        ("POST", ["api", "experimental", "fs", "write"]) => {
-            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
-            let path = query_value(&parsed, "path").ok_or_else(|| anyhow!("path is required"))?;
-            let target = if std::path::Path::new(&path).is_absolute() {
-                std::path::PathBuf::from(&path)
-            } else {
-                app.directory.join(&path)
-            };
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&target, &request.raw_body)?;
-            let resolved = std::fs::canonicalize(&target).unwrap_or(target);
-            Ok(json!({ "data": { "path": resolved.to_string_lossy() } }))
         }
         ("GET", ["api", "fs", "find"]) => {
             let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
