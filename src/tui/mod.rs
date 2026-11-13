@@ -313,6 +313,29 @@ fn layout_text(node: &Value) -> String {
     }
 }
 
+fn layout_plain_lines(node: &Value, depth: usize) -> Vec<String> {
+    if depth > 8 {
+        return Vec::new();
+    }
+    match node.get("type").and_then(Value::as_str) {
+        Some("text") => node
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| vec![text.to_string()])
+            .unwrap_or_default(),
+        Some("box") => {
+            let children = node.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
+            if node.get("direction").and_then(Value::as_str) == Some("row") {
+                let line = children.iter().map(layout_text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("  ");
+                if line.is_empty() { Vec::new() } else { vec![line] }
+            } else {
+                children.iter().flat_map(|child| layout_plain_lines(child, depth + 1)).collect()
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn plugin_layout_lines(layout: &Value, width: usize, theme: &Theme, depth: usize) -> Vec<Line<'static>> {
     if depth > 8 {
         return Vec::new();
@@ -2075,7 +2098,17 @@ impl Ui {
         let mut sidebar = Vec::new();
         for slot in slots {
             let placement = slot.get("placement").and_then(Value::as_str).unwrap_or_default();
-            let text = slot.get("text").and_then(Value::as_str).unwrap_or_default().trim();
+            let plain = slot
+                .get("layout")
+                .map(|layout| layout_plain_lines(layout, 0))
+                .unwrap_or_default();
+            let text = if plain.is_empty() {
+                slot.get("text").and_then(Value::as_str).unwrap_or_default().to_string()
+            } else {
+                plain.join("
+")
+            };
+            let text = text.trim();
             if text.is_empty() {
                 continue;
             }
