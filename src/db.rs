@@ -140,6 +140,12 @@ pub fn contains(text: &str) -> bool {
     .is_ok()
 }
 
+pub fn total() -> i64 {
+    let Some(db) = connection() else { return 0 };
+    let Ok(db) = db.lock() else { return 0 };
+    db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap_or(0)
+}
+
 pub fn count(project: &str) -> i64 {
     let Some(db) = connection() else { return 0 };
     let Ok(db) = db.lock() else { return 0 };

@@ -9,6 +9,7 @@ mod auth;
 mod cli;
 mod command;
 mod config;
+mod config_watch;
 mod db;
 mod engine;
 mod event_store;
@@ -20,15 +21,21 @@ mod lsp;
 mod mcp;
 mod mcp_oauth;
 mod media;
+mod migration;
 mod models;
 mod paths;
 mod permission;
 mod plugin;
+mod policy;
 mod prompt;
 mod provider;
+mod repository;
+mod retention;
 mod run;
 mod schedule;
 mod server;
+mod service;
+mod share;
 mod session;
 mod snapshot;
 mod state;
@@ -37,6 +44,7 @@ mod tui;
 mod util;
 mod vcs;
 mod voice;
+mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -208,6 +216,26 @@ enum Cmd {
         #[command(subcommand)]
         command: PluginCmd,
     },
+    /// Call a running HTTP server
+    Api {
+        method: String,
+        path: String,
+        /// JSON request body
+        #[arg(long)]
+        data: Option<String>,
+        #[arg(long, default_value = "http://127.0.0.1:4096")]
+        server: String,
+    },
+    /// Manage the background local server
+    Service {
+        #[command(subcommand)]
+        command: ServiceCmd,
+    },
+    /// Manage logical workspaces
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCmd,
+    },
     /// Debugging and troubleshooting
     Debug {
         #[command(subcommand)]
@@ -254,7 +282,12 @@ enum SessionCmd {
         sanitize: bool,
     },
     /// Import session data from a JSON file or URL
-    Import { file: String },
+    Import {
+        file: String,
+        /// Replace an existing session with the same id
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -284,6 +317,39 @@ enum McpCmd {
     Auth { name: String },
     /// Forget a remote MCP server's OAuth credentials
     Logout { name: String },
+}
+
+#[derive(Subcommand)]
+enum ServiceCmd {
+    /// Start a detached server
+    Start {
+        #[arg(short, long, default_value_t = 4096)]
+        port: u16,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Stop the detached server
+    Stop,
+    /// Show detached server status
+    Status,
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCmd {
+    /// List workspaces
+    #[command(alias = "ls")]
+    List,
+    /// Create a local workspace
+    Create {
+        directory: Option<PathBuf>,
+        #[arg(long, default_value = "local")]
+        provider: String,
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Remove a workspace
+    #[command(alias = "rm")]
+    Remove { id: String },
 }
 
 #[derive(Subcommand)]
@@ -386,7 +452,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             SessionCmd::List { max_count, format } => cli::session_list(max_count, &format).await,
             SessionCmd::Delete { session_id } => cli::session_delete(&session_id).await,
             SessionCmd::Export { session, sanitize } => cli::session_export(session, sanitize).await,
-            SessionCmd::Import { file } => cli::session_import(&file).await,
+            SessionCmd::Import { file, replace } => cli::session_import(&file, replace).await,
         },
         Some(Cmd::Stats { days, json }) => cli::stats(days, json).await,
         Some(Cmd::Mcp { command: McpCmd::List }) => cli::mcp_list().await,
@@ -401,6 +467,17 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             PluginCmd::Remove { package } => cli::plugin_remove(&package),
             PluginCmd::Check => cli::plugin_check().await,
             PluginCmd::Update => cli::plugin_update().await,
+        },
+        Some(Cmd::Api { method, path, data, server }) => cli::api_call(&server, &method, &path, data.as_deref()).await,
+        Some(Cmd::Service { command }) => match command {
+            ServiceCmd::Start { port, dir } => cli::service_start(port, dir),
+            ServiceCmd::Stop => cli::service_stop(),
+            ServiceCmd::Status => cli::service_status(),
+        },
+        Some(Cmd::Workspace { command }) => match command {
+            WorkspaceCmd::List => cli::workspace_list(),
+            WorkspaceCmd::Create { directory, provider, id } => cli::workspace_create(directory, &provider, id.as_deref()),
+            WorkspaceCmd::Remove { id } => cli::workspace_remove(&id),
         },
         Some(Cmd::Debug { command }) => match command {
             DebugCmd::Paths => cli::debug_paths(),

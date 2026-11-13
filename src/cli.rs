@@ -231,7 +231,7 @@ pub async fn session_export(id: Option<String>, sanitize: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn session_import(file: &str) -> Result<()> {
+pub async fn session_import(file: &str, replace: bool) -> Result<()> {
     let app = App::init(cwd()).await?;
     let text = if file.starts_with("http://") || file.starts_with("https://") {
         crate::http::send(crate::http::client().get(file)).await?.error_for_status()?.text().await?
@@ -239,6 +239,9 @@ pub async fn session_import(file: &str) -> Result<()> {
         std::fs::read_to_string(file)?
     };
     let mut s: crate::session::Session = serde_json::from_str(&text)?;
+    if !replace && crate::session::load(&app.project, &s.id).is_ok() {
+        return Err(anyhow!("session already exists: {} (use --replace)", s.id));
+    }
     s.project = app.project.clone();
     s.directory = app.directory.clone();
     crate::session::save(&s)?;
@@ -701,5 +704,87 @@ pub async fn debug_prompt() -> Result<()> {
     for s in crate::prompt::system(&app, &agent, &sel.model, &names).await {
         println!("{s}\n---");
     }
+    Ok(())
+}
+
+pub fn service_start(port: u16, directory: Option<std::path::PathBuf>) -> Result<()> {
+    let info = crate::service::start(port, directory.unwrap_or_else(cwd))?;
+    println!("Started opencode at {}", info["url"].as_str().unwrap_or_default());
+    println!("PID {}  log {}", info["pid"], info["log"].as_str().unwrap_or_default());
+    Ok(())
+}
+
+pub fn service_stop() -> Result<()> {
+    let info = crate::service::stop()?;
+    if info["stopped"].as_bool().unwrap_or(false) {
+        println!("Stopped server PID {}", info["pid"]);
+    } else {
+        println!("No running server");
+    }
+    Ok(())
+}
+
+pub fn service_status() -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&crate::service::status())?);
+    Ok(())
+}
+
+pub fn workspace_list() -> Result<()> {
+    let workspaces = crate::workspace::list();
+    if workspaces.is_empty() {
+        println!("(none)");
+    }
+    for workspace in workspaces {
+        println!("{:<24} {:<10} {}", workspace.id, workspace.provider, workspace.directory);
+    }
+    Ok(())
+}
+
+pub fn workspace_create(
+    directory: Option<std::path::PathBuf>,
+    provider: &str,
+    id: Option<&str>,
+) -> Result<()> {
+    let info = crate::workspace::create(id, provider, &directory.unwrap_or_else(cwd))?;
+    println!("Created workspace {} ({}) at {}", info.id, info.provider, info.directory);
+    Ok(())
+}
+
+pub fn workspace_remove(id: &str) -> Result<()> {
+    if crate::workspace::destroy(id)? {
+        println!("Removed workspace {id}");
+    } else {
+        println!("Workspace not found: {id}");
+    }
+    Ok(())
+}
+
+pub async fn api_call(server: &str, method: &str, path: &str, data: Option<&str>) -> Result<()> {
+    let url = format!(
+        "{}/{}",
+        server.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    let client = crate::http::client();
+    let mut request = match method.to_ascii_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "PATCH" => client.patch(&url),
+        "DELETE" => client.delete(&url),
+        other => return Err(anyhow!("unsupported HTTP method: {other}")),
+    };
+    request = request.header("accept", "application/json");
+    if let Some(data) = data {
+        let body: serde_json::Value = serde_json::from_str(data)?;
+        request = request.header("content-type", "application/json").json(&body);
+    }
+    let response = crate::http::send(request).await?;
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(anyhow!("HTTP {status}: {text}"));
+    }
+    println!("{text}");
     Ok(())
 }

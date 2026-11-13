@@ -2922,6 +2922,8 @@ function makeSessionDomain(plugin: PluginRecord): Json {
     update: voidCall("session.update"),
     move: voidCall("session.move"),
     background: voidCall("session.background"),
+    share: call("session.share"),
+    unshare: call("session.unshare"),
     skill: voidCall("session.skill"),
     context: call("session.context"),
     instructions: {

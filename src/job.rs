@@ -435,19 +435,21 @@ mod tests {
 
     #[test]
     fn jobs_track_lifecycle_and_filters() {
-        let id = create("shell", "ses_job_test", "echo hi", json!({ "shellID": "sh_1", "command": "echo hi" }));
-        assert_eq!(list(Some("ses_job_test"), Some("shell"), Some("running"), false).len(), 1);
+        let session = format!("ses_job_test_{}", crate::util::id("x"));
+        let id = create("shell", &session, "echo hi", json!({ "shellID": "sh_1", "command": "echo hi" }));
+        assert_eq!(list(Some(&session), Some("shell"), Some("running"), false).len(), 1);
         finish(&id, "completed", Some(json!({ "exit": 0 })));
-        let items = list(Some("ses_job_test"), None, Some("completed"), false);
+        let items = list(Some(&session), None, Some("completed"), false);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["exit"], 0);
         assert!(cancel(&id));
-        assert_eq!(list(None, None, Some("cancelled"), false).len(), 1);
+        assert_eq!(get(&id).unwrap()["status"], "cancelled");
     }
 
     #[tokio::test]
     async fn background_jobs_wait_and_complete() {
-        let id = create("shell", "ses_job_background", "sleep", json!({ "command": "sleep" }));
+        let session = format!("ses_job_background_{}", crate::util::id("x"));
+        let id = create("shell", &session, "sleep", json!({ "command": "sleep" }));
         let background = background(&id).unwrap();
         assert_eq!(background["backgrounded"], true);
         assert!(background["notificationID"].as_str().is_some());
@@ -459,6 +461,6 @@ mod tests {
         assert_eq!(info.unwrap()["status"], "completed");
         let notification = background["notificationID"].as_str().unwrap().to_string();
         complete_background(&notification);
-        assert!(pending_background().iter().all(|job| job["id"] != "ses_job_background"));
+        assert!(pending_background().iter().all(|job| job["id"] != id));
     }
 }

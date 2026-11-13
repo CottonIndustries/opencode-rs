@@ -286,6 +286,8 @@ impl App {
             );
             *app.plugin_base.lock().unwrap() = Some(base);
             app.plugins.attach(&app);
+            crate::retention::start(app.clone());
+            crate::config_watch::start(app.clone());
             app.load_mcp_prompts().await;
             if app.config.experimental.schedules {
                 crate::schedule::start(app.clone());
@@ -560,6 +562,9 @@ impl App {
         title: String,
         metadata: serde_json::Value,
     ) -> Result<()> {
+        if let Some(message) = crate::policy::blocked(&self.config.policies, action, resources) {
+            return Err(anyhow!(message));
+        }
         let mut rules = permission::defaults();
         if let Some(p) = &self.config.permission {
             rules.extend(permission::from_config(p));

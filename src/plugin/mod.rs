@@ -2288,6 +2288,32 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
         "session.share" | "session.unshare" => {
             let id = session_id().ok_or_else(|| anyhow!("session.share requires sessionID"))?;
             let handle = app.session(&id)?;
+            let share = body.get("share").and_then(Value::as_bool).unwrap_or(first.get("share").and_then(Value::as_bool).unwrap_or(true));
+            if share {
+                let session = handle.with(|session| session.clone());
+                let value = crate::share::share(&session)?;
+                handle.with(|session| {
+                    let metadata = session.metadata.get_or_insert_with(|| json!({}));
+                    if !metadata.is_object() {
+                        *metadata = json!({});
+                    }
+                    metadata["share"] = value.clone();
+                });
+                handle.save();
+            } else {
+                let removed = handle.with(|session| {
+                    session
+                        .metadata
+                        .as_mut()
+                        .and_then(Value::as_object_mut)
+                        .and_then(|metadata| metadata.remove("share"))
+                        .and_then(|share| share.get("id").and_then(Value::as_str).map(String::from))
+                });
+                if let Some(id) = removed {
+                    crate::share::revoke(&id);
+                }
+                handle.save();
+            }
             let session = handle.with(|session| session.clone());
             Ok(session_json(&session))
         }
@@ -2465,6 +2491,17 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
                     let directory = std::path::PathBuf::from(directory);
                     session.directory = directory.clone();
                     session.project = crate::session::project_id(&directory);
+                }
+                let workspace_id = body
+                    .get("workspaceID")
+                    .or_else(|| body.pointer("/location/workspaceID"))
+                    .and_then(Value::as_str);
+                if let Some(workspace_id) = workspace_id {
+                    if let Ok(environment) = crate::workspace::connect(workspace_id) {
+                        session.workspace_id = Some(workspace_id.to_string());
+                        session.directory = environment.root().to_path_buf();
+                        session.project = crate::session::project_id(environment.root());
+                    }
                 }
                 if let Some(title) = body.get("title").and_then(Value::as_str) {
                     session.title = title.to_string();
@@ -4006,7 +4043,10 @@ pub(crate) fn session_json_summary(session: &crate::session::Summary) -> Value {
             "created": session.time_created,
             "updated": session.time_updated,
         },
-        "location": { "directory": session.directory.to_string_lossy() },
+        "location": {
+            "directory": session.directory.to_string_lossy(),
+            "workspaceID": session.workspace_id,
+        },
     });
     if let Some(parent) = &session.parent_id {
         value["parentID"] = json!(parent);
@@ -4058,7 +4098,10 @@ pub(crate) fn session_json(session: &crate::session::Session) -> Value {
             "created": session.time_created,
             "updated": session.time_updated,
         },
-        "location": { "directory": session.directory.to_string_lossy() },
+        "location": {
+            "directory": session.directory.to_string_lossy(),
+            "workspaceID": session.workspace_id,
+        },
     });
     if let Some(parent) = &session.parent_id {
         value["parentID"] = json!(parent);

@@ -287,6 +287,18 @@ async fn handle(
     }
     let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
     if request.method == "GET" {
+        if let Some(id) = parsed.path().strip_prefix("/share/") {
+            if let Some(page) = crate::share::html(id) {
+                return write_bytes(&mut stream, 200, "OK", "text/html; charset=utf-8", page.as_bytes()).await;
+            }
+            return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Share not found" } }), None).await;
+        }
+        if let Some(id) = parsed.path().strip_prefix("/api/share/") {
+            if let Some(data) = crate::share::data(id) {
+                return write_bytes(&mut stream, 200, "OK", "application/json", data.as_bytes()).await;
+            }
+            return write_status(&mut stream, 404, "Not Found", json!({ "error": { "message": "Share not found" } }), None).await;
+        }
         if let Some(hash) = parsed.path().strip_prefix("/api/experimental/media/") {
             if let Some((data, mime)) = crate::media::get(hash) {
                 if crate::media::referenced(hash) {
@@ -734,8 +746,19 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("POST", ["api", "experimental", "session", "import"]) => {
             let info = request.body.get("info").cloned().unwrap_or_else(|| request.body.clone());
             let id = info.get("id").and_then(Value::as_str).map(String::from);
-            let handle = match id.and_then(|id| app.session(&id).ok()) {
-                Some(handle) => handle,
+            let replace = request.body.get("replace").and_then(Value::as_bool).unwrap_or(false);
+            let existing = id.as_deref().and_then(|id| app.session(id).ok());
+            if existing.is_some() && !replace {
+                return Err(anyhow!(
+                    "session already exists: {}",
+                    id.as_deref().unwrap_or_default()
+                ));
+            }
+            let handle = match existing {
+                Some(handle) => {
+                    handle.with(|session| session.messages.clear());
+                    handle
+                }
                 None => {
                     let handle = app.new_session(info.get("parentID").and_then(Value::as_str).map(String::from));
                     handle.with(|session| {
@@ -1296,6 +1319,42 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("POST", ["api", "experimental", "voice", "session"]) => {
             Ok(json!({ "data": crate::voice::session(&request.body).await? }))
         }
+        ("POST", ["api", "experimental", "repository"]) => {
+            let repository = request.body.get("repository").and_then(Value::as_str).unwrap_or_default();
+            let branch = request.body.get("branch").and_then(Value::as_str);
+            let refresh = request.body.get("refresh").and_then(Value::as_bool).unwrap_or(false);
+            Ok(json!({ "data": crate::repository::ensure(repository, branch, refresh)? }))
+        }
+        ("GET", ["api", "experimental", "workspace"]) => Ok(json!({
+            "data": crate::workspace::list(),
+        })),
+        ("POST", ["api", "experimental", "workspace"]) => {
+            let provider = request.body.get("provider").and_then(Value::as_str).unwrap_or("local");
+            let directory = request
+                .body
+                .get("directory")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| app.directory.clone());
+            let id = request.body.get("id").and_then(Value::as_str);
+            Ok(json!({ "data": crate::workspace::create(id, provider, &directory)? }))
+        }
+        ("GET", ["api", "experimental", "workspace", workspace_id]) => {
+            let workspace = crate::workspace::get(workspace_id)?.ok_or_else(|| anyhow!("workspace not found: {workspace_id}"))?;
+            Ok(json!({ "data": workspace }))
+        }
+        ("POST", ["api", "experimental", "workspace", workspace_id, "provision"]) => {
+            Ok(json!({ "data": crate::workspace::provision(workspace_id)? }))
+        }
+        ("POST", ["api", "experimental", "workspace", workspace_id, "connect"]) => {
+            let environment = crate::workspace::connect(workspace_id)?;
+            Ok(json!({
+                "data": { "id": workspace_id, "directory": environment.root().to_string_lossy() }
+            }))
+        }
+        ("DELETE", ["api", "experimental", "workspace", workspace_id]) => {
+            Ok(json!({ "data": crate::workspace::destroy(workspace_id)? }))
+        }
         ("GET", ["api", "project"]) => Ok(json!({
             "data": [{
                 "id": app.project,
@@ -1469,7 +1528,9 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 "data": crate::job::list(session.as_deref(), kind.as_deref(), status.as_deref(), descendants),
             }))
         }
-        ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),
+        ("GET", ["api", "experimental", "migration", "v1"]) => {
+            Ok(json!({ "data": crate::migration::status() }))
+        }
         ("GET", ["api", "experimental", "artifacts", "providers"]) => Ok(json!({
             "data": [{ "id": "local", "name": "Local" }],
         })),

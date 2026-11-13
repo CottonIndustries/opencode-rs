@@ -211,6 +211,8 @@ pub struct Session {
     pub id: String,
     pub project: String,
     pub directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -274,6 +276,7 @@ impl Session {
             id: crate::util::id_desc("ses"),
             project: project.to_string(),
             directory: directory.to_path_buf(),
+            workspace_id: None,
             title: format!("{prefix}{}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ")),
             parent_id: parent,
             time_created: now,
@@ -494,6 +497,7 @@ pub struct Summary {
     pub time_created: i64,
     pub time_updated: i64,
     pub directory: PathBuf,
+    pub workspace_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub permissions: Option<serde_json::Value>,
     pub revert: Option<serde_json::Value>,
@@ -518,6 +522,8 @@ pub fn list(project: &str) -> Vec<Summary> {
         time_created: i64,
         time_updated: i64,
         directory: PathBuf,
+        #[serde(default)]
+        workspace_id: Option<String>,
         #[serde(default)]
         metadata: Option<serde_json::Value>,
         #[serde(default)]
@@ -568,6 +574,7 @@ pub fn list(project: &str) -> Vec<Summary> {
                 time_created: h.time_created,
                 time_updated: h.time_updated,
                 directory: h.directory,
+                workspace_id: h.workspace_id,
                 metadata: h.metadata,
                 permissions: h.permissions,
                 revert: h.revert,

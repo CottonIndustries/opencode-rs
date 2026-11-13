@@ -26,6 +26,8 @@ pub struct Config {
     pub instructions: Vec<String>,
     #[serde(alias = "permissions")]
     pub permission: Option<Value>,
+    #[serde(default, alias = "policy")]
+    pub policies: Vec<crate::policy::Policy>,
     pub mcp: BTreeMap<String, McpConfig>,
     pub tools: BTreeMap<String, bool>,
     pub experimental: Experimental,
