@@ -26,6 +26,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::{DefaultTerminal, Frame};
 use serde_json::{json, Value};
@@ -337,6 +338,34 @@ fn layout_plain_lines(node: &Value, depth: usize) -> Vec<String> {
 }
 
 fn plugin_layout_lines(layout: &Value, width: usize, theme: &Theme, depth: usize) -> Vec<Line<'static>> {
+    plugin_layout_lines_bg(layout, width, theme, depth, theme.dialog.bg)
+}
+
+fn plugin_color(value: &str, theme: &Theme) -> Option<Rgba> {
+    if let Some(color) = value.strip_prefix('#').and_then(Rgba::from_hex) {
+        return Some(color);
+    }
+    match value {
+        "text" => Some(theme.dialog.text),
+        "muted" | "dim" => Some(theme.dialog.muted),
+        "faint" => Some(theme.dialog.faint),
+        "border" => Some(theme.dialog.border),
+        "bg" | "background" => Some(theme.dialog.bg),
+        "success" => Some(theme.success.base),
+        "warning" => Some(theme.warning.base),
+        "error" => Some(theme.error.base),
+        "info" => Some(theme.info.base),
+        _ => None,
+    }
+}
+
+fn plugin_layout_lines_bg(
+    layout: &Value,
+    width: usize,
+    theme: &Theme,
+    depth: usize,
+    parent_bg: Rgba,
+) -> Vec<Line<'static>> {
     if depth > 8 {
         return Vec::new();
     }
@@ -346,34 +375,77 @@ fn plugin_layout_lines(layout: &Value, width: usize, theme: &Theme, depth: usize
             if text.is_empty() {
                 return Vec::new();
             }
-            let color = match layout.get("color").and_then(Value::as_str) {
-                Some("success") => theme.success.base,
-                Some("warning") => theme.warning.base,
-                Some("error") => theme.error.base,
-                Some("muted") | Some("dim") => theme.muted,
-                _ => theme.dialog.text,
-            };
-            let item = if layout.get("bold").and_then(Value::as_bool).unwrap_or(false) {
-                Span::styled(text.to_string(), draw::bold(draw::st(color, theme.dialog.bg)))
-            } else {
-                span(text.to_string(), color, theme.dialog.bg)
-            };
-            draw::paragraph(&[item], width.max(1), draw::Wrap::Word, theme.dialog.bg)
+            let color = layout
+                .get("color")
+                .and_then(Value::as_str)
+                .and_then(|value| plugin_color(value, theme))
+                .unwrap_or(theme.dialog.text);
+            let background = layout
+                .get("background")
+                .and_then(Value::as_str)
+                .and_then(|value| plugin_color(value, theme))
+                .unwrap_or(parent_bg);
+            let mut style = draw::st(color, background);
+            if layout.get("bold").and_then(Value::as_bool).unwrap_or(false) {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if layout.get("dim").and_then(Value::as_bool).unwrap_or(false) {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            if layout.get("italic").and_then(Value::as_bool).unwrap_or(false) {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if layout.get("underline").and_then(Value::as_bool).unwrap_or(false) {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            let item = Span::styled(text.to_string(), style);
+            draw::paragraph(&[item], width.max(1), draw::Wrap::Word, background)
         }
         Some("box") => {
+            let background = layout
+                .get("background")
+                .and_then(Value::as_str)
+                .and_then(|value| plugin_color(value, theme))
+                .unwrap_or(parent_bg);
             let children = layout.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
             if layout.get("direction").and_then(Value::as_str) == Some("row") {
-                let text = children.iter().map(layout_text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("  ");
+                let gap = layout.get("gap").and_then(Value::as_u64).unwrap_or(2).min(8) as usize;
+                let text = children
+                    .iter()
+                    .map(layout_text)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(&" ".repeat(gap));
                 if text.is_empty() {
                     Vec::new()
                 } else {
-                    draw::paragraph(&[span(text, theme.dialog.text, theme.dialog.bg)], width.max(1), draw::Wrap::Word, theme.dialog.bg)
+                    draw::paragraph(&[span(text, theme.dialog.text, background)], width.max(1), draw::Wrap::Word, background)
                 }
             } else {
-                children
-                    .iter()
-                    .flat_map(|child| plugin_layout_lines(child, width, theme, depth + 1))
-                    .collect()
+                let padding = layout.get("padding").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let top = layout.get("paddingTop").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
+                let bottom = layout.get("paddingBottom").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
+                let left = layout.get("paddingLeft").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
+                let right = layout.get("paddingRight").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
+                let inner_width = width.saturating_sub(left.saturating_add(right)).max(1);
+                let mut lines = Vec::new();
+                for _ in 0..top {
+                    lines.push(line(vec![], background));
+                }
+                for child in &children {
+                    for mut item in plugin_layout_lines_bg(child, inner_width, theme, depth + 1, background) {
+                        if left > 0 {
+                            let mut spans = vec![span(" ".repeat(left), background, background)];
+                            spans.append(&mut item.spans);
+                            item = line(spans, background);
+                        }
+                        lines.push(item);
+                    }
+                }
+                for _ in 0..bottom {
+                    lines.push(line(vec![], background));
+                }
+                lines
             }
         }
         _ => Vec::new(),

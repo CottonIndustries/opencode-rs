@@ -1719,13 +1719,17 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
     const text = jsxText(value)
     if (!text.trim()) return null
     budget.nodes += 1
+    const color = jsxColor(props.fg ?? props.color)
+    const background = jsxColor(props.bg ?? props.backgroundColor)
     return {
       type: "text",
       text,
-      ...(type === "b" || type === "strong" ? { bold: true } : {}),
-      ...(type === "i" || type === "em" ? { italic: true } : {}),
-      ...(props.fg ? { color: String(props.fg) } : {}),
+      ...(type === "b" || type === "strong" || props.bold ? { bold: true } : {}),
+      ...(type === "i" || type === "em" || props.italic ? { italic: true } : {}),
       ...(props.dim ? { dim: true } : {}),
+      ...(props.underline ? { underline: true } : {}),
+      ...(color ? { color } : {}),
+      ...(background ? { background } : {}),
     }
   }
   if (children === undefined) {
@@ -1738,7 +1742,37 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
   const direction = String(props.flexDirection ?? props.direction ?? "column").toLowerCase() === "row" ? "row" : "column"
   const nested = jsxLayout(children, depth + 1, budget)
   const items = nested ? (nested.type === "box" && nested.direction === direction ? nested.children : [nested]) : []
-  return { type: "box", direction, children: items }
+  const padding = Number(props.padding ?? 0)
+  const gap = Number(props.gap ?? props.columnGap ?? props.rowGap ?? 0)
+  const border = typeof props.borderStyle === "string" ? props.borderStyle : props.border ? "single" : undefined
+  return {
+    type: "box",
+    direction,
+    children: items,
+    ...(Number.isFinite(padding) && padding > 0 ? { padding } : {}),
+    ...(Number.isFinite(Number(props.paddingTop)) ? { paddingTop: Number(props.paddingTop) } : {}),
+    ...(Number.isFinite(Number(props.paddingBottom)) ? { paddingBottom: Number(props.paddingBottom) } : {}),
+    ...(Number.isFinite(Number(props.paddingLeft)) ? { paddingLeft: Number(props.paddingLeft) } : {}),
+    ...(Number.isFinite(Number(props.paddingRight)) ? { paddingRight: Number(props.paddingRight) } : {}),
+    ...(Number.isFinite(gap) && gap > 0 ? { gap } : {}),
+    ...(border ? { border } : {}),
+    ...(props.title ?? props.borderTitle ? { title: String(props.title ?? props.borderTitle) } : {}),
+    ...(jsxColor(props.borderColor) ? { borderColor: jsxColor(props.borderColor) } : {}),
+    ...(jsxColor(props.backgroundColor ?? props.bg) ? { background: jsxColor(props.backgroundColor ?? props.bg) } : {}),
+    ...(Number.isFinite(Number(props.width)) ? { width: Number(props.width) } : {}),
+    ...(Number.isFinite(Number(props.height)) ? { height: Number(props.height) } : {}),
+    ...(props.alignItems ? { align: String(props.alignItems) } : {}),
+  }
+}
+
+function jsxColor(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value
+  if (typeof value === "object" && value !== null) {
+    const candidate = value as Record<string, unknown>
+    if (typeof candidate.hex === "string") return candidate.hex
+    if (typeof candidate.value === "string") return candidate.value
+  }
+  return undefined
 }
 
 async function renderTuiSlots(input: Json): Promise<Json[]> {
