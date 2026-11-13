@@ -633,6 +633,21 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
             Ok(json!({ "data": entries }))
         }
+        ("POST", ["api", "experimental", "fs", "write"]) => {
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let path = query_value(&parsed, "path").ok_or_else(|| anyhow!("path is required"))?;
+            let target = if std::path::Path::new(&path).is_absolute() {
+                std::path::PathBuf::from(&path)
+            } else {
+                app.directory.join(&path)
+            };
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&target, &request.raw_body)?;
+            let resolved = std::fs::canonicalize(&target).unwrap_or(target);
+            Ok(json!({ "data": { "path": resolved.to_string_lossy() } }))
+        }
         ("GET", ["api", "fs", "find"]) => {
             let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
             let query = query_value(&parsed, "query").unwrap_or_default().to_lowercase();
