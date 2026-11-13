@@ -22,13 +22,16 @@ Prefer the smallest layer that still exercises the behavior. A request-building 
 
 ## Tools
 
-Build a temporary app and run the tool through its real registry:
+Build a temporary app, resolve the session's agent and model, then run the tool through its real registry:
 
 ```rust
 let dir = std::env::temp_dir().join(format!("opencode-tool-{}", crate::util::id("")));
 std::fs::create_dir_all(&dir)?;
 let app = crate::app::App::init(dir.clone()).await?;
-let tool = crate::tools::registry(&app).remove("read").unwrap();
+let agent = app.agent(&app.default_agent())?.clone();
+let selection = crate::engine::select_model(&app, &agent, &Default::default(), None)?;
+let tools = crate::tools::registry(&app, &agent, &selection.model).await;
+let tool = tools.into_iter().find(|tool| tool.name() == "read").unwrap();
 let out = tool.execute(serde_json::json!({ "path": "notes.txt" }), &ctx).await?;
 ```
 
