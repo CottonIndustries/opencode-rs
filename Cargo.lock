@@ -1562,6 +1562,9 @@ dependencies = [
  "http",
  "ignore",
  "mime_guess",
+ "opencode-foundation",
+ "opencode-services",
+ "opencode-storage",
  "portable-pty",
  "rand 0.8.8",
  "regex",
@@ -1582,6 +1585,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "opencode-foundation"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "http",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "similar",
+ "tokio",
+ "url",
+ "wreq",
+ "wreq-proto",
+]
+
+[[package]]
 name = "opencode-server"
 version = "2.2.7"
 dependencies = [
@@ -1594,6 +1616,37 @@ dependencies = [
  "sha1_smol",
  "sha2",
  "tokio",
+ "url",
+]
+
+[[package]]
+name = "opencode-services"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "opencode-foundation",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "opencode-storage"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "opencode-foundation",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1_smol",
+ "sha2",
+ "similar",
  "url",
 ]
 

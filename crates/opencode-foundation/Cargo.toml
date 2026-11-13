@@ -1,0 +1,21 @@
+[package]
+name = "opencode-foundation"
+version = "2.2.7"
+edition = "2021"
+description = "Filesystem, HTTP and credential foundation for OpenCode"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+http = "1"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+similar = { version = "2", features = ["inline"] }
+tokio = { version = "1", features = ["full"] }
+url = "2"
+wreq = { version = "0.16.1", default-features = false, features = ["tokio-rt", "webpki-roots", "json", "stream", "multipart", "gzip", "deflate", "brotli", "zstd", "ws"] }
+wreq-proto = "0.2.6"

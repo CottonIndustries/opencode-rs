@@ -1,0 +1,16 @@
+[package]
+name = "opencode-services"
+version = "2.2.7"
+edition = "2021"
+description = "Hosted config, forms and permissions for OpenCode"
+license = "MIT"
+
+[dependencies]
+opencode-foundation = { path = "../opencode-foundation" }
+anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+url = "2"

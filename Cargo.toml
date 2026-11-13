@@ -1,6 +1,21 @@
 [workspace]
-members = ["crates/opencode-core", "crates/opencode-tui", "crates/opencode-server"]
-default-members = [".", "crates/opencode-core", "crates/opencode-tui", "crates/opencode-server"]
+members = [
+    "crates/opencode-foundation",
+    "crates/opencode-storage",
+    "crates/opencode-services",
+    "crates/opencode-core",
+    "crates/opencode-tui",
+    "crates/opencode-server",
+]
+default-members = [
+    ".",
+    "crates/opencode-foundation",
+    "crates/opencode-storage",
+    "crates/opencode-services",
+    "crates/opencode-core",
+    "crates/opencode-tui",
+    "crates/opencode-server",
+]
 resolver = "2"
 
 [package]

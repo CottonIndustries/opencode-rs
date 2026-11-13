@@ -6,6 +6,9 @@ description = "Core runtime for OpenCode - AI coding agent for the terminal"
 license = "MIT"
 
 [dependencies]
+opencode-foundation = { path = "../opencode-foundation" }
+opencode-services = { path = "../opencode-services" }
+opencode-storage = { path = "../opencode-storage" }
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"

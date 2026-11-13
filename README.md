@@ -18,13 +18,21 @@ library crates:
 
 | Crate | Responsibility |
 |---|---|
-| `crates/opencode-core` | Configuration, models, providers, sessions, engine, tools, plugins, storage, jobs, workspaces and supporting services |
+| `crates/opencode-foundation` | Paths, utilities, HTTP fingerprinting, credentials, account usage and shared state |
+| `crates/opencode-storage` | Sessions, SQLite stores, durable events, snapshots, media, artifacts, VCS, sharing and statistics |
+| `crates/opencode-services` | Hosted Console config, well-known manifests, forms and saved permissions |
+| `crates/opencode-core` | Configuration, models, providers, agent engine, tools, plugins, jobs, schedules and workspaces |
 | `crates/opencode-tui` | Ratatui terminal UI, themes, transcript rendering and the plugin layout renderer |
 | `crates/opencode-server` | HTTP API, SSE event feed and PTY WebSocket transport |
 
 `src/` keeps only the binary entry point, CLI parsing, non-interactive `run` and
 ACP. Build and test everything with `cargo build --workspace` and
-`cargo test --workspace`; `cargo test` in the root runs only the binary tests.
+`cargo test --workspace`.
+
+The remaining `opencode-core` crate is deliberately one dependency cluster:
+`app`, `engine`, `config`, `plugin`, `provider` and `tools` are mutually
+recursive. Splitting those further requires explicit trait boundaries rather
+than file moves.
 
 BoringSSL is built from source, which needs CMake, NASM and libclang. `.cargo/config.toml`
 points at `tools/cmake`, `tools/nasm` and `tools/libclang` (not committed); change those paths
