@@ -478,42 +478,14 @@ async fn write_media(
         .is_some_and(|value| value.split(',').any(|item| item.trim() == etag || item.trim() == "*"))
     {
         let head = format!(
-            "HTTP/1.1 304 Not Modified
-
-etag: {etag}
-
-cache-control: {cache}
-
-access-control-allow-origin: *
-
-connection: close
-
-
-
-"
+            "HTTP/1.1 304 Not Modified\r\netag: {etag}\r\ncache-control: {cache}\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n"
         );
         stream.write_all(head.as_bytes()).await?;
         stream.flush().await?;
         return Ok(());
     }
     let head = format!(
-        "HTTP/1.1 200 OK
-
-content-type: {content_type}
-
-content-length: {}
-
-etag: {etag}
-
-cache-control: {cache}
-
-access-control-allow-origin: *
-
-connection: close
-
-
-
-",
+        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\netag: {etag}\r\ncache-control: {cache}\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes()).await?;
