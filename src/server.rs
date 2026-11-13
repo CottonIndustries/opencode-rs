@@ -1049,7 +1049,16 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             "projectID": app.project,
             "vcs": if app.is_git { "git" } else { "none" },
         })),
-        ("POST", ["api", "location", "reload"]) => Ok(Value::Null),
+        ("POST", ["api", "location", "reload"]) => {
+            let loaded = crate::config::load(&app.directory, &app.worktree)?;
+            app.mcp.reconfigure(loaded.config.mcp.clone());
+            app.reject_all_pending("");
+            for form in app.forms.all() {
+                let _ = app.forms.cancel(&form.id);
+            }
+            app.emit(crate::app::AppEvent::Notice { message: "Configuration reloaded".into() });
+            Ok(Value::Null)
+        }
         ("GET", ["api", "config", "shell"]) => {
             let shell = crate::tools::shell::detect();
             Ok(json!({
@@ -1110,7 +1119,10 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("GET", ["api", "plugin", "gui"]) => Ok(json!({ "data": Value::Null })),
         ("POST", ["api", "plugin", "check"]) => Ok(json!({ "data": app.plugins.list() })),
         ("POST", ["api", "plugin", "update"]) => Ok(Value::Null),
-        ("GET", ["api", "reference"]) => Ok(json!({ "data": [] })),
+        ("GET", ["api", "reference"]) => {
+            let value = app.plugins.request("reference.list", json!({})).await?;
+            Ok(json!({ "data": if value.is_null() { json!([]) } else { value } }))
+        }
         ("GET", ["api", "agent", agent_id]) => {
             let agent = app.agents().get(*agent_id).cloned().ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
             Ok(json!({ "data": crate::plugin::agent_json(&agent) }))

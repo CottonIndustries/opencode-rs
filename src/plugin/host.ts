@@ -158,6 +158,14 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       })
       return {}
     }
+    case "reference.list":
+      return [...registry.references.entries()].map(([name, source]) => ({
+        name,
+        path: source.path ?? source.repository ?? "",
+        ...(source.description === undefined ? {} : { description: source.description }),
+        ...(source.hidden === undefined ? {} : { hidden: source.hidden }),
+        source,
+      }))
     case "websearch.list":
       return {
         providers: [...registry.websearch.values()].map((item) => ({ id: item.id, name: item.name })),
