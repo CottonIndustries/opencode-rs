@@ -205,27 +205,7 @@ pub async fn session_export(id: Option<String>, sanitize: bool) -> Result<()> {
     };
     let mut s = crate::session::load(&app.project, &id)?;
     if sanitize {
-        for m in &mut s.messages {
-            for p in &mut m.parts {
-                match p {
-                    crate::session::Part::Text { text, .. } => *text = format!("[redacted {} chars]", text.len()),
-                    crate::session::Part::Reasoning { text, signature, redacted, .. } => {
-                        *text = "[redacted]".into();
-                        *signature = None;
-                        *redacted = None;
-                    }
-                    crate::session::Part::Tool { input, state, .. } => {
-                        *input = json!({});
-                        if let crate::session::ToolState::Completed { output, attachments, .. } = state {
-                            *output = "[redacted]".into();
-                            attachments.clear();
-                        }
-                    }
-                    crate::session::Part::File(f) => f.data.clear(),
-                    crate::session::Part::Compaction { summary, .. } => *summary = "[redacted]".into(),
-                }
-            }
-        }
+        s.sanitize();
     }
     println!("{}", serde_json::to_string_pretty(&s)?);
     Ok(())

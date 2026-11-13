@@ -304,6 +304,31 @@ impl Session {
             tokens_total: Usage::default(),
         }
     }
+    /// Redact message text, tool input, attachments and file data before export.
+    pub fn sanitize(&mut self) {
+        for message in &mut self.messages {
+            for part in &mut message.parts {
+                match part {
+                    Part::Text { text, .. } => *text = format!("[redacted {} chars]", text.len()),
+                    Part::Reasoning { text, signature, redacted, .. } => {
+                        *text = "[redacted]".into();
+                        *signature = None;
+                        *redacted = None;
+                    }
+                    Part::Tool { input, state, .. } => {
+                        *input = serde_json::json!({});
+                        if let ToolState::Completed { output, attachments, .. } = state {
+                            *output = "[redacted]".into();
+                            attachments.clear();
+                        }
+                    }
+                    Part::File(file) => file.data.clear(),
+                    Part::Compaction { summary, .. } => *summary = "[redacted]".into(),
+                }
+            }
+        }
+    }
+
     /// Append a history-only record with a stable id and creation time.
     pub fn record(&mut self, value: serde_json::Value) {
         let mut value = value;

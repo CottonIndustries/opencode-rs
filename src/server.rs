@@ -735,7 +735,11 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         ("GET", ["api", "experimental", "session", "stats"]) => Ok(json!({ "data": session_stats(app) })),
         ("GET", ["api", "experimental", "session", id, "export"]) => {
             let handle = app.session(id)?;
-            let session = handle.with(|session| session.clone());
+            let mut session = handle.with(|session| session.clone());
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            if query_value(&parsed, "sanitize").as_deref() == Some("true") {
+                session.sanitize();
+            }
             Ok(json!({
                 "data": {
                     "info": crate::plugin::session_json(&session),
