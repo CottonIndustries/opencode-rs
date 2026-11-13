@@ -19,7 +19,21 @@ pub enum Status {
     Connected { tools: usize },
     Disabled,
     Failed(String),
+    /// The server answered 401/403. The user can authorize it and retry.
+    NeedsAuth(String),
 }
+
+/// Marker for a remote server that rejected the request without a usable token.
+#[derive(Debug, Clone)]
+pub struct AuthRequired;
+
+impl std::fmt::Display for AuthRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "authorization required")
+    }
+}
+
+impl std::error::Error for AuthRequired {}
 
 enum Transport {
     Stdio {
@@ -111,6 +125,9 @@ impl Client {
                 let r = crate::http::send(rb).await?;
                 if let Some(s) = r.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
                     *session.lock().unwrap() = Some(s.to_string());
+                }
+                if r.status() == 401 || r.status() == 403 {
+                    return Err(anyhow::Error::new(AuthRequired));
                 }
                 if !r.status().is_success() {
                     return Err(anyhow!("MCP server {} returned HTTP {}", self.name, r.status().as_u16()));
@@ -465,7 +482,17 @@ impl Manager {
                 }
                 Err(Some(e)) => {
                     self.clients.lock().unwrap().remove(&name);
-                    self.status.lock().unwrap().insert(name, Status::Failed(e.to_string()));
+                    let auth_disabled = configs
+                        .get(&name)
+                        .and_then(|config| config.oauth.as_ref())
+                        .and_then(Value::as_bool)
+                        == Some(false);
+                    let status = if !auth_disabled && e.downcast_ref::<AuthRequired>().is_some() {
+                        Status::NeedsAuth(e.to_string())
+                    } else {
+                        Status::Failed(e.to_string())
+                    };
+                    self.status.lock().unwrap().insert(name, status);
                 }
             }
         }
@@ -588,5 +615,32 @@ mod tests {
         assert!(matches!(manager.status.lock().unwrap().get("demo"), Some(Status::Connected { tools: 1 })));
         manager.detach_socket("demo");
         assert!(!manager.tools().await.iter().any(|tool| tool.name() == "demo_echo"));
+    }
+
+    #[tokio::test]
+    async fn http_unauthorized_marks_server_needs_auth() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 401 Unauthorized{cr}{lf}content-length: 0{cr}{lf}connection: close{cr}{lf}{cr}{lf}",
+                    cr = char::from(13),
+                    lf = char::from(10)
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let config = crate::config::McpConfig {
+            kind: Some("remote".into()),
+            url: Some(format!("http://127.0.0.1:{port}/mcp")),
+            ..Default::default()
+        };
+        let manager = Manager::new(BTreeMap::from([("auth".to_string(), config)]), std::env::temp_dir());
+        let status = manager.status().await;
+        assert!(matches!(status.get("auth"), Some(Status::NeedsAuth(_))));
     }
 }

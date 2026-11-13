@@ -35,6 +35,22 @@ struct Tokens {
     issuer: String,
 }
 
+/// A started authorization flow. begin() performs discovery and client registration; finish()
+/// waits for the browser callback and exchanges the code, so a UI can show the URL first.
+pub struct SignIn {
+    server: String,
+    pub url: String,
+    listener: TcpListener,
+    state: String,
+    verifier: String,
+    redirect: String,
+    client_id: String,
+    client_secret: String,
+    discovery: Discovery,
+    resource: String,
+    scope: String,
+}
+
 fn credential_key(server: &str) -> String {
     format!("mcp:{server}")
 }
@@ -100,6 +116,19 @@ fn string_field(value: Option<&Value>, key: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// OAuth options use camelCase upstream and snake_case in older configs.
+fn oauth_string(oauth: &Value, key: &str, legacy: &str) -> Option<String> {
+    string_field(Some(oauth), key).or_else(|| string_field(Some(oauth), legacy))
+}
+
+fn oauth_port(oauth: &Value, key: &str, legacy: &str) -> Option<u16> {
+    let value = oauth.get(key).or_else(|| oauth.get(legacy))?;
+    value
+        .as_u64()
+        .map(|port| port as u16)
+        .or_else(|| value.as_str().and_then(|port| port.parse::<u16>().ok()))
+}
+
 async fn get_json(url: &str, headers: &[(String, String)]) -> Result<Value> {
     let mut builder = crate::http::client().get(url);
     for (key, value) in headers {
@@ -142,14 +171,14 @@ async fn post_form(url: &str, form: &[(&str, String)]) -> Result<Value> {
 }
 
 async fn discover(config: &McpConfig) -> Result<Discovery> {
-    let oauth = configured_oauth(config);
-    if let Some(url) = string_field(oauth, "auth_server_metadata_url") {
+    let oauth = configured_oauth(config).cloned().unwrap_or(Value::Null);
+    if let Some(url) = oauth_string(&oauth, "authServerMetadataUrl", "auth_server_metadata_url") {
         let metadata = get_json(&url, &[]).await?;
         return discovery_from_metadata(&metadata);
     }
     let server = config.url.as_deref().ok_or_else(|| anyhow!("remote MCP server has no url"))?;
     let url = url::Url::parse(server)?;
-    let mut resource_metadata_url = string_field(oauth, "resource_metadata_url");
+    let mut resource_metadata_url = oauth_string(&oauth, "resourceMetadataUrl", "resource_metadata_url");
     if resource_metadata_url.is_none() {
         let response = crate::http::send(crate::http::client().get(server)).await;
         if let Ok(response) = response {
@@ -183,7 +212,7 @@ async fn discover(config: &McpConfig) -> Result<Discovery> {
         .and_then(|servers| servers.first())
         .and_then(Value::as_str)
         .map(String::from)
-        .or_else(|| string_field(oauth, "issuer"))
+        .or_else(|| oauth_string(&oauth, "issuer", "issuer"))
         .unwrap_or_else(|| {
             let mut issuer = url.clone();
             issuer.set_path("");
@@ -201,6 +230,15 @@ async fn discover(config: &McpConfig) -> Result<Discovery> {
     };
     let mut discovery = discovery_from_metadata(&metadata)?;
     discovery.issuer = issuer;
+    // The resource metadata names the scopes the MCP server actually accepts, which is narrower
+    // than the authorization server's full catalogue (Context7 asks for profile/email, not
+    // openid and offline_access).
+    if let Some(scopes) = resource_metadata.get("scopes_supported").and_then(Value::as_array) {
+        let scopes: Vec<String> = scopes.iter().filter_map(Value::as_str).map(String::from).collect();
+        if !scopes.is_empty() {
+            discovery.scopes = scopes;
+        }
+    }
     Ok(discovery)
 }
 
@@ -244,12 +282,15 @@ fn random_bytes(len: usize) -> Vec<u8> {
     bytes
 }
 
-fn open_browser(url: &str) -> Result<()> {
+pub fn open_browser(url: &str) -> Result<()> {
+    if std::env::var("OPENCODE_MCP_NO_BROWSER").is_ok() {
+        return Ok(());
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
             .creation_flags(0x0800_0000)
             .spawn()?;
     }
@@ -264,23 +305,27 @@ fn open_browser(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run the interactive authorization flow and persist the tokens.
-pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
+/// Start authorization: discovery, client registration, PKCE and the callback listener.
+/// The caller presents the URL and then calls finish().
+pub async fn begin(server: &str, config: &McpConfig) -> Result<SignIn> {
     let oauth = configured_oauth(config).cloned().unwrap_or(Value::Null);
     let discovery = discover(config).await?;
     let resource = config
         .url
         .clone()
         .ok_or_else(|| anyhow!("remote MCP server has no url"))?;
-    let listener = TcpListener::bind((
-        "127.0.0.1",
-        oauth.get("callback_port").and_then(Value::as_u64).unwrap_or(0) as u16,
-    ))
-    .await?;
+    let configured_redirect = oauth_string(&oauth, "redirectUri", "redirect_uri");
+    let bind_port = configured_redirect
+        .as_deref()
+        .and_then(|value| url::Url::parse(value).ok())
+        .and_then(|url| url.port())
+        .or_else(|| oauth_port(&oauth, "callbackPort", "callback_port"))
+        .unwrap_or(0);
+    let listener = TcpListener::bind(("127.0.0.1", bind_port)).await?;
     let port = listener.local_addr()?.port();
-    let redirect = string_field(Some(&oauth), "redirect_uri").unwrap_or_else(|| format!("http://127.0.0.1:{port}/callback"));
+    let redirect = configured_redirect.unwrap_or_else(|| format!("http://127.0.0.1:{port}/callback"));
     let (client_id, client_secret) =
-        match (string_field(Some(&oauth), "client_id"), string_field(Some(&oauth), "client_secret")) {
+        match (oauth_string(&oauth, "clientId", "client_id"), oauth_string(&oauth, "clientSecret", "client_secret")) {
             (Some(id), secret) => (id, secret.unwrap_or_default()),
             _ => {
                 let endpoint = discovery
@@ -291,6 +336,7 @@ pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
                     endpoint,
                     &json!({
                         "client_name": "opencode",
+                        "client_uri": "https://opencode.ai",
                         "redirect_uris": [redirect],
                         "grant_types": ["authorization_code", "refresh_token"],
                         "response_types": ["code"],
@@ -312,7 +358,7 @@ pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
     let verifier = base64_url(&random_bytes(32));
     let challenge = base64_url(&Sha256::digest(verifier.as_bytes()));
     let state = base64_url(&random_bytes(16));
-    let scope = string_field(Some(&oauth), "scope")
+    let scope = oauth_string(&oauth, "scope", "scope")
         .or_else(|| (!discovery.scopes.is_empty()).then(|| discovery.scopes.join(" ")))
         .unwrap_or_default();
     let mut authorization = url::Url::parse(&discovery.authorization_endpoint)?;
@@ -329,8 +375,37 @@ pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
             query.append_pair("scope", &scope);
         }
     }
-    eprintln!("Open this URL to authorize MCP server {server}:\n{authorization}");
-    let _ = open_browser(authorization.as_str());
+    // The caller presents the URL; the CLI and TUI decide how to open it.
+    Ok(SignIn {
+        server: server.to_string(),
+        url: authorization.to_string(),
+        listener,
+        state,
+        verifier,
+        redirect,
+        client_id,
+        client_secret,
+        discovery,
+        resource,
+        scope,
+    })
+}
+
+/// Wait for the browser callback and exchange the code for tokens.
+pub async fn finish(sign_in: SignIn) -> Result<()> {
+    let SignIn {
+        server,
+        listener,
+        state,
+        verifier,
+        redirect,
+        client_id,
+        client_secret,
+        discovery,
+        resource,
+        scope,
+        ..
+    } = sign_in;
     let code = tokio::time::timeout(CALLBACK_TIMEOUT, wait_for_code(listener, &state)).await;
     let code = match code {
         Ok(Ok(code)) => code,
@@ -361,7 +436,7 @@ pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
         .map(|seconds| crate::util::now_ms() + seconds as i64 * 1000)
         .unwrap_or(0);
     save(
-        server,
+        &server,
         &Tokens {
             access,
             refresh,
@@ -376,6 +451,15 @@ pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
     )?;
     eprintln!("MCP server {server} authorized");
     Ok(())
+}
+
+/// Run the interactive authorization flow and persist the tokens.
+pub async fn authorize(server: &str, config: &McpConfig) -> Result<()> {
+    let sign_in = begin(server, config).await?;
+    eprintln!("Open this URL to authorize MCP server {server}:");
+    eprintln!("{}", sign_in.url);
+    let _ = open_browser(&sign_in.url);
+    finish(sign_in).await
 }
 
 async fn wait_for_code(listener: TcpListener, state: &str) -> Result<String> {

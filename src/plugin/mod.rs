@@ -3690,6 +3690,7 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
                     Some(crate::mcp::Status::Connected { tools }) => json!({ "status": "connected", "tools": tools }),
                     Some(crate::mcp::Status::Disabled) => json!({ "status": "disabled" }),
                     Some(crate::mcp::Status::Failed(error)) => json!({ "status": "failed", "error": error }),
+                    Some(crate::mcp::Status::NeedsAuth(error)) => json!({ "status": "needs_auth", "error": error }),
                     None => json!({ "status": "pending" }),
                 },
             }))

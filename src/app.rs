@@ -37,6 +37,8 @@ pub enum AppEvent {
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
     PluginPage { title: String, text: String, layout: serde_json::Value },
+    McpAuth { name: String, url: String, opened: bool },
+    McpAuthDone { name: String, error: Option<String> },
 }
 
 impl AppEvent {
@@ -880,6 +882,20 @@ pub(crate) fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "server.notice",
             "properties": { "message": text, "title": title }
+        }),
+        AppEvent::McpAuth { name, url, .. } => json!({
+            "id": id(),
+            "type": "mcp.auth",
+            "properties": { "name": name, "url": url }
+        }),
+        AppEvent::McpAuthDone { name, error } => json!({
+            "id": id(),
+            "type": "mcp.status.changed",
+            "properties": {
+                "name": name,
+                "status": if error.is_some() { "needs_auth" } else { "connected" },
+                "error": error,
+            }
         }),
     }
 }

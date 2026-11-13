@@ -337,6 +337,7 @@ pub async fn mcp_list() -> Result<()> {
             crate::mcp::Status::Connected { tools } => println!("✓ {name}  connected ({tools} tools){auth}"),
             crate::mcp::Status::Disabled => println!("○ {name}  disabled{auth}"),
             crate::mcp::Status::Failed(e) => println!("✗ {name}  failed: {e}{auth}"),
+            crate::mcp::Status::NeedsAuth(_) => println!("! {name}  sign in required (opencode mcp auth {name}){auth}"),
         }
     }
     Ok(())

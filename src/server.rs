@@ -1244,6 +1244,7 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                         crate::mcp::Status::Connected { tools } => json!({ "status": "connected", "tools": tools }),
                         crate::mcp::Status::Disabled => json!({ "status": "disabled" }),
                         crate::mcp::Status::Failed(error) => json!({ "status": "error", "error": error }),
+                        crate::mcp::Status::NeedsAuth(error) => json!({ "status": "needs_auth", "error": error }),
                     }
                 })).collect::<Vec<_>>(),
             }))
@@ -1781,6 +1782,7 @@ fn mcp_status_json(status: &crate::mcp::Status) -> Value {
         crate::mcp::Status::Connected { tools } => json!({ "status": "connected", "tools": tools }),
         crate::mcp::Status::Disabled => json!({ "status": "disabled" }),
         crate::mcp::Status::Failed(error) => json!({ "status": "error", "error": error }),
+        crate::mcp::Status::NeedsAuth(error) => json!({ "status": "needs_auth", "error": error }),
     }
 }
 

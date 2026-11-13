@@ -179,6 +179,7 @@ enum Act {
     Pick(Kind, String),
     Rename(String, String),
     RenameOpen(String, String),
+    McpAuthOpen(String),
     Sessions(bool),
     Delete(String),
     Favorite(String, usize),
@@ -1668,12 +1669,71 @@ impl Ui {
                     Some(crate::mcp::Status::Connected { .. }) => "Connected",
                     Some(crate::mcp::Status::Disabled) => "Disabled",
                     Some(crate::mcp::Status::Failed(_)) => "Error",
+                    Some(crate::mcp::Status::NeedsAuth(_)) => "Sign in",
                     None => "Connecting",
                 };
                 Opt { title: n.clone(), footer: status.into(), value: n, ..Default::default() }
             })
             .collect();
-        self.dialog = Some(Dialog::Select(Select::new(Kind::Mcp, "MCP servers", opts)));
+        let mut select = Select::new(Kind::Mcp, "MCP servers", opts);
+        select.hints.push(Hint { title: "sign in".into(), key: "enter".into(), right: false });
+        self.dialog = Some(Dialog::Select(select));
+    }
+
+    /// Start the OAuth flow for a remote MCP server. Discovery and registration run off the UI
+    /// thread; the browser opens as soon as the authorization URL exists, and the dialog keeps the
+    /// URL visible while the local callback waits.
+    fn start_mcp_auth(&mut self, name: String) {
+        let Some(config) = self.app.config().mcp.get(&name).cloned() else {
+            self.toast(Variant::Error, None, format!("MCP server not configured: {name}"));
+            return;
+        };
+        let app = self.app.clone();
+        self.dialog = Some(Dialog::Text {
+            title: format!("MCP sign-in: {name}"),
+            text: format!("Starting sign-in for {name}..."),
+            scroll: 0,
+            layout: Value::Null,
+        });
+        tokio::spawn(async move {
+            let sign_in = match crate::mcp_oauth::begin(&name, &config).await {
+                Ok(sign_in) => sign_in,
+                Err(error) => {
+                    app.emit(AppEvent::McpAuthDone { name, error: Some(error.to_string()) });
+                    return;
+                }
+            };
+            let url = sign_in.url.clone();
+            let opened = crate::mcp_oauth::open_browser(&url).is_ok();
+            app.emit(AppEvent::McpAuth { name: name.clone(), url, opened });
+            if let Err(error) = crate::mcp_oauth::finish(sign_in).await {
+                app.emit(AppEvent::McpAuthDone { name, error: Some(error.to_string()) });
+                return;
+            }
+            let error = match app.mcp.connect_server(&name).await {
+                Ok(crate::mcp::Status::Connected { .. }) => None,
+                Ok(crate::mcp::Status::NeedsAuth(error)) => Some(format!("still needs authentication: {error}")),
+                Ok(crate::mcp::Status::Failed(error)) => Some(error),
+                Ok(crate::mcp::Status::Disabled) => Some("server is disabled".into()),
+                Err(error) => Some(error.to_string()),
+            };
+            app.emit(AppEvent::McpAuthDone { name, error });
+        });
+    }
+
+    fn retry_mcp(&mut self, name: String) {
+        let app = self.app.clone();
+        self.toast(Variant::Info, None, format!("Reconnecting {name}..."));
+        tokio::spawn(async move {
+            let error = match app.mcp.connect_server(&name).await {
+                Ok(crate::mcp::Status::Connected { .. }) => None,
+                Ok(crate::mcp::Status::NeedsAuth(error)) => Some(format!("sign in required: {error}")),
+                Ok(crate::mcp::Status::Failed(error)) => Some(error),
+                Ok(crate::mcp::Status::Disabled) => Some("server is disabled".into()),
+                Err(error) => Some(error.to_string()),
+            };
+            app.emit(AppEvent::McpAuthDone { name, error });
+        });
     }
 
     fn open_timeline(&mut self, kind: Kind) {
@@ -2022,7 +2082,22 @@ impl Ui {
                     self.editor.insert(&mention);
                 }
             }
-            Kind::Mcp => {}
+            Kind::Mcp => {
+                self.dialog = None;
+                let status = self
+                    .app
+                    .mcp
+                    .snapshot()
+                    .into_iter()
+                    .find(|(n, _)| *n == value)
+                    .and_then(|(_, status)| status);
+                match status {
+                    Some(crate::mcp::Status::NeedsAuth(_)) => self.start_mcp_auth(value),
+                    Some(crate::mcp::Status::Failed(_)) => self.retry_mcp(value),
+                    Some(crate::mcp::Status::Connected { .. }) => self.toast(Variant::Info, None, format!("{value} is already connected.")),
+                    _ => self.toast(Variant::Info, None, format!("{value} is not connected.")),
+                }
+            }
         }
     }
 
@@ -2048,7 +2123,14 @@ impl Ui {
                         Act::None
                     }
                 }
-                Some(Dialog::Text { scroll, .. }) => match k.name.as_str() {
+                Some(Dialog::Text { title, text, scroll, .. }) => match k.name.as_str() {
+                    "o" if title.starts_with("MCP sign-in: ") => text
+                        .lines()
+                        .find_map(|line| {
+                            let line = line.trim();
+                            (line.starts_with("http://") || line.starts_with("https://")).then(|| Act::McpAuthOpen(line.to_string()))
+                        })
+                        .unwrap_or(Act::None),
                     "escape" | "return" => Act::Close,
                     "up" => {
                         *scroll = scroll.saturating_sub(1);
@@ -2148,6 +2230,10 @@ impl Ui {
             Act::None => {}
             Act::Close => self.close_dialog(),
             Act::Pick(kind, v) => self.dialog_select(kind, v),
+            Act::McpAuthOpen(url) => match crate::mcp_oauth::open_browser(&url) {
+                Ok(()) => self.toast(Variant::Info, None, "Opened the sign-in page in your browser."),
+                Err(error) => self.toast(Variant::Error, None, format!("Could not open browser: {error}")),
+            },
             Act::Rename(target, title) => {
                 self.dialog = None;
                 if let Some(provider) = target.strip_prefix("connect:") {
@@ -2845,6 +2931,33 @@ impl Ui {
             AppEvent::PluginPage { title, text, layout } => {
                 self.dialog = Some(Dialog::Text { title, text, layout, scroll: 0 });
             }
+            AppEvent::McpAuth { name, url, opened } => {
+                let lead = if opened {
+                    "A browser window was opened. Complete the sign-in there."
+                } else {
+                    "Open this URL in your browser to sign in:"
+                };
+                self.dialog = Some(Dialog::Text {
+                    title: format!("MCP sign-in: {name}"),
+                    text: format!("{lead}
+
+{url}
+
+Press o to open the link again. Waiting for the browser callback..."),
+                    scroll: 0,
+                    layout: Value::Null,
+                });
+            }
+            AppEvent::McpAuthDone { name, error } => {
+                let title = format!("MCP sign-in: {name}");
+                if matches!(&self.dialog, Some(Dialog::Text { title: current, .. }) if current == &title) {
+                    self.dialog = None;
+                }
+                match error {
+                    Some(error) => self.toast(Variant::Error, None, format!("MCP {name}: {error}")),
+                    None => self.toast(Variant::Success, None, format!("MCP server {name} connected.")),
+                }
+            }
             AppEvent::Toast { title, message, variant } => {
                 let variant = match variant.as_str() {
                     "success" => Variant::Success,
@@ -2930,6 +3043,7 @@ impl Ui {
                             let (c, s) = match st {
                                 Some(crate::mcp::Status::Connected { .. }) => (d_t.success.base, "Connected".to_string()),
                                 Some(crate::mcp::Status::Failed(e)) => (d_t.error.base, e),
+                                Some(crate::mcp::Status::NeedsAuth(e)) => (d_t.warning.base, format!("Sign in required: {e}")),
                                 Some(crate::mcp::Status::Disabled) => (d_t.muted, "Disabled in configuration".into()),
                                 None => (d_t.muted, "pending".into()),
                             };
@@ -3096,11 +3210,14 @@ impl Ui {
             let servers = self.app.mcp.snapshot();
             let mut spans = vec![span("  ", t.text, t.bg)];
             if !servers.is_empty() {
-                let failed = servers.iter().filter(|(_, s)| matches!(s, Some(crate::mcp::Status::Failed(_)))).count();
+                let failed = servers
+                    .iter()
+                    .filter(|(_, s)| matches!(s, Some(crate::mcp::Status::Failed(_)) | Some(crate::mcp::Status::NeedsAuth(_))))
+                    .count();
                 let ok = servers.iter().filter(|(_, s)| matches!(s, Some(crate::mcp::Status::Connected { .. }))).count();
                 if failed > 0 {
                     spans.push(span("⊙ ", t.error.base, t.bg));
-                    spans.push(span(format!("{failed} MCP failed"), t.text, t.bg));
+                    spans.push(span(format!("{failed} MCP needs attention"), t.text, t.bg));
                 } else {
                     spans.push(span("⊙ ", if ok > 0 { t.success.base } else { t.muted }, t.bg));
                     spans.push(span(format!("{ok} MCP"), t.text, t.bg));
@@ -3612,6 +3729,7 @@ impl Ui {
                 let (dot, label, lc) = match st {
                     Some(crate::mcp::Status::Connected { .. }) => (t.success.base, "Connected", t.muted),
                     Some(crate::mcp::Status::Failed(_)) => (t.error.base, "Error", t.error.base),
+                    Some(crate::mcp::Status::NeedsAuth(_)) => (t.warning.base, "Sign in", t.warning.base),
                     Some(crate::mcp::Status::Disabled) => (t.muted, "Disabled", t.muted),
                     None => (t.muted, "Connecting", t.muted),
                 };

@@ -282,3 +282,20 @@ fn plugin_layout_flattens_rows_and_columns() {
     assert_eq!(super::layout_plain_lines(&layout, 0), vec!["one", "two  three"]);
 }
 
+#[tokio::test]
+async fn mcp_auth_dialog_shows_url_and_closes() {
+    let mut ui = ui().await;
+    ui.on_app_event(AppEvent::McpAuth {
+        name: "context7".into(),
+        url: "https://clerk.context7.com/oauth/authorize?client_id=test&state=abc".into(),
+        opened: false,
+    });
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("MCP sign-in: context7"), "missing title in {screen:?}");
+    assert!(screen.contains("clerk.context7.com"), "missing sign-in URL in {screen:?}");
+    ui.on_app_event(AppEvent::McpAuthDone { name: "context7".into(), error: Some("access denied".into()) });
+    assert!(ui.dialog.is_none(), "sign-in dialog stayed open after failure");
+}
+
