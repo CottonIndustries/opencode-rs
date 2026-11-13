@@ -32,7 +32,10 @@ fn open() -> Option<&'static Mutex<Connection>> {
     let mut connection = Connection::open(&path).ok()?;
     connection
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS events (
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE IF NOT EXISTS events (
                 seq INTEGER PRIMARY KEY,
                 session_id TEXT,
                 type TEXT NOT NULL,

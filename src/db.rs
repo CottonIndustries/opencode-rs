@@ -25,7 +25,10 @@ pub fn connection() -> Option<&'static Mutex<Connection>> {
     let connection = Connection::open(&path).ok()?;
     connection
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 project TEXT NOT NULL,
                 updated INTEGER NOT NULL,
