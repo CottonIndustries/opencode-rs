@@ -225,6 +225,9 @@ enum Cmd {
         data: Option<String>,
         #[arg(long, default_value = "http://127.0.0.1:4096")]
         server: String,
+        /// Server password (or OPENCODE_SERVER_PASSWORD)
+        #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
+        password: Option<String>,
     },
     /// Manage the background local server
     Service {
@@ -487,7 +490,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             PluginCmd::Check => cli::plugin_check().await,
             PluginCmd::Update => cli::plugin_update().await,
         },
-        Some(Cmd::Api { method, path, data, server }) => cli::api_call(&server, &method, &path, data.as_deref()).await,
+        Some(Cmd::Api { method, path, data, server, password }) => {
+            cli::api_call(&server, &method, &path, data.as_deref(), password.as_deref()).await
+        }
         Some(Cmd::Service { command }) => match command {
             ServiceCmd::Start { port, dir } => cli::service_start(port, dir),
             ServiceCmd::Stop => cli::service_stop(),

@@ -751,7 +751,13 @@ pub fn migrate() -> Result<()> {
     Ok(())
 }
 
-pub async fn api_call(server: &str, method: &str, path: &str, data: Option<&str>) -> Result<()> {
+pub async fn api_call(
+    server: &str,
+    method: &str,
+    path: &str,
+    data: Option<&str>,
+    password: Option<&str>,
+) -> Result<()> {
     let url = format!(
         "{}/{}",
         server.trim_end_matches('/'),
@@ -767,6 +773,11 @@ pub async fn api_call(server: &str, method: &str, path: &str, data: Option<&str>
         other => return Err(anyhow!("unsupported HTTP method: {other}")),
     };
     request = request.header("accept", "application/json");
+    if let Some(password) = password {
+        use base64::Engine;
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
+        request = request.header("authorization", format!("Basic {token}"));
+    }
     if let Some(data) = data {
         let body: serde_json::Value = serde_json::from_str(data)?;
         request = request.header("content-type", "application/json").json(&body);
