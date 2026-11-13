@@ -1439,6 +1439,15 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         ("PUT", ["api", "session", id, "environment"]) => session_call(app, "session.environment", id, request.body.clone()).await,
         ("POST", ["api", "session", id, "view"]) => session_call(app, "session.view", id, request.body.clone()).await,
+        ("POST", ["api", "session", id, "permission"]) => {
+            let mut body = request.body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["sessionID"] = json!(id);
+            let result = crate::plugin::client_call(app, "permission.assert", vec![body]).await?;
+            Ok(json!({ "data": result }))
+        }
         ("GET", ["api", "session", id, "permission"]) => Ok(json!({
             "data": app.pending_permissions().iter().filter(|request| request.session_id.as_str() == *id).map(permission_json).collect::<Vec<_>>(),
         })),
