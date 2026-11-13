@@ -98,6 +98,66 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       return pluginList()
     case "tui.command.execute":
       return await executeTuiCommand(params)
+    case "integration.list":
+      return projectIntegrations()
+    case "integration.get": {
+      const id = String(params.integrationID ?? params.id)
+      if (!registry.integrations.has(id) && !integrationMethods.has(id)) throw new Error(`Integration not found: ${id}`)
+      return projectIntegration(id)
+    }
+    case "integration.connect.key":
+      return integrationConnectKey(params)
+    case "integration.connect.external":
+      return integrationConnectExternal(params)
+    case "integration.oauth.connect":
+      return await integrationOauthConnect(params)
+    case "integration.oauth.status":
+      return attemptResult(findAttempt(params))
+    case "integration.oauth.complete":
+      return await integrationOauthComplete(params)
+    case "integration.oauth.cancel":
+      return integrationOauthCancel(params)
+    case "integration.command.connect":
+      return integrationCommandConnect(params)
+    case "integration.command.status":
+      return attemptResult(findAttempt(params))
+    case "integration.command.cancel":
+      return integrationCommandCancel(params)
+    case "credential.list":
+      return [...credentials.values()]
+    case "credential.create":
+      return createStoredCredential(params)
+    case "credential.update": {
+      const credential = credentials.get(String(params.credentialID ?? params.id))
+      if (!credential) throw new Error(`Credential not found: ${String(params.credentialID ?? params.id)}`)
+      credential.label = String(params.label ?? credential.label)
+      credential.time = { ...(credential.time ?? {}), updated: Date.now() }
+      saveStoredCredentials()
+      void emitEvent({
+        id: `credential_updated_${Date.now()}`,
+        type: "credential.updated",
+        properties: { integrationID: credential.integrationID, credentialID: credential.id },
+      })
+      return {}
+    }
+    case "credential.activate": {
+      const id = String(params.credentialID ?? params.id)
+      if (!credentials.has(id)) throw new Error(`Credential not found: ${id}`)
+      return activateStoredCredential(params)
+    }
+    case "credential.remove": {
+      const id = String(params.credentialID ?? params.id)
+      const credential = credentials.get(id)
+      if (!credential) throw new Error(`Credential not found: ${id}`)
+      credentials.delete(id)
+      saveStoredCredentials()
+      void emitEvent({
+        id: `credential_removed_${Date.now()}`,
+        type: "credential.updated",
+        properties: { integrationID: credential.integrationID, credentialID: id },
+      })
+      return {}
+    }
     case "websearch.list":
       return {
         providers: [...registry.websearch.values()].map((item) => ({ id: item.id, name: item.name })),
@@ -2896,8 +2956,10 @@ function createStoredCredential(input: Json): Json {
   if (active) {
     for (const credential of existing) credential.active = false
   }
+  const requestedID = typeof input.id === "string" ? input.id : undefined
+  if (requestedID && credentials.has(requestedID)) throw new Error(`Credential already exists: ${requestedID}`)
   const entry = {
-    id: `cred_${crypto.randomUUID()}`,
+    id: requestedID ?? `cred_${crypto.randomUUID()}`,
     integrationID,
     label: credentialLabel(integrationID, input.label),
     active,

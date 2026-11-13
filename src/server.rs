@@ -436,6 +436,93 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             }
         })),
         ("GET", ["api", "config"]) => Ok(json!({ "data": serde_json::to_value(&app.config)? })),
+        ("GET", ["api", "integration"]) => {
+            let value = app.plugins.request("integration.list", json!({})).await?;
+            Ok(json!({ "data": if value.is_null() { json!([]) } else { value } }))
+        }
+        ("GET", ["api", "integration", integration_id]) => {
+            Ok(json!({
+                "data": app.plugins.request("integration.get", json!({ "integrationID": integration_id })).await?,
+            }))
+        }
+        ("POST", ["api", "integration", integration_id, "connect", method]) => {
+            let mut body = request.body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["integrationID"] = json!(integration_id);
+            let call = match *method {
+                "key" => "integration.connect.key",
+                "external" => "integration.connect.external",
+                "oauth" => "integration.oauth.connect",
+                "command" => "integration.command.connect",
+                _ => return Err(anyhow!("unknown connect method: {method}")),
+            };
+            Ok(json!({ "data": app.plugins.request(call, body).await? }))
+        }
+        ("GET", ["api", "integration", integration_id, "connect", method, attempt_id]) => {
+            let call = match *method {
+                "oauth" => "integration.oauth.status",
+                "command" => "integration.command.status",
+                _ => return Err(anyhow!("unknown connect method: {method}")),
+            };
+            Ok(json!({
+                "data": app.plugins.request(call, json!({
+                    "integrationID": integration_id,
+                    "attemptID": attempt_id,
+                })).await?,
+            }))
+        }
+        ("POST", ["api", "integration", integration_id, "connect", method, attempt_id, "complete"]) => {
+            if *method != "oauth" {
+                return Err(anyhow!("unknown connect method: {method}"));
+            }
+            let mut body = request.body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["integrationID"] = json!(integration_id);
+            body["attemptID"] = json!(attempt_id);
+            Ok(json!({ "data": app.plugins.request("integration.oauth.complete", body).await? }))
+        }
+        ("DELETE", ["api", "integration", integration_id, "connect", method, attempt_id]) => {
+            let call = match *method {
+                "oauth" => "integration.oauth.cancel",
+                "command" => "integration.command.cancel",
+                _ => return Err(anyhow!("unknown connect method: {method}")),
+            };
+            Ok(json!({
+                "data": app.plugins.request(call, json!({
+                    "integrationID": integration_id,
+                    "attemptID": attempt_id,
+                })).await?,
+            }))
+        }
+        ("GET", ["api", "credential"]) => {
+            let value = app.plugins.request("credential.list", json!({})).await?;
+            Ok(json!({ "data": if value.is_null() { json!([]) } else { value } }))
+        }
+        ("POST", ["api", "credential"]) => {
+            Ok(json!({ "data": app.plugins.request("credential.create", request.body.clone()).await? }))
+        }
+        ("PATCH", ["api", "credential", credential_id]) => {
+            let mut body = request.body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["credentialID"] = json!(credential_id);
+            Ok(json!({ "data": app.plugins.request("credential.update", body).await? }))
+        }
+        ("POST", ["api", "credential", credential_id, "activate"]) => {
+            Ok(json!({
+                "data": app.plugins.request("credential.activate", json!({ "credentialID": credential_id })).await?,
+            }))
+        }
+        ("DELETE", ["api", "credential", credential_id]) => {
+            Ok(json!({
+                "data": app.plugins.request("credential.remove", json!({ "credentialID": credential_id })).await?,
+            }))
+        }
         ("GET", ["api", "fs", "list"]) => {
             let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
             let path = query_value(&parsed, "path").unwrap_or_default();
