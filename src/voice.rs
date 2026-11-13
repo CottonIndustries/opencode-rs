@@ -177,7 +177,7 @@ pub async fn session(input: &Value) -> Result<Value> {
         "xai-realtime" => client_secret(XAI_BASE, model, &access, json!({ "expires_after": { "seconds": 60 } })).await,
         "gemini-live" => {
             let now = chrono::Utc::now();
-            let mut builder = crate::http::client()
+            let builder = crate::http::client()
                 .post(format!("{GOOGLE_BASE}/auth_tokens"))
                 .header("content-type", "application/json")
                 .header("x-goog-api-key", access.token.clone());
