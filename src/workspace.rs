@@ -107,7 +107,9 @@ pub fn create(id: Option<&str>, provider: &str, directory: &Path) -> Result<Info
     driver(provider)?;
     let id = id.unwrap_or("").to_string();
     let id = if id.is_empty() { crate::util::id("wrk") } else { id };
-    let directory = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
+    let directory = std::fs::canonicalize(directory)
+        .map(|path| crate::app::strip_unc(&path))
+        .unwrap_or_else(|_| directory.to_path_buf());
     let binding = driver(provider)?.binding(&id, &directory)?;
     let now = crate::util::now_ms();
     if let Some(existing) = get(&id)? {
@@ -207,7 +209,9 @@ pub struct Environment {
 
 impl Environment {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let root = std::fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf());
+        let root = std::fs::canonicalize(path.as_ref())
+            .map(|path| crate::app::strip_unc(&path))
+            .unwrap_or_else(|_| path.as_ref().to_path_buf());
         std::fs::create_dir_all(&root)?;
         Ok(Environment { root })
     }

@@ -90,7 +90,9 @@ pub fn start(port: u16, directory: PathBuf) -> Result<Value> {
         ));
     }
     crate::paths::get().ensure();
-    let directory = std::fs::canonicalize(&directory).unwrap_or(directory);
+    let directory = std::fs::canonicalize(&directory)
+        .map(|path| crate::app::strip_unc(&path))
+        .unwrap_or(directory);
     let executable = std::env::current_exe()?;
     let log = log_path();
     if let Some(parent) = log.parent() {
