@@ -1,0 +1,20 @@
+export const createComponent = undefined;
+export const createElement = undefined;
+export const createTextNode = undefined;
+export const effect = undefined;
+export const insert = undefined;
+export const insertNode = undefined;
+export const memo = undefined;
+export const mergeProps = undefined;
+export const setProp = undefined;
+export const spread = undefined;
+export const use = undefined;
+export const createMemo = undefined;
+export const createSignal = undefined;
+export const onCleanup = undefined;
+export const createEffect = undefined;
+export const For = undefined;
+export const Show = undefined;
+export const on = undefined;
+
+throw new Error("Cannot find module opentui:runtime-module:missing");

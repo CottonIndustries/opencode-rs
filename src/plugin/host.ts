@@ -1980,7 +1980,7 @@ function makeTuiContext(plugin: PluginRecord): Json {
     options: plugin.options,
     location: { directory, worktree, project },
     app: { version: config.version, channel: config.channel, platform: Deno.build.os },
-    renderer: {},
+    renderer: { requestRender: () => {} },
     client: makeClientProxy(),
     data: {
       on: () => () => {},
@@ -2025,6 +2025,157 @@ function makeTuiContext(plugin: PluginRecord): Json {
   }
 }
 
+function packageCacheName(spec: string): string {
+  const value = spec.startsWith("npm:") ? spec.slice(4) : spec
+  if (value.startsWith("@")) {
+    const slash = value.indexOf("/")
+    if (slash < 0) return value
+    const rest = value.slice(slash + 1)
+    const at = rest.lastIndexOf("@")
+    return value.slice(0, slash + 1) + (at > 0 ? rest.slice(0, at) : rest)
+  }
+  const at = value.lastIndexOf("@")
+  return at > 0 ? value.slice(0, at) : value
+}
+
+function versionParts(value: string): number[] {
+  return value.split(/[^0-9]+/).filter(Boolean).map((part) => Number(part))
+}
+
+function cachedFileUrl(path: string): string {
+  let value = path.split(String.fromCharCode(92)).join("/")
+  if (!value.startsWith("/")) value = "/" + value
+  return "file://" + value
+}
+
+async function prepareTuiFile(path: string) {
+  if (
+    !path.endsWith(".ts") &&
+    !path.endsWith(".tsx") &&
+    !path.endsWith(".js") &&
+    !path.endsWith(".mjs")
+  ) return
+  try {
+    const text = await Deno.readTextFile(path)
+    if (text.includes('with { type: "json" }')) return
+    let next = text
+    for (const prefix of [
+      'from "../../../package.json"',
+      'from "../../package.json"',
+      'from "../package.json"',
+      'from "./package.json"',
+    ]) {
+      next = next.split(prefix).join(prefix + ' with { type: "json" }')
+    }
+    if (next !== text) await Deno.writeTextFile(path, next)
+  } catch {
+    // skip unreadable files
+  }
+}
+
+async function prepareCopiedTui(target: string) {
+  const walk = async (dir: string) => {
+    for await (const entry of Deno.readDir(dir)) {
+      const path = dir + "/" + entry.name
+      if (entry.isDirectory) {
+        await walk(path)
+      } else if (entry.isFile) {
+        await prepareTuiFile(path)
+      }
+    }
+  }
+  try {
+    await walk(target + "/src")
+  } catch {
+    // this package has no compiled TUI tree
+  }
+}
+
+async function copyTuiTree(source: string, target: string) {
+  await Deno.mkdir(target, { recursive: true })
+  for await (const entry of Deno.readDir(source)) {
+    const from = source + "/" + entry.name
+    const to = target + "/" + entry.name
+    if (entry.isDirectory) {
+      await copyTuiTree(from, to)
+    } else if (entry.isFile) {
+      await Deno.copyFile(from, to)
+    }
+  }
+}
+
+async function cachedV2TuiCandidates(spec: string): Promise<string[]> {
+  const root = Deno.env.get("DENO_DIR")
+  if (!root) return []
+  const name = packageCacheName(spec)
+  if (!name) return []
+  const base = root.split(String.fromCharCode(92)).join("/").replace(/\/+$/, "") + "/npm/registry.npmjs.org/" + name
+  const found: Array<{ version: string; path: string }> = []
+  try {
+    for await (const entry of Deno.readDir(base)) {
+      if (!entry.isDirectory) continue
+      const path = base + "/" + entry.name + "/src/v2/tui/index.ts"
+      try {
+        const stat = await Deno.stat(path)
+        if (stat.isFile) found.push({ version: entry.name, path })
+      } catch {
+        // this version has no v2 TUI entry
+      }
+    }
+  } catch {
+    return []
+  }
+  found.sort((left, right) => {
+    const a = versionParts(left.version)
+    const b = versionParts(right.version)
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+      const difference = (b[index] ?? 0) - (a[index] ?? 0)
+      if (difference) return difference
+    }
+    return 0
+  })
+  const best = found[0]
+  if (!best) return []
+  const suffix = "/src/v2/tui/index.ts"
+  const packageRoot = best.path.slice(0, best.path.length - suffix.length)
+  const source = packageRoot + "/src"
+  const runtime = String(config.runtimeDir ?? "").split(String.fromCharCode(92)).join("/").replace(new RegExp("/+$"), "")
+  if (!runtime) return [cachedFileUrl(best.path)]
+  const target = runtime + "/tui/" + name.replace(/[^a-zA-Z0-9._-]+/g, "_") + "/" + best.version
+  const entry = target + "/src/v2/tui/index.ts"
+  try {
+    const stat = await Deno.stat(entry)
+    if (stat.isFile) {
+      try {
+        await Deno.stat(target + "/package.json")
+      } catch {
+        try {
+          await Deno.copyFile(packageRoot + "/package.json", target + "/package.json")
+        } catch {
+          // package.json is optional for the text projection
+        }
+      }
+      await prepareCopiedTui(target)
+      return [cachedFileUrl(entry)]
+    }
+  } catch {
+    // copy below
+  }
+  try {
+    await copyTuiTree(source, target + "/src")
+    try {
+      await Deno.copyFile(packageRoot + "/package.json", target + "/package.json")
+    } catch {
+      // package.json is optional for the text projection
+    }
+    await prepareCopiedTui(target)
+    return [cachedFileUrl(entry)]
+  } catch (error) {
+    log("error", "tui source copy failed for " + spec + ": " + String(error))
+    return []
+  }
+}
+
 async function loadTuiPlugin(entry: Json): Promise<void> {
   const record: PluginRecord = {
     id: entry.id ?? entry.spec,
@@ -2038,7 +2189,23 @@ async function loadTuiPlugin(entry: Json): Promise<void> {
     registrations: [],
   }
   try {
-    const module = await importCandidate(entry.tuiCandidates ?? [])
+    let module: Json
+    try {
+      module = await importCandidate(entry.tuiCandidates ?? [])
+    } catch (error) {
+      const fallback = await cachedV2TuiCandidates(String(entry.spec ?? ""))
+      if (!fallback.length) throw error
+      try {
+        module = await importCandidate(fallback)
+      } catch (fallbackError) {
+        log(
+          "error",
+          "tui fallback failed for " + String(entry.spec) + ": " +
+            (fallbackError instanceof Error ? fallbackError.message : String(fallbackError)),
+        )
+        throw error
+      }
+    }
     const value = module.default ?? module
     const setup = typeof value === "function" ? value : value?.setup
     if (typeof setup !== "function") throw new Error("TUI entry exports no setup")

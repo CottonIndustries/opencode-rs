@@ -32,6 +32,8 @@ fn client_cancels() -> &'static Mutex<HashMap<String, CancellationToken>> {
     CLIENT_CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 const HOST_TS: &str = include_str!("host.ts");
+const OPENTUI_SHIM_TS: &str = include_str!("opentui_shim.ts");
+const OPENTUI_MISSING_TS: &str = include_str!("opentui_missing.ts");
 const PLUGIN_API_VERSION: &str = "2.2.7";
 const V1_PLUGIN_API_VERSION: &str = "1.19.5";
 
@@ -491,13 +493,29 @@ pub async fn ensure_deno() -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Bare imports in local plugins resolve through a generated import map. Read
-/// each plugin's nearest package.json so dependencies declared there work
-/// without creating node_modules in the user's project.
+/// Bare imports in plugins resolve through a generated import map. Local plugins
+/// are read from their nearest package.json, and packaged plugins from the Deno
+/// cache manifest, so dependencies work without creating node_modules in the
+/// user's project.
 fn plugin_dependencies(specs: &[PluginSpec]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for spec in specs {
         if !is_local(&spec.target) {
+            let (name, version) = parse_package(&spec.target);
+            if let Some(manifest) = package_cache_manifest(&name, version.as_deref()) {
+                if let Some(map) = manifest.get("dependencies").and_then(Value::as_object) {
+                    for (dependency, version) in map {
+                        let Some(version) = version.as_str() else { continue };
+                        if version.starts_with("workspace:")
+                            || version.starts_with("file:")
+                            || version.starts_with("link:")
+                        {
+                            continue;
+                        }
+                        out.entry(dependency.clone()).or_insert_with(|| version.to_string());
+                    }
+                }
+            }
             continue;
         }
         let path = local_path(&spec.target);
@@ -531,6 +549,36 @@ fn plugin_dependencies(specs: &[PluginSpec]) -> BTreeMap<String, String> {
     out
 }
 
+fn version_rank(value: &str) -> Vec<u64> {
+    value
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect()
+}
+
+fn package_cache_manifest(name: &str, version: Option<&str>) -> Option<Value> {
+    let base = crate::paths::get().cache.join("deno").join("npm").join("registry.npmjs.org").join(name);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(version) = version.filter(|value| *value != "latest") {
+        candidates.push(base.join(version));
+    }
+    if candidates.is_empty() {
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                    candidates.push(entry.path());
+                }
+            }
+        }
+    }
+    let chosen = candidates.into_iter().filter(|path| path.join("package.json").is_file()).max_by_key(|path| {
+        path.file_name().and_then(|name| name.to_str()).map(version_rank).unwrap_or_default()
+    })?;
+    let text = std::fs::read_to_string(chosen.join("package.json")).ok()?;
+    serde_json::from_str::<Value>(crate::util::strip_bom(&text).0).ok()
+}
+
 fn runtime_dir() -> PathBuf {
     crate::paths::get().cache.join("plugin-runtime")
 }
@@ -541,6 +589,14 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
     let host = dir.join("host.ts");
     if std::fs::read_to_string(&host).ok().as_deref() != Some(HOST_TS) {
         std::fs::write(&host, HOST_TS)?;
+    }
+    let shim = dir.join("opentui_shim.ts");
+    if std::fs::read_to_string(&shim).ok().as_deref() != Some(OPENTUI_SHIM_TS) {
+        std::fs::write(&shim, OPENTUI_SHIM_TS)?;
+    }
+    let missing = dir.join("opentui_missing.ts");
+    if std::fs::read_to_string(&missing).ok().as_deref() != Some(OPENTUI_MISSING_TS) {
+        std::fs::write(&missing, OPENTUI_MISSING_TS)?;
     }
     let mut dependencies = Map::new();
     for (name, version) in extra_dependencies {
@@ -572,6 +628,21 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
         }
     });
     if let Some(values) = imports.get_mut("imports").and_then(Value::as_object_mut) {
+        let shim_url = Value::String(file_url(&shim));
+        for name in ["@opentui/solid", "@opentui/solid/jsx-runtime", "@opentui/solid/jsx-dev-runtime"] {
+            values.insert(name.to_string(), shim_url.clone());
+        }
+        // OpenTUI plugins probe the host runtime registry through custom scheme
+        // modules. Deno has no registry hook, so point those probes at a module
+        // that fails in the shape plugins use to detect a missing registry. The
+        // plugin then uses its plain-text projection, which this host renders,
+        // instead of aborting the whole TUI entry import.
+        for module in ["%40opentui%2Fsolid", "solid-js"] {
+            values.insert(
+                format!("opentui:runtime-module:{module}"),
+                Value::String(file_url(&missing)),
+            );
+        }
         // Deno import maps cannot append a suffix to an `npm:` prefix, so
         // package subpaths need exact entries.
         const PLUGIN_SUBPATHS: &[&str] = &[
@@ -1335,6 +1406,7 @@ async fn start(
         "channel": crate::UPSTREAM_CHANNEL,
         "shell": shell.program,
         "storageDir": crate::paths::get().data.join("storage").join("plugin").join("kv").to_string_lossy(),
+        "runtimeDir": dir.to_string_lossy(),
         "plugins": plugins,
         "state": snapshot,
         "tui": std::env::var_os("OPENCODE_TUI").is_some(),
@@ -1354,6 +1426,7 @@ async fn start(
         .arg("--quiet")
         .arg("--no-config")
         .arg("--no-lock")
+        .arg("--sloppy-imports")
         .arg(format!("--import-map={}", map.display()))
         .arg(&host)
         .arg(&config_path)
