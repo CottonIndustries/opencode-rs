@@ -444,17 +444,25 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     });
     match cli.command {
         None => {
+            std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
             let dir = cli.project.unwrap_or_else(cwd);
             tui::start(dir, cli.tui.into()).await
         }
         Some(Cmd::Acp { login: true }) => cli::auth_login(None, None, None).await,
-        Some(Cmd::Acp { login: false }) => acp::serve().await,
+        Some(Cmd::Acp { login: false }) => {
+            std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
+            acp::serve().await
+        }
         Some(Cmd::Pair { url, password }) => cli::pair(&url, password).await,
         Some(Cmd::Serve { hostname, port, password, dir }) => {
+            std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
             server::serve(app, server::Options { hostname, port, password }).await
         }
-        Some(Cmd::Mini { project, tui }) => tui::start(project.unwrap_or_else(cwd), tui.into()).await,
+        Some(Cmd::Mini { project, tui }) => {
+            std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
+            tui::start(project.unwrap_or_else(cwd), tui.into()).await
+        }
         Some(Cmd::Run { message, continue_last, session, fork, model, agent, format, file, title, thinking, auto_approve, dir }) => {
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
             run::run(app, run::RunArgs { message, continue_last, session, fork, model, agent, format, files: file, title, thinking, auto_approve }).await

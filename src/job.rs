@@ -188,6 +188,9 @@ pub fn finish(id: &str, status: &str, details: Option<Value>) {
 
 /// Resume completion notifications for background jobs that settled before a restart.
 pub fn resume(app: Arc<crate::app::App>) {
+    if std::env::var_os("OPENCODE_RESUME_BACKGROUND").is_none() {
+        return;
+    }
     let _ = db();
     for job in pending_background() {
         let Some(notification) = job.get("notificationID").and_then(Value::as_str).map(String::from) else {
