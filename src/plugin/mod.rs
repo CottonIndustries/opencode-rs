@@ -2289,7 +2289,12 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
         "session.share" | "session.unshare" => {
             let id = session_id().ok_or_else(|| anyhow!("session.share requires sessionID"))?;
             let handle = app.session(&id)?;
-            let share = body.get("share").and_then(Value::as_bool).unwrap_or(first.get("share").and_then(Value::as_bool).unwrap_or(true));
+            let share = !path.ends_with("unshare")
+                && body
+                    .get("share")
+                    .and_then(Value::as_bool)
+                    .or_else(|| first.get("share").and_then(Value::as_bool))
+                    .unwrap_or(true);
             if share {
                 let session = handle.with(|session| session.clone());
                 let value = crate::share::share(&session)?;
