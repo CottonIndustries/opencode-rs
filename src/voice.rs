@@ -181,11 +181,13 @@ pub async fn session(input: &Value) -> Result<Value> {
                 .post(format!("{GOOGLE_BASE}/auth_tokens"))
                 .header("content-type", "application/json")
                 .header("x-goog-api-key", access.token.clone());
+            let mut setup = session.clone();
+            setup["model"] = json!(format!("models/{model}"));
             let body = json!({
                 "uses": 1,
                 "expireTime": (now + chrono::Duration::minutes(30)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 "newSessionExpireTime": (now + chrono::Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                "bidiGenerateContentSetup": { "model": format!("models/{model}") },
+                "bidiGenerateContentSetup": setup,
             });
             let response = crate::http::send(builder.body(json_text(&body)).timeout(std::time::Duration::from_secs(30))).await?;
             if !response.status().is_success() {
