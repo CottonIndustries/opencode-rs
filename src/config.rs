@@ -139,6 +139,7 @@ pub struct ProviderOptions {
 pub struct AgentConfig {
     pub model: Option<String>,
     pub variant: Option<String>,
+    #[serde(alias = "system")]
     pub prompt: Option<String>,
     pub description: Option<String>,
     pub mode: Option<String>,
@@ -150,6 +151,7 @@ pub struct AgentConfig {
     pub tools: BTreeMap<String, bool>,
     #[serde(alias = "permissions")]
     pub permission: Option<Value>,
+    #[serde(alias = "disabled")]
     pub disable: bool,
     pub hidden: bool,
     pub color: Option<String>,
@@ -162,6 +164,7 @@ pub struct CommandConfig {
     pub description: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
+    #[serde(alias = "subagent")]
     pub subtask: bool,
 }
 
@@ -273,7 +276,7 @@ pub fn merge(a: &mut Value, b: Value) {
     match (a, b) {
         (Value::Object(am), Value::Object(bm)) => {
             for (k, v) in bm {
-                if matches!(k.as_str(), "instructions" | "plugins" | "plugin") {
+                if matches!(k.as_str(), "instructions" | "plugins" | "plugin" | "skills") {
                     if let (Some(Value::Array(existing)), Value::Array(new)) = (am.get_mut(&k), &v) {
                         for item in new {
                             if !existing.contains(item) {
@@ -307,11 +310,124 @@ pub fn find_worktree(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Platform configuration directory, matching upstream discovery.
+pub fn system_config_dir() -> PathBuf {
+    match std::env::consts::OS {
+        "windows" => std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("opencode"),
+        "macos" => PathBuf::from("/Library/Application Support/opencode"),
+        _ => PathBuf::from("/etc/opencode"),
+    }
+}
+
+fn model_selection(value: &Value) -> Option<String> {
+    if let Some(short) = value.as_str() {
+        return Some(short.to_string());
+    }
+    let object = value.as_object()?;
+    let provider = object.get("providerID").and_then(Value::as_str)?;
+    let model = object.get("model").or_else(|| object.get("id")).and_then(Value::as_str)?;
+    let variant = object.get("variant").and_then(Value::as_str);
+    Some(match variant {
+        Some(variant) => format!("{provider}/{model}#{variant}"),
+        None => format!("{provider}/{model}"),
+    })
+}
+
+fn normalize_v2(raw: &mut Value) {
+    let Some(m) = raw.as_object_mut() else { return };
+    for (plural, singular) in [
+        ("providers", "provider"),
+        ("agents", "agent"),
+        ("commands", "command"),
+        ("permissions", "permission"),
+    ] {
+        if let Some(value) = m.remove(plural) {
+            let entry = m
+                .entry(singular.to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            merge(entry, value);
+        }
+    }
+    if matches!(m.get("skills"), Some(Value::Object(_))) {
+        let Some(Value::Object(skills)) = m.remove("skills") else {
+            return;
+        };
+        let mut items: Vec<Value> = Vec::new();
+        for key in ["paths", "urls"] {
+            if let Some(Value::Array(values)) = skills.get(key) {
+                for value in values {
+                    if value.as_str().is_some() && !items.contains(value) {
+                        items.push(value.clone());
+                    }
+                }
+            }
+        }
+        m.insert("skills".into(), Value::Array(items));
+    }
+    for key in ["model", "small_model"] {
+        if let Some(value) = m.get_mut(key) {
+            if let Some(selection) = model_selection(value) {
+                *value = Value::String(selection);
+            }
+        }
+    }
+    for key in ["agent", "command"] {
+        if let Some(Value::Object(entries)) = m.get_mut(key) {
+            for entry in entries.values_mut() {
+                if let Value::Object(fields) = entry {
+                    if let Some(value) = fields.get_mut("model") {
+                        if let Some(selection) = model_selection(value) {
+                            *value = Value::String(selection);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(Value::Object(mcp)) = m.get_mut("mcp") {
+        let timeout = mcp.remove("timeout");
+        if let Some(Value::Object(servers)) = mcp.remove("servers") {
+            for (name, mut server) in servers {
+                if let Value::Object(s) = &mut server {
+                    if let Some(Value::Bool(disabled)) = s.remove("disabled") {
+                        s.entry("enabled").or_insert(Value::Bool(!disabled));
+                    }
+                    if s.get("timeout").is_none() {
+                        if let Some(timeout) = &timeout {
+                            s.insert("timeout".into(), timeout.clone());
+                        }
+                    }
+                }
+                mcp.insert(name, server);
+            }
+        }
+        for server in mcp.values_mut() {
+            if let Value::Object(s) = server {
+                if let Some(Value::Bool(disabled)) = s.remove("disabled") {
+                    s.entry("enabled").or_insert(Value::Bool(!disabled));
+                }
+                if s.get("timeout").is_none() {
+                    if let Some(timeout) = &timeout {
+                        s.insert("timeout".into(), timeout.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
     let paths = crate::paths::get();
     let mut raw = Value::Object(Map::new());
     let mut files = Vec::new();
-    let mut directories = vec![paths.config.clone()];
+    let mut directories = Vec::new();
+    let system = system_config_dir();
+    if system.is_dir() {
+        directories.push(system.clone());
+    }
     // Integration sources are the lowest config layer; local and project
     // configuration is merged over them. Their policies are applied last.
     let mut source_policies = Vec::new();
@@ -334,9 +450,15 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         Ok(())
     };
 
+    if system.is_dir() {
+        for name in ["opencode.json", "opencode.jsonc"] {
+            add(&mut raw, &mut files, system.join(name))?;
+        }
+    }
     for name in ["config.json", "opencode.json", "opencode.jsonc"] {
         add(&mut raw, &mut files, paths.config.join(name))?;
     }
+    directories.push(paths.config.clone());
     if let Ok(p) = std::env::var("OPENCODE_CONFIG") {
         add(&mut raw, &mut files, PathBuf::from(p))?;
     }
@@ -356,11 +478,11 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         for name in ["opencode.json", "opencode.jsonc"] {
             add(&mut raw, &mut files, dir.join(name))?;
         }
-        let dot = dir.join(".opencode");
-        if dot.is_dir() {
-            directories.push(dot.clone());
-            for name in ["opencode.json", "opencode.jsonc"] {
-                add(&mut raw, &mut files, dot.join(name))?;
+        let local = dir.join(".opencode");
+        if local.is_dir() {
+            directories.push(local.clone());
+            for file in ["opencode.json", "opencode.jsonc"] {
+                add(&mut raw, &mut files, local.join(file))?;
             }
         }
     }
@@ -370,10 +492,6 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         crate::plugin::absolutize_config(&mut v, directory);
         merge(&mut raw, v);
     }
-    if let Ok(dir) = std::env::var("OPENCODE_CONFIG_DIR") {
-        directories.push(PathBuf::from(dir));
-    }
-
     if !source_policies.is_empty() {
         let policies = raw
             .as_object_mut()
@@ -385,21 +503,8 @@ pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
         }
     }
 
-    // normalize legacy fields
+    normalize_v2(&mut raw);
     if let Value::Object(m) = &mut raw {
-        // v2 nests servers: `"mcp": { "servers": { name: { ..., "disabled": bool } } }`
-        if let Some(Value::Object(mcp)) = m.get_mut("mcp") {
-            if let Some(Value::Object(servers)) = mcp.remove("servers") {
-                for (name, mut server) in servers {
-                    if let Value::Object(s) = &mut server {
-                        if let Some(Value::Bool(disabled)) = s.remove("disabled") {
-                            s.entry("enabled").or_insert(Value::Bool(!disabled));
-                        }
-                    }
-                    mcp.insert(name, server);
-                }
-            }
-        }
         if let Some(mode) = m.remove("mode") {
             let agents = m.entry("agent").or_insert_with(|| Value::Object(Map::new()));
             let mut mode = mode;
@@ -501,6 +606,49 @@ mod tests {
         assert_eq!(v["a"], "http://x");
         assert_eq!(v["b"][1], 2);
     }
+    #[test]
+    fn accepts_v2_agent_fields() {
+        let agent: AgentConfig = serde_json::from_value(serde_json::json!({
+            "system": "be brief",
+            "disabled": true,
+            "permissions": [{ "action": "edit", "resource": "*", "effect": "deny" }]
+        }))
+        .unwrap();
+        assert_eq!(agent.prompt.as_deref(), Some("be brief"));
+        assert!(agent.disable);
+        assert!(agent.permission.is_some());
+    }
+
+    #[test]
+    fn normalizes_v2_keys() {
+        let mut raw = serde_json::json!({
+            "model": { "providerID": "p", "model": "m", "variant": "fast" },
+            "providers": { "p": { "name": "P" } },
+            "agents": { "a": { "mode": "primary", "model": { "providerID": "p", "model": "m" } } },
+            "commands": { "c": { "template": "hi", "model": { "providerID": "p", "model": "m" } } },
+            "permissions": { "edit": "allow" },
+            "skills": { "paths": ["~/.claude/skills"], "urls": ["https://example.com/skills"] },
+            "mcp": {
+                "timeout": { "startup": 1000 },
+                "servers": {
+                    "s": { "type": "local", "command": ["x"], "disabled": true }
+                }
+            }
+        });
+        normalize_v2(&mut raw);
+        assert!(raw.get("provider").is_some());
+        assert!(raw.get("agent").is_some());
+        assert!(raw.get("command").is_some());
+        assert!(raw.get("permission").is_some());
+        assert_eq!(raw["skills"], serde_json::json!(["~/.claude/skills", "https://example.com/skills"]));
+        assert_eq!(raw["model"], "p/m#fast");
+        assert_eq!(raw["agent"]["a"]["model"], "p/m");
+        assert_eq!(raw["command"]["c"]["model"], "p/m");
+        assert_eq!(raw.pointer("/mcp/s/enabled"), Some(&serde_json::json!(false)));
+        assert_eq!(raw.pointer("/mcp/s/timeout/startup"), Some(&serde_json::json!(1000)));
+        assert!(raw.pointer("/mcp/timeout").is_none());
+    }
+
     #[test]
     fn merges_plugin_lists() {
         let mut a = serde_json::json!({ "plugins": ["global"], "plugin": ["old"] });
