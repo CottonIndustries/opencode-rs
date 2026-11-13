@@ -1708,25 +1708,52 @@ async fn session_log_feed(mut stream: TcpStream, app: Arc<App>, session_id: Stri
     }
     let synced = json!({ "type": "event-log.synced", "aggregateID": session_id, "seq": last });
     stream.write_all(format!("data: {synced}\n\n").as_bytes()).await?;
+    let converted = app.plugins.enabled();
+    let mut v2_events = app.plugins.subscribe_v2();
     let mut events = app.subscribe();
     let mut plugin_events = app.plugins.subscribe();
     loop {
         let value = tokio::select! {
-            event = events.recv() => match event {
-                Ok(event) => crate::app::plugin_event(&event),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
-            },
-            event = plugin_events.recv() => match event {
+            event = v2_events.recv() => match event {
                 Ok(event) => event,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
             },
+            event = events.recv() => match event {
+                Ok(event) => {
+                    if converted {
+                        continue;
+                    }
+                    crate::app::plugin_event(&event)
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+            event = plugin_events.recv() => match event {
+                Ok(event) => {
+                    if converted {
+                        continue;
+                    }
+                    event
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
         };
-        if value.pointer("/properties/sessionID").and_then(Value::as_str) != Some(session_id.as_str()) {
+        let belongs = value
+            .pointer("/data/sessionID")
+            .or_else(|| value.pointer("/properties/sessionID"))
+            .or_else(|| value.pointer("/durable/aggregateID"))
+            .and_then(Value::as_str)
+            == Some(session_id.as_str());
+        if !belongs {
             continue;
         }
-        let seq = value.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        let seq = value
+            .pointer("/durable/seq")
+            .or_else(|| value.get("seq"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if seq != 0 && seq <= last {
             continue;
         }
@@ -1739,21 +1766,44 @@ async fn session_log_feed(mut stream: TcpStream, app: Arc<App>, session_id: Stri
 }
 
 async fn event_feed(mut stream: TcpStream, app: Arc<App>) -> Result<()> {
+    let converted = app.plugins.enabled();
+    let mut v2_events = app.plugins.subscribe_v2();
     let mut events = app.subscribe();
     let mut plugin_events = app.plugins.subscribe();
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: keep-alive\r\naccess-control-allow-origin: *\r\n\r\n";
     stream.write_all(head.as_bytes()).await?;
-    let connected = json!({ "id": crate::util::id("evt"), "type": "server.connected", "properties": {} });
+    let connected = json!({
+        "id": crate::util::id("evt"),
+        "created": crate::util::now_ms(),
+        "type": "server.connected",
+        "data": {},
+        "location": { "directory": app.directory.to_string_lossy() },
+    });
     stream.write_all(format!("data: {connected}\n\n").as_bytes()).await?;
     loop {
         let value = tokio::select! {
+            event = v2_events.recv() => match event {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
             event = events.recv() => match event {
-                Ok(event) => crate::app::plugin_event(&event),
+                Ok(event) => {
+                    if converted {
+                        continue;
+                    }
+                    crate::app::plugin_event(&event)
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
             },
             event = plugin_events.recv() => match event {
-                Ok(event) => event,
+                Ok(event) => {
+                    if converted {
+                        continue;
+                    }
+                    event
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
             },

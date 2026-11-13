@@ -706,6 +706,7 @@ pub struct Manager {
     tui_pages: RwLock<Vec<Value>>,
     errors: Vec<String>,
     events: tokio::sync::broadcast::Sender<Value>,
+    v2_events: tokio::sync::broadcast::Sender<Value>,
 }
 
 struct Inner {
@@ -969,6 +970,7 @@ impl Manager {
             tui_pages: RwLock::new(Vec::new()),
             errors: Vec::new(),
             events: tokio::sync::broadcast::channel(4096).0,
+            v2_events: tokio::sync::broadcast::channel(4096).0,
         }
     }
 
@@ -983,11 +985,21 @@ impl Manager {
             tui_pages: RwLock::new(Vec::new()),
             errors,
             events: tokio::sync::broadcast::channel(4096).0,
+            v2_events: tokio::sync::broadcast::channel(4096).0,
         }
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
         self.events.subscribe()
+    }
+
+    /// V2-shaped events converted by the plugin host.
+    pub fn subscribe_v2(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        self.v2_events.subscribe()
+    }
+
+    pub fn publish_v2(&self, event: Value) {
+        let _ = self.v2_events.send(event);
     }
 
     pub fn enabled(&self) -> bool {
@@ -1401,6 +1413,7 @@ async fn start(
         tui_pages: RwLock::new(Vec::new()),
         errors: Vec::new(),
         events: tokio::sync::broadcast::channel(4096).0,
+        v2_events: tokio::sync::broadcast::channel(4096).0,
     };
 
     if let Some(stderr) = stderr {
@@ -1497,6 +1510,11 @@ async fn start(
                                             value
                                         });
                                     app.record_tool_progress(call_id, metadata);
+                                }
+                                Some("v2.event") => {
+                                    if let Some(event) = message.pointer("/params/event").cloned() {
+                                        app.plugins.publish_v2(event);
+                                    }
                                 }
                                 Some("client.cancel") => {
                                     let cancel_id = message.pointer("/params/cancelID").and_then(Value::as_str);

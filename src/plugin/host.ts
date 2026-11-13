@@ -1368,6 +1368,7 @@ async function emitEvent(event: Json) {
       subscriber.queue.push(v2)
       subscriber.wake?.()
     }
+    notify("v2.event", { event: v2 })
   }
 }
 
