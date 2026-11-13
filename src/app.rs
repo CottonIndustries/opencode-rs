@@ -172,7 +172,7 @@ impl App {
     ) -> Arc<App> {
         let mcp = crate::mcp::Manager::new(config.mcp.clone(), directory.clone());
         let (events, _) = broadcast::channel(4096);
-        Arc::new(App {
+        let app = Arc::new(App {
             project,
             directory,
             worktree,
@@ -197,7 +197,9 @@ impl App {
             pending_requests: Mutex::new(HashMap::new()),
             tool_progress: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
-        })
+        });
+        crate::job::attach(&app);
+        app
     }
 
     /// Like [`App::init`], adding MCP servers supplied by a client (ACP) to the configured ones.

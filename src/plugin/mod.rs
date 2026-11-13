@@ -2256,7 +2256,35 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             value["fork"] = json!({ "sessionID": id, "boundary": boundary });
             Ok(value)
         }
-        "session.background" => Ok(Value::Null),
+        "session.background" => {
+            let id = session_id().ok_or_else(|| anyhow!("session.background requires sessionID"))?;
+            app.session(&id)?;
+            let backgrounded = crate::job::background_all(&id);
+            if backgrounded.is_empty() {
+                return Ok(Value::Null);
+            }
+            let mut text = String::from("User requested that active blocking work be moved to the background.
+
+Backgrounded work:
+");
+            for job in &backgrounded {
+                let kind = job.get("kind").and_then(Value::as_str).unwrap_or("job");
+                let title = job
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| job.get("id").and_then(Value::as_str).unwrap_or("job"));
+                text.push_str(&format!("- {kind}: {title}
+"));
+            }
+            text.push_str("
+The backgrounded work is still unfinished. Move on to other work if you can. If there is nothing else useful to do, finish your response. Do not wait, sleep, poll, or report the backgrounded work as complete until a later completion notification is added to the conversation.");
+            let app = app.clone();
+            tokio::spawn(async move {
+                crate::engine::notify_with_id(app, id, text, None, Some(json!({ "background": true }))).await;
+            });
+            Ok(Value::Null)
+        }
         "session.share" | "session.unshare" => {
             let id = session_id().ok_or_else(|| anyhow!("session.share requires sessionID"))?;
             let handle = app.session(&id)?;
