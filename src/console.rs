@@ -208,6 +208,11 @@ fn write_skills(skills: &[Value]) -> Result<()> {
     Ok(())
 }
 
+/// Drop the hosted cache after sign-out.
+pub fn clear() {
+    let _ = std::fs::remove_dir_all(root());
+}
+
 fn cache() -> Option<Value> {
     let text = std::fs::read_to_string(cache_path()).ok()?;
     serde_json::from_str(&text).ok()

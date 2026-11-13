@@ -153,6 +153,9 @@ pub async fn auth_logout(provider: Option<String>) -> Result<()> {
         }
     };
     if crate::auth::remove(&provider)? {
+        if provider == "opencode" || provider == "console" {
+            crate::console::clear();
+        }
         println!("Removed credentials for {provider}");
     } else {
         println!("No credentials stored for {provider}");
