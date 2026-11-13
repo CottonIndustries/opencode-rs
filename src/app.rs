@@ -214,6 +214,7 @@ impl App {
         let project = session::project_id(&worktree);
         let mut providers = crate::models::providers(&config);
         let mut agents = crate::agent::load(&config, &directories);
+        crate::tools::skill::sync_remote(&config).await;
         let mut skills = crate::tools::skill::discover(&config, &directories, &directory, &specs);
         let mut commands = crate::command::load(&config, &directories);
         let base = PluginBase {

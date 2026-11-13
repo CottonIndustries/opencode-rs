@@ -228,11 +228,15 @@ pub fn skills_block(skills: &[crate::tools::skill::Skill]) -> String {
         "Use the skill tool to load a skill when a task matches its description.".into(),
         "The user may also invoke a skill directly. When that happens, its instructions appear in the conversation as a <skill_content> block, the same shape the skill tool returns. A skill that is already present this way does not need to be invoked again.".into(),
     ];
-    if skills.is_empty() {
+    let visible: Vec<&crate::tools::skill::Skill> = skills
+        .iter()
+        .filter(|skill| skill.autoinvoke && !skill.description.trim().is_empty())
+        .collect();
+    if visible.is_empty() {
         lines.push("No skills are currently available.".into());
     } else {
         lines.push("<available_skills>".into());
-        for s in skills {
+        for s in visible {
             lines.push("  <skill>".into());
             lines.push(format!("    <id>{}</id>", s.id));
             lines.push(format!("    <name>{}</name>", s.name));

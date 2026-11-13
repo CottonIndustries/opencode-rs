@@ -864,6 +864,7 @@ mod tests {
             description: String::new(),
             path: PathBuf::new(),
             content: "follow the test".into(),
+            autoinvoke: true,
         }];
         let body = json!({
             "agents": [{ "name": "reviewer" }],
@@ -3658,7 +3659,7 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
                 "description": skill.description,
                 "path": skill.path.to_string_lossy(),
                 "content": skill.content,
-                "autoinvoke": true,
+                "autoinvoke": skill.autoinvoke,
             }))
             .collect::<Vec<_>>())),
         "provider.list" | "config.providers" => Ok(json!(app
@@ -4219,7 +4220,7 @@ pub fn snapshot(
                 "description": skill.description,
                 "path": skill.path.to_string_lossy(),
                 "content": skill.content,
-                "autoinvoke": true,
+                "autoinvoke": skill.autoinvoke,
             })
         })
         .collect();
@@ -4460,6 +4461,7 @@ pub fn apply_state(
             description: item.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
             path: PathBuf::from(item.get("path").and_then(Value::as_str).unwrap_or_default()),
             content: item.get("content").and_then(Value::as_str).unwrap_or_default().to_string(),
+            autoinvoke: item.get("autoinvoke").and_then(Value::as_bool).unwrap_or(true),
         });
     }
 
