@@ -1846,10 +1846,15 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     budget.nodes += 1
     return { type: "text", text: "\n" }
   }
-  if (type === "image" || type.includes("canvas")) {
+  if (type === "image" || type === "video" || type.includes("canvas")) {
     budget.nodes += 1
-    const alt = String(jsxProp(props, "alt", "text", "label") ?? "[image]")
+    const alt = String(jsxProp(props, "alt", "text", "label") ?? `[${type}]`)
     return { type: "text", text: alt, segments: [{ text: alt, dim: true }] }
+  }
+  if (type === "ascii_font" || type === "ascii-font" || type === "line_number" || type === "line-number") {
+    budget.nodes += 1
+    const text = jsxText(props.text ?? props.content ?? props.children ?? props.number ?? current)
+    return text ? { type: "text", text, segments: [{ text }] } : null
   }
   const isText = type !== "textarea" && (type.includes("text") || type === "span" || type === "b" || type === "i" || type === "strong" || type === "em")
   if (isText) {
@@ -1882,7 +1887,8 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     }
   }
   if (type.includes("select")) {
-    const options = Array.isArray(jsxProp(props, "options")) ? jsxProp(props, "options") : []
+    const rawOptions = jsxProp(props, "options", "tabs", "items")
+    const options = Array.isArray(rawOptions) ? rawOptions : []
     const values = options
       .map((option: Json) => (typeof option === "string" ? option : String(option?.label ?? option?.value ?? "")))
       .filter(Boolean)
@@ -1959,6 +1965,9 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     String(value ?? "").toLowerCase().replace("flex-start", "start").replace("flex-end", "end")
   if (type.includes("scrollbox") && props.ref && typeof props.ref === "object" && props.ref.current) {
     const target = props.ref.current
+    const dimensions = (globalThis as Json).__opencodeDimensions ?? { width: 80, height: 24 }
+    target.viewport ??= { x: 0, y: 0, width: Number(dimensions.width ?? 80), height: Number(dimensions.height ?? 24) }
+    target.content ??= { x: 0, y: 0, width: Number(dimensions.width ?? 80), height: Number(dimensions.height ?? 24) }
     if (target.scrollTop === undefined) target.scrollTop = Number(jsxProp(props, "scrollTop", "scrollY") ?? 0)
     if (typeof target.scrollBy !== "function") {
       target.scrollBy = (delta: number) => {
