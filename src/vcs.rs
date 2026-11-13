@@ -298,7 +298,7 @@ pub fn dispatch(method: &str, input: &Value) -> Result<Value> {
         "worktree.list" => worktree_list(input),
         "worktree.create" => worktree_create(input),
         "worktree.remove" => worktree_remove(input),
-        "worktree.refresh" => Ok(Value::Null),
+        "worktree.refresh" => worktree_refresh(input),
         other => Err(anyhow!("unsupported vcs method: {other}")),
     }
 }
@@ -327,6 +327,21 @@ fn worktree_list(input: &Value) -> Result<Value> {
 
 fn same_path(left: &Path, right: &Path) -> bool {
     crate::util::normalize(left) == crate::util::normalize(right)
+}
+
+fn worktree_refresh(input: &Value) -> Result<Value> {
+    let source = input
+        .get("sourceDirectory")
+        .or_else(|| input.get("worktree"))
+        .or_else(|| input.get("directory"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let root = optional(&source, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("not a git repository"))?;
+    git(&root, &["worktree", "prune"])?;
+    worktree_list(input)
 }
 
 fn worktree_create(input: &Value) -> Result<Value> {

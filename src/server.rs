@@ -1154,6 +1154,14 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let input = json!({ "directory": app.directory.to_string_lossy() });
             Ok(json!({ "data": crate::vcs::dispatch("worktree.list", &input)? }))
         }
+        ("POST", ["api", "worktree", "refresh"]) => {
+            let mut body = request.body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["directory"] = json!(app.worktree.to_string_lossy());
+            Ok(json!({ "data": crate::vcs::dispatch("worktree.refresh", &body)? }))
+        }
         ("POST", ["api", "worktree"]) => {
             let mut input = request.body.clone();
             input["sourceDirectory"] = json!(app.directory.to_string_lossy());
