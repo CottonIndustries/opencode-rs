@@ -39,6 +39,7 @@ struct Request {
     cookie: Option<String>,
     accept: Option<String>,
     if_none_match: Option<String>,
+    ticket_header: Option<String>,
     websocket_key: Option<String>,
     upgrade: bool,
     body: Value,
@@ -72,6 +73,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let mut cookie = None;
     let mut accept = None;
     let mut if_none_match = None;
+    let mut ticket_header = None;
     let mut websocket_key = None;
     let mut upgrade = false;
     for line in lines {
@@ -90,6 +92,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             }
             if name.eq_ignore_ascii_case("if-none-match") {
                 if_none_match = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-opencode-ticket") {
+                ticket_header = Some(value.trim().to_string());
             }
             if name.eq_ignore_ascii_case("sec-websocket-key") {
                 websocket_key = Some(value.trim().to_string());
@@ -114,7 +119,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     } else {
         serde_json::from_slice(&raw_body).unwrap_or(Value::Null)
     };
-    Ok(Some(Request { method, path, authorization, cookie, accept, if_none_match, websocket_key, upgrade, body, raw_body }))
+    Ok(Some(Request { method, path, authorization, cookie, accept, if_none_match, ticket_header, websocket_key, upgrade, body, raw_body }))
 }
 
 fn authorized(request: &Request, password: &str, port: u16) -> bool {
@@ -206,6 +211,25 @@ fn consume_pairing(pairing: &Mutex<HashMap<String, i64>>, code: &str) -> bool {
     pairing.remove(code).is_some()
 }
 
+fn mcp_tickets() -> &'static Mutex<HashMap<String, (String, i64)>> {
+    static TICKETS: std::sync::OnceLock<Mutex<HashMap<String, (String, i64)>>> = std::sync::OnceLock::new();
+    TICKETS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn issue_mcp_ticket(name: &str) -> Value {
+    let ticket = crate::util::id("mcp");
+    let expires = crate::util::now_ms() + 60_000;
+    mcp_tickets().lock().unwrap().insert(ticket.clone(), (name.to_string(), expires));
+    json!({ "ticket": ticket, "expires_in": 60 })
+}
+
+fn consume_mcp_ticket(ticket: &str, name: &str) -> bool {
+    let now = crate::util::now_ms();
+    let mut tickets = mcp_tickets().lock().unwrap();
+    tickets.retain(|_, (_, expires)| *expires > now);
+    tickets.get(ticket).is_some_and(|(expected, _)| expected == name) && tickets.remove(ticket).is_some()
+}
+
 async fn handle(
     mut stream: TcpStream,
     app: Arc<App>,
@@ -249,6 +273,9 @@ async fn handle(
         return write_response(&mut stream, 200, issue_pairing(&pairing)).await;
     }
     if request.upgrade {
+        if request.path.starts_with("/api/experimental/client-mcp") {
+            return client_mcp_socket(stream, app, &request).await;
+        }
         if let Some(id) = pty_connect_id(&request.path) {
             return pty_socket(stream, app, &id, request.websocket_key.as_deref()).await;
         }
@@ -1214,6 +1241,17 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             app.mcp.disconnect_server(name);
             Ok(Value::Null)
         }
+        ("POST", ["api", "experimental", "client-mcp", "token"]) => {
+            if request.ticket_header.as_deref() != Some("1") {
+                return Err(anyhow!("invalid client MCP token request"));
+            }
+            let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+            let name = query_value(&parsed, "name").ok_or_else(|| anyhow!("client MCP name is required"))?;
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return Err(anyhow!("invalid client MCP name"));
+            }
+            Ok(json!({ "data": issue_mcp_ticket(&name) }))
+        }
         ("GET", ["api", "plugin"]) => Ok(json!({ "data": app.plugins.list() })),
         ("GET", ["api", "plugin", "gui"]) => Ok(json!({ "data": Value::Null })),
         ("POST", ["api", "plugin", "check"]) => Ok(json!({ "data": app.plugins.list() })),
@@ -1682,6 +1720,82 @@ fn websocket_accept(key: &str) -> String {
     hasher.update(key.as_bytes());
     hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
     base64::engine::general_purpose::STANDARD.encode(hasher.digest().bytes())
+}
+
+async fn client_mcp_socket(mut stream: TcpStream, app: Arc<App>, request: &Request) -> Result<()> {
+    let Some(key) = request.websocket_key.as_deref() else {
+        return write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "Missing Sec-WebSocket-Key" } }), None).await;
+    };
+    let parsed = url::Url::parse(&format!("http://localhost{}", request.path))?;
+    let Some(name) = query_value(&parsed, "name") else {
+        return write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "client MCP name is required" } }), None).await;
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return write_status(&mut stream, 400, "Bad Request", json!({ "error": { "message": "invalid client MCP name" } }), None).await;
+    }
+    if let Some(ticket) = query_value(&parsed, "ticket") {
+        if !consume_mcp_ticket(&ticket, &name) {
+            return write_status(&mut stream, 403, "Forbidden", json!({ "error": { "message": "invalid or expired client MCP ticket" } }), None).await;
+        }
+    }
+    let accept = websocket_accept(key);
+    let handshake = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    );
+    stream.write_all(handshake.as_bytes()).await?;
+    stream.flush().await?;
+    let (mut reader, mut writer) = stream.into_split();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writer_task = tokio::spawn(async move {
+        while let Some(text) = rx.recv().await {
+            if send_ws_frame(&mut writer, 1, text.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    let pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let client = Arc::new(crate::mcp::Client::socket(
+        &name,
+        tx,
+        pending.clone(),
+        std::time::Duration::from_secs(30),
+    ));
+    let reader_pending = pending.clone();
+    let reader_task = tokio::spawn(async move {
+        loop {
+            let frame = read_ws_frame(&mut reader).await;
+            let Ok(Some((opcode, payload))) = frame else { break };
+            match opcode {
+                1 | 2 => {
+                    let text = String::from_utf8_lossy(&payload);
+                    let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
+                    if value.get("method").is_none() {
+                        if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                            if let Some(sender) = reader_pending.lock().unwrap().remove(&id) {
+                                let _ = sender.send(value);
+                            }
+                        }
+                    }
+                }
+                8 => break,
+                _ => {}
+            }
+        }
+    });
+    match app.mcp.attach_socket(&name, client.clone()).await {
+        Ok(_) => {
+            let _ = reader_task.await;
+        }
+        Err(error) => {
+            writer_task.abort();
+            let _ = reader_task.await;
+            app.mcp.detach_socket(&name);
+            return Err(error);
+        }
+    }
+    app.mcp.detach_socket(&name);
+    writer_task.abort();
+    Ok(())
 }
 
 async fn pty_socket(mut stream: TcpStream, app: Arc<App>, id: &str, key: Option<&str>) -> Result<()> {

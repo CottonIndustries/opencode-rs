@@ -32,6 +32,10 @@ enum Transport {
         headers: BTreeMap<String, String>,
         session: Mutex<Option<String>>,
     },
+    Socket {
+        tx: tokio::sync::mpsc::UnboundedSender<String>,
+        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+    },
 }
 
 pub struct Client {
@@ -43,6 +47,39 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn socket(
+        name: &str,
+        tx: tokio::sync::mpsc::UnboundedSender<String>,
+        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Client {
+            name: name.to_string(),
+            transport: Transport::Socket { tx, pending },
+            next: AtomicU64::new(1),
+            timeout,
+            protocol: PROTOCOL.to_string(),
+        }
+    }
+
+    pub async fn initialize(&self) -> Result<Vec<Value>> {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": self.protocol,
+                "capabilities": {},
+                "clientInfo": { "name": "opencode", "version": crate::VERSION }
+            }),
+        )
+        .await?;
+        self.notify("notifications/initialized").await?;
+        self.tool_list().await
+    }
+
+    pub async fn tool_list(&self) -> Result<Vec<Value>> {
+        self.paginate("tools/list", "tools").await
+    }
+
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -94,6 +131,12 @@ impl Client {
                 } else {
                     r.json::<Value>().await?
                 }
+            }
+            Transport::Socket { tx, pending } => {
+                let (reply, rx) = oneshot::channel();
+                pending.lock().unwrap().insert(id, reply);
+                tx.send(msg.to_string()).map_err(|_| anyhow!("MCP client {} disconnected", self.name))?;
+                tokio::time::timeout(self.timeout, rx).await.map_err(|_| anyhow!("MCP client {} timed out on {method}", self.name))?.map_err(|_| anyhow!("MCP client {} disconnected", self.name))?
             }
         };
         if let Some(e) = resp.get("error") {
@@ -155,6 +198,9 @@ impl Client {
                     rb = rb.header("Mcp-Session-Id", s);
                 }
                 let _ = crate::http::send(rb).await;
+            }
+            Transport::Socket { tx, .. } => {
+                let _ = tx.send(msg.to_string());
             }
         }
         Ok(())
@@ -301,6 +347,7 @@ pub struct Manager {
     dir: PathBuf,
     tools: std::sync::Mutex<Option<Vec<Arc<dyn Tool>>>>,
     clients: Mutex<BTreeMap<String, Arc<Client>>>,
+    dynamic: Mutex<BTreeMap<String, (Arc<Client>, Vec<Value>)>>,
     status: Mutex<BTreeMap<String, Status>>,
 }
 
@@ -315,6 +362,7 @@ impl Manager {
             dir,
             tools: std::sync::Mutex::new(None),
             clients: Mutex::new(BTreeMap::new()),
+            dynamic: Mutex::new(BTreeMap::new()),
             status: Mutex::new(BTreeMap::new()),
         }
     }
@@ -369,6 +417,20 @@ impl Manager {
         *self.tools.lock().unwrap() = None;
     }
 
+    pub async fn attach_socket(&self, name: &str, client: Arc<Client>) -> Result<Vec<Value>> {
+        let listed = client.initialize().await?;
+        self.dynamic.lock().unwrap().insert(name.to_string(), (client, listed.clone()));
+        *self.tools.lock().unwrap() = None;
+        self.tools().await;
+        Ok(listed)
+    }
+
+    pub fn detach_socket(&self, name: &str) {
+        self.dynamic.lock().unwrap().remove(name);
+        self.status.lock().unwrap().insert(name.to_string(), Status::Disabled);
+        *self.tools.lock().unwrap() = None;
+    }
+
     pub async fn tools(&self) -> Vec<Arc<dyn Tool>> {
         if let Some(tools) = self.tools.lock().unwrap().clone() {
             return tools;
@@ -405,6 +467,20 @@ impl Manager {
                     self.clients.lock().unwrap().remove(&name);
                     self.status.lock().unwrap().insert(name, Status::Failed(e.to_string()));
                 }
+            }
+        }
+        let dynamic = self.dynamic.lock().unwrap().clone();
+        for (name, (client, listed)) in dynamic {
+            self.status.lock().unwrap().insert(name.clone(), Status::Connected { tools: listed.len() });
+            for t in listed {
+                let tool = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                all.push(Arc::new(McpTool {
+                    client: client.clone(),
+                    full_name: format!("{}_{}", sanitize(&name), sanitize(&tool)),
+                    description: t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                    schema: t.get("inputSchema").cloned().unwrap_or(json!({ "type": "object", "properties": {} })),
+                    tool,
+                }));
             }
         }
         *self.tools.lock().unwrap() = Some(all.clone());
