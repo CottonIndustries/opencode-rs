@@ -24,7 +24,7 @@ if yours live elsewhere.
 | `opencode acp [--login]` | Agent Client Protocol server on stdio for editors such as Zed (`--login` runs `auth login`) |
 | `opencode serve [--hostname H] [--port P] [--password P] [--dir D]` | Local HTTP API, SSE event feed, and WebSocket PTY streaming (`/api/pty/:id/connect`). Basic auth is enabled when a password is set or `OPENCODE_SERVER_PASSWORD` is present. |
 | `opencode models [provider] [--verbose] [--refresh]` | List models from providers with credentials |
-| `opencode auth list\|login\|logout` | Manage API keys and OAuth logins: ChatGPT, GitHub Copilot, and OpenCode Console device login (`opencode auth login opencode [--server URL]`) |
+| `opencode auth list\|login\|logout\|export\|import\|switch\|sync` | Manage API keys and OAuth logins: ChatGPT, GitHub Copilot, and OpenCode Console device login (`opencode auth login opencode [--server URL]`); `sync` refreshes hosted Console config, instructions and skills |
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
 | `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
 | `opencode mcp list` | MCP server status |
@@ -35,7 +35,7 @@ if yours live elsewhere.
 | `opencode migrate` | Index legacy session history |
 | `opencode mcp add <name> [--url U] [--header K=V] [--env K=V] [--] <cmd...>` | Add a remote or local MCP server |
 | `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth |
-| `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins in the global config |
+| `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins; `check` compares pinned npm targets with the registry and `update` rewrites them |
 | `opencode pair [--url U]` | Create a single-use pairing link for a running server (`/auth/connect/:code`) |
 | `opencode debug paths\|config\|agents\|skills\|prompt\|plugins` | Troubleshooting (`plugins` also lists plugin tools, TUI commands, pages and slots) |
 | `opencode debug plugin-tool <name> [json]` | Execute a plugin tool with the given input |
@@ -168,11 +168,12 @@ inbox item still references them. Session messages are also normalized into the
 
 ## Not ported
 
-Things in the original that depend on its hosted services or on domains this
-port does not implement: `service`, `github`, `upgrade`, and Claude Pro/Max
-OAuth. ChatGPT, GitHub Copilot, and OpenCode Console device logins are
-available through `opencode auth login`. Bedrock/Vertex/Azure need an
-OpenAI-compatible
+Hosted integration sources from `/.well-known/opencode` and OpenCode Console
+config, instructions and skills are cached under `storage` and merged below
+local configuration. Things in the original that depend on domains this port
+does not implement: `github`, `upgrade`, and Claude Pro/Max OAuth. ChatGPT,
+GitHub Copilot, and OpenCode Console device logins are available through
+`opencode auth login`. Bedrock/Vertex/Azure still need an OpenAI-compatible
 `baseURL`. Shell permission parsing uses a quote-aware splitter instead of
 tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
