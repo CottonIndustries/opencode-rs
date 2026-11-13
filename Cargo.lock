@@ -1521,6 +1521,9 @@ dependencies = [
  "http",
  "ignore",
  "mime_guess",
+ "opencode-core",
+ "opencode-server",
+ "opencode-tui",
  "portable-pty",
  "pulldown-cmark",
  "rand 0.8.8",
@@ -1540,6 +1543,75 @@ dependencies = [
  "wreq",
  "wreq-proto",
  "zip",
+]
+
+[[package]]
+name = "opencode-core"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "dirs",
+ "flate2",
+ "futures",
+ "globset",
+ "htmd",
+ "html2text",
+ "http",
+ "ignore",
+ "mime_guess",
+ "portable-pty",
+ "rand 0.8.8",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1_smol",
+ "sha2",
+ "similar",
+ "tokio",
+ "tokio-util",
+ "unicode-width 0.2.0",
+ "url",
+ "vt100",
+ "wreq",
+ "wreq-proto",
+ "zip",
+]
+
+[[package]]
+name = "opencode-server"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "base64",
+ "mime_guess",
+ "opencode-core",
+ "rand 0.8.8",
+ "serde_json",
+ "sha1_smol",
+ "sha2",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "opencode-tui"
+version = "2.2.7"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "ignore",
+ "opencode-core",
+ "pulldown-cmark",
+ "ratatui",
+ "regex",
+ "serde_json",
+ "tokio",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

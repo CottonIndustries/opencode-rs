@@ -1266,8 +1266,8 @@ impl Ui {
                     tokio::spawn(async move {
                         let text = crate::command::render_mcp(&app, &cmd, &args).await;
                         let mut msg = Message::user_text(text.clone());
-                        msg.parts.extend(crate::run::expand_mentions(&app, &text));
-                        msg.skills = crate::run::skill_mentions(&app, &text);
+                        msg.parts.extend(crate::mentions::expand_mentions(&app, &text));
+                        msg.skills = crate::mentions::skill_mentions(&app, &text);
                         let opts = PromptOptions {
                             agent: cmd.agent.clone().or(Some(agent)),
                             model: cmd.model.clone().or(model),
@@ -1302,8 +1302,8 @@ impl Ui {
             return;
         }
         let mut msg = Message::user_text(text.clone());
-        msg.parts.extend(crate::run::expand_mentions(&self.app, &text));
-        msg.skills = crate::run::skill_mentions(&self.app, &text);
+        msg.parts.extend(crate::mentions::expand_mentions(&self.app, &text));
+        msg.skills = crate::mentions::skill_mentions(&self.app, &text);
         let opts = PromptOptions {
             agent: cmd.and_then(|c| c.agent.clone()).or_else(|| Some(self.agent.clone())),
             model: cmd.and_then(|c| c.model.clone()).or_else(|| self.model.clone()),

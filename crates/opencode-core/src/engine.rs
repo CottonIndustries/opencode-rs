@@ -303,7 +303,7 @@ fn plan_reminder(agent: &str, history: &[Message]) -> Option<String> {
     None
 }
 
-pub(crate) fn inbox_item(msg: &Message, delivery: &str) -> Value {
+pub fn inbox_item(msg: &Message, delivery: &str) -> Value {
     let files: Vec<Value> = msg
         .parts
         .iter()
@@ -775,7 +775,7 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
     Ok(interrupted)
 }
 
-pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &Selection) {
+pub async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &Selection) {
     let model = model_hook_json(sel);
     let sdk = app
         .plugins
@@ -811,7 +811,7 @@ pub(crate) async fn apply_aisdk_hooks(app: &Arc<App>, req: &mut Request, sel: &S
 }
 
 /// Let a V2 router plugin replace the model for a session request kind.
-pub(crate) async fn resolve_model_hook(
+pub async fn resolve_model_hook(
     app: &Arc<App>,
     agent: &Agent,
     sel: &mut Selection,
@@ -860,7 +860,7 @@ pub(crate) async fn resolve_model_hook(
     }
 }
 
-pub(crate) fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, agent: &Agent, sel: &Selection, kind: &str) {
+pub fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, agent: &Agent, sel: &Selection, kind: &str) {
     req.hooks = Some(provider::HookContext {
         app: app.clone(),
         session_id: session_id.to_string(),
@@ -870,7 +870,7 @@ pub(crate) fn attach_hooks(app: &Arc<App>, req: &mut Request, session_id: &str, 
     });
 }
 
-pub(crate) fn model_hook_json(sel: &Selection) -> Value {
+pub fn model_hook_json(sel: &Selection) -> Value {
     serde_json::json!({
         "id": sel.model.id,
         "modelID": sel.model.id,
@@ -896,7 +896,7 @@ pub(crate) fn model_hook_json(sel: &Selection) -> Value {
     })
 }
 
-pub(crate) fn build_request(
+pub fn build_request(
     sel: &Selection,
     agent: &Agent,
     system: Vec<String>,
@@ -1551,11 +1551,11 @@ async fn step_once(
 }
 
 /// Run one request to completion and collect its text.
-pub(crate) async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
+pub async fn complete_request(req: Request, cancel: Option<CancellationToken>) -> Result<(String, Usage)> {
     complete_request_with(req, cancel, |_| {}).await
 }
 
-pub(crate) async fn complete_request_with(
+pub async fn complete_request_with(
     req: Request,
     cancel: Option<CancellationToken>,
     mut on_delta: impl FnMut(&str),

@@ -1,0 +1,19 @@
+[package]
+name = "opencode-tui"
+version = "2.2.7"
+edition = "2021"
+description = "Terminal user interface for OpenCode"
+license = "MIT"
+
+[dependencies]
+opencode-core = { path = "../opencode-core" }
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+ignore = "0.4"
+pulldown-cmark = { version = "0.12", default-features = false }
+ratatui = "0.29"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+unicode-width = "0.2"

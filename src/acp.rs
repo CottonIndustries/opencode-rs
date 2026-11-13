@@ -844,7 +844,7 @@ fn convert_prompt(blocks: &[Value], cwd: &Path) -> std::result::Result<PromptInp
                     let name = if s("uri").is_empty() { "image".to_string() } else { file_name(s("uri")) };
                     files.push(Part::File(crate::session::FilePart { mime: s("mimeType").to_string(), data: s("data").to_string(), name }));
                 } else if let Some(p) = url_to_path(s("uri")) {
-                    files.extend(crate::run::attach(&p, &file_name(s("uri"))).map_err(RpcError::from)?);
+                    files.extend(crate::mentions::attach(&p, &file_name(s("uri"))).map_err(RpcError::from)?);
                 } else if !s("uri").is_empty() {
                     texts.push(link("image", s("uri")));
                 } else {
@@ -854,7 +854,7 @@ fn convert_prompt(blocks: &[Value], cwd: &Path) -> std::result::Result<PromptInp
             "resource_link" => match url_to_path(s("uri")) {
                 Some(p) if p.exists() => {
                     let shown = crate::util::relative(cwd, &p);
-                    files.extend(crate::run::attach(&p, &shown).map_err(RpcError::from)?);
+                    files.extend(crate::mentions::attach(&p, &shown).map_err(RpcError::from)?);
                 }
                 _ => texts.push(link(s("name"), s("uri"))),
             },

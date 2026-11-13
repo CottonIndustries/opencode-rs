@@ -797,7 +797,7 @@ impl App {
     }
 }
 
-pub(crate) fn plugin_event(ev: &AppEvent) -> serde_json::Value {
+pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
     use serde_json::json;
     let id = || crate::util::id("evt");
     match ev {

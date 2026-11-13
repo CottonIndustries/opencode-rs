@@ -9,7 +9,7 @@
 //! cache. When it is missing, a pinned official release is downloaded on first
 //! use.
 
-pub(crate) mod pty;
+pub mod pty;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
@@ -1980,7 +1980,7 @@ fn instruction_hash(value: &Value) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub(crate) fn form_info_json(form: &crate::forms::Form) -> Value {
+pub fn form_info_json(form: &crate::forms::Form) -> Value {
     let mut value = json!({
         "id": form.id,
         "sessionID": form.session_id,
@@ -3879,7 +3879,7 @@ The backgrounded work is still unfinished. Move on to other work if you can. If 
     }
 }
 
-pub(crate) fn agent_json(agent: &crate::agent::Agent) -> Value {
+pub fn agent_json(agent: &crate::agent::Agent) -> Value {
     json!({
         "id": agent.id,
         "name": agent.name,
@@ -3968,7 +3968,7 @@ fn session_history_json(
     Value::Array(values)
 }
 
-pub(crate) fn session_messages_json(messages: &[crate::session::Message]) -> Value {
+pub fn session_messages_json(messages: &[crate::session::Message]) -> Value {
     use crate::session::{Part, Role, ToolState};
     json!(messages
         .iter()
@@ -4132,7 +4132,7 @@ pub(crate) fn session_messages_json(messages: &[crate::session::Message]) -> Val
         .collect::<Vec<_>>())
 }
 
-pub(crate) fn session_json_summary(session: &crate::session::Summary) -> Value {
+pub fn session_json_summary(session: &crate::session::Summary) -> Value {
     let mut value = json!({
         "id": session.id,
         "projectID": crate::session::project_id(&session.directory),
@@ -4186,7 +4186,7 @@ pub(crate) fn session_json_summary(session: &crate::session::Summary) -> Value {
     value
 }
 
-pub(crate) fn session_json(session: &crate::session::Session) -> Value {
+pub fn session_json(session: &crate::session::Session) -> Value {
     let (usage, cost) = session.usage_total();
     let mut value = json!({
         "id": session.id,
@@ -4362,7 +4362,7 @@ pub fn snapshot(
     })
 }
 
-pub(crate) fn provider_settings(provider: &crate::models::Provider) -> Value {
+pub fn provider_settings(provider: &crate::models::Provider) -> Value {
     let mut settings = serde_json::Map::new();
     if let Some(base_url) = &provider.options.base_url {
         settings.insert("baseURL".into(), json!(base_url));
@@ -4373,7 +4373,7 @@ pub(crate) fn provider_settings(provider: &crate::models::Provider) -> Value {
     Value::Object(settings)
 }
 
-pub(crate) fn model_json(model: &crate::models::Model) -> Value {
+pub fn model_json(model: &crate::models::Model) -> Value {
     json!({
         "id": model.id,
         "modelID": model.id,

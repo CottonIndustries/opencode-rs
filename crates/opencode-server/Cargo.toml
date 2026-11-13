@@ -1,0 +1,18 @@
+[package]
+name = "opencode-server"
+version = "2.2.7"
+edition = "2021"
+description = "HTTP API and event feed for OpenCode"
+license = "MIT"
+
+[dependencies]
+opencode-core = { path = "../opencode-core" }
+anyhow = "1"
+base64 = "0.22"
+mime_guess = "2"
+rand = "0.8"
+serde_json = { version = "1", features = ["preserve_order"] }
+sha1_smol = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+url = "2"

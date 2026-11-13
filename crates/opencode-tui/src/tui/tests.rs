@@ -256,9 +256,9 @@ async fn skills_command_opens_dialog_and_inserts_mention() {
     ui.exec("prompt.skills", "");
     ui.dialog_select(Kind::Skills, "opencode".into());
     assert_eq!(ui.editor.text, "@opencode ");
-    let parts = crate::run::expand_mentions(&ui.app, "@opencode explain plugins");
+    let parts = crate::mentions::expand_mentions(&ui.app, "@opencode explain plugins");
     assert!(parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains("<skill_content"))));
-    let skills = crate::run::skill_mentions(&ui.app, "@opencode explain plugins").unwrap();
+    let skills = crate::mentions::skill_mentions(&ui.app, "@opencode explain plugins").unwrap();
     assert_eq!(skills[0]["id"], "opencode");
 }
 

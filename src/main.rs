@@ -1,74 +1,15 @@
 //! OpenCode — AI coding agent for the terminal (Rust rewrite).
 
-mod account;
+pub use opencode_core::*;
+pub use opencode_server::server;
+pub use opencode_tui::tui;
+
 mod acp;
-mod agent;
-mod app;
-mod artifact;
-mod auth;
 mod cli;
-mod command;
-mod config;
-mod config_watch;
-mod console;
-mod db;
-mod debug_dump;
-mod engine;
-mod event_store;
-mod formatter;
-mod forms;
-mod http;
-mod job;
-mod lsp;
-mod mcp;
-mod mcp_oauth;
-mod media;
-mod migration;
-mod models;
-mod paths;
-mod permission;
-mod permission_saved;
-mod plugin;
-mod plugin_package;
-mod policy;
-mod prompt;
-mod provider;
-mod repository;
-mod retention;
 mod run;
-mod schedule;
-mod server;
-mod service;
-mod share;
-mod session;
-mod snapshot;
-mod state;
-mod stats;
-mod tools;
-mod tui;
-mod util;
-mod vcs;
-mod voice;
-mod wellknown;
-mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Upstream release this port mirrors; reported to providers like the TypeScript client does.
-pub const UPSTREAM_VERSION: &str = "2.2.7";
-pub const UPSTREAM_CHANNEL: &str = "latest";
-
-/// Client name reported to providers (`x-opencode-client`): `OPENCODE_CLIENT` or `cli`, as upstream.
-pub fn client_name() -> String {
-    std::env::var("OPENCODE_CLIENT").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "cli".into())
-}
-
-/// `opencode/<channel>/<version>/<client>`, the TypeScript client's User-Agent.
-pub fn user_agent() -> String {
-    format!("opencode/{UPSTREAM_CHANNEL}/{UPSTREAM_VERSION}/{}", client_name())
-}
 
 #[derive(Parser)]
 #[command(name = "opencode", version = VERSION, about = "OpenCode - AI coding agent for the terminal")]

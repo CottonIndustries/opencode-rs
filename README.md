@@ -11,6 +11,21 @@ cargo build --release
 ./target/release/opencode run "fix the failing test"
 ```
 
+## Workspace layout
+
+The project is a Cargo workspace. The binary is a thin shell around three
+library crates:
+
+| Crate | Responsibility |
+|---|---|
+| `crates/opencode-core` | Configuration, models, providers, sessions, engine, tools, plugins, storage, jobs, workspaces and supporting services |
+| `crates/opencode-tui` | Ratatui terminal UI, themes, transcript rendering and the plugin layout renderer |
+| `crates/opencode-server` | HTTP API, SSE event feed and PTY WebSocket transport |
+
+`src/` keeps only the binary entry point, CLI parsing, non-interactive `run` and
+ACP. Build and test everything with `cargo build --workspace` and
+`cargo test --workspace`; `cargo test` in the root runs only the binary tests.
+
 BoringSSL is built from source, which needs CMake, NASM and libclang. `.cargo/config.toml`
 points at `tools/cmake`, `tools/nasm` and `tools/libclang` (not committed); change those paths
 if yours live elsewhere.
@@ -65,7 +80,7 @@ if yours live elsewhere.
   client: `User-Agent: opencode/latest/2.2.7/cli`, `x-opencode-client: cli` (or
   `OPENCODE_CLIENT`), its session/affinity/project headers and ID formats, trace headers,
   `max_completion_tokens`, and its title request. Set `OPENCODE_API_KEY` to unlock paid Zen models.
-- **Network fingerprint** (`src/http.rs`): all HTTP goes through BoringSSL configured like
+- **Network fingerprint** (`crates/opencode-core/src/http.rs`): all HTTP goes through BoringSSL configured like
   Bun 1.4.4, so the ClientHello (ciphers, groups, key shares, signature algorithms, extension
   order, ALPN `http/1.1`) is the TypeScript client's, and headers are written as Bun's `fetch`
   writes them: sorted, Bun's casing, joined repeats, then `Connection`, `Accept`, `Host`,
@@ -198,7 +213,7 @@ GitHub Copilot, and OpenCode Console device logins are available through
 tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
 authorization are not part of it. Remote workspace/environment drivers and the
-full OpenTUI/Solid plugin layout engine are not ported.
+full native OpenTUI/Solid layout engine is replaced by a renderer subset with flexbox-style layout, scrolling and styled text.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
 RPC endpoints are available through the API and plugin host. `opencode serve`

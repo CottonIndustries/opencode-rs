@@ -1,3 +1,8 @@
+[workspace]
+members = ["crates/opencode-core", "crates/opencode-tui", "crates/opencode-server"]
+default-members = [".", "crates/opencode-core", "crates/opencode-tui", "crates/opencode-server"]
+resolver = "2"
+
 [package]
 name = "opencode"
 version = "2.2.7"
@@ -10,6 +15,9 @@ name = "opencode"
 path = "src/main.rs"
 
 [dependencies]
+opencode-core = { path = "crates/opencode-core" }
+opencode-tui = { path = "crates/opencode-tui" }
+opencode-server = { path = "crates/opencode-server" }
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
