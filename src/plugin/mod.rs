@@ -3571,7 +3571,23 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                 &reference,
                 crate::models::ModelKind::Image,
             )?;
-            crate::provider::media::generate_image(&resolved.provider, &resolved.model, &first).await
+            let session = first.get("sessionID").and_then(Value::as_str).unwrap_or("system");
+            let title = first
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(|prompt| prompt.chars().take(80).collect::<String>())
+                .unwrap_or_else(|| "Generate image".into());
+            let job = crate::job::create("image", session, &title, json!({ "path": "", "model": reference }));
+            match crate::provider::media::generate_image(&resolved.provider, &resolved.model, &first).await {
+                Ok(value) => {
+                    crate::job::finish(&job, "completed", None);
+                    Ok(value)
+                }
+                Err(error) => {
+                    crate::job::finish(&job, "error", Some(json!({ "error": error.to_string() })));
+                    Err(error)
+                }
+            }
         }
         "generate.decisions" | "experimental.generate.decisions" => {
             let reference = generate_ref(&first).ok_or_else(|| anyhow!("generate.decisions requires a model"))?;

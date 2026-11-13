@@ -1233,6 +1233,10 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 "time": { "started": created },
             });
             shells().lock().unwrap().insert(id.clone(), ShellRecord { info: info.clone(), output: String::new() });
+            let job = metadata
+                .get("sessionID")
+                .and_then(Value::as_str)
+                .map(|session| crate::job::create("shell", session, &command, json!({ "shellID": id.clone(), "command": command.clone() })));
             let task_id = id.clone();
             tokio::spawn(async move {
                 let mut cmd = tokio::process::Command::new(&shell.program);
@@ -1258,13 +1262,22 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                             record.info["status"] = json!("exited");
                             record.info["exit"] = json!(output.status.code().unwrap_or(-1));
                             record.info["time"]["completed"] = json!(crate::util::now_ms());
+                            if let Some(job) = &job {
+                                let status = if output.status.success() { "completed" } else { "error" };
+                                crate::job::finish(job, status, Some(json!({ "exit": output.status.code() })));
+                            }
                         }
                         Err(error) => {
                             record.info["status"] = json!("exited");
                             record.info["error"] = json!(error.to_string());
                             record.info["time"]["completed"] = json!(crate::util::now_ms());
+                            if let Some(job) = &job {
+                                crate::job::finish(job, "error", Some(json!({ "error": error.to_string() })));
+                            }
                         }
                     }
+                } else if let Some(job) = &job {
+                    crate::job::finish(job, "cancelled", None);
                 }
             });
             Ok(json!({ "data": info }))
@@ -1327,36 +1340,10 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             let session = query_value(&parsed, "sessionID");
             let kind = query_value(&parsed, "kind");
             let status = query_value(&parsed, "status");
-            let shells = shells();
-            let shells = shells.lock().unwrap();
-            let jobs = shells
-                .values()
-                .filter_map(|shell| {
-                    let session_id = shell.info.pointer("/metadata/sessionID").and_then(Value::as_str)?;
-                    let job_status = match shell.info["status"].as_str().unwrap_or_default() {
-                        "running" => "running",
-                        "exited" => "completed",
-                        _ => "error",
-                    };
-                    Some(json!({
-                        "id": shell.info["id"],
-                        "kind": "shell",
-                        "sessionID": session_id,
-                        "status": job_status,
-                        "title": shell.info["command"],
-                        "time": {
-                            "started": shell.info.pointer("/time/started"),
-                            "completed": shell.info.pointer("/time/completed"),
-                        },
-                        "shellID": shell.info["id"],
-                        "command": shell.info["command"],
-                    }))
-                })
-                .filter(|job| session.as_deref().is_none_or(|session| job["sessionID"] == session))
-                .filter(|job| kind.as_deref().is_none_or(|kind| kind == "shell"))
-                .filter(|job| status.as_deref().is_none_or(|status| job["status"] == status))
-                .collect::<Vec<_>>();
-            Ok(json!({ "data": jobs }))
+            let descendants = query_value(&parsed, "descendants").as_deref() == Some("true");
+            Ok(json!({
+                "data": crate::job::list(session.as_deref(), kind.as_deref(), status.as_deref(), descendants),
+            }))
         }
         ("GET", ["api", "experimental", "usage", "limits"]) => Ok(json!({ "data": null })),
         ("GET", ["api", "experimental", "migration", "v1"]) => Ok(json!({ "data": { "status": "idle" } })),

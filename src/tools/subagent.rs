@@ -108,22 +108,30 @@ impl Tool for Subagent {
         if arg_bool(&input, "background").unwrap_or(false) {
             let parent = ctx.session_id.clone();
             let cid = child_id.clone();
+            let job_id = crate::job::create(
+                "subagent",
+                &parent,
+                &description,
+                json!({ "childSessionID": cid, "agent": agent_id, "description": description }),
+            );
+            let job = job_id.clone();
             tokio::spawn(async move {
                 let res = crate::engine::prompt(app.clone(), &cid, msg, opts).await;
                 let (state, text) = match res {
                     Ok(_) => ("completed", final_text(&app, &cid)),
                     Err(e) => ("error", e.to_string()),
                 };
+                crate::job::finish(&job, state, Some(json!({ "result": text })));
                 let note = format!("<subagent sessionID=\"{cid}\" state=\"{state}\">\n{text}\n</subagent>");
                 crate::engine::notify(app, parent, note).await;
             });
             let out = [
-                format!("The subagent is working in the background (sessionID: {child_id}). You will be notified automatically when it finishes."),
+                format!("The subagent is working in the background (sessionID: {child_id}, jobID: {job_id}). You will be notified automatically when it finishes."),
                 "DO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.".into(),
                 "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.".into(),
             ]
             .join("\n");
-            return Ok(Output::text(out, title).meta(json!({ "sessionID": child_id, "status": "running" })));
+            return Ok(Output::text(out, title).meta(json!({ "sessionID": child_id, "jobID": job_id, "status": "running" })));
         }
 
         let cancel = ctx.cancel.clone();
