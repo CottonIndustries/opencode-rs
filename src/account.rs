@@ -164,3 +164,38 @@ pub async fn usage_limits() -> Result<Option<Value>> {
     }
     Ok(Some(info))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_console_budget() {
+        let value = json!({
+            "ruleID": "rule_1",
+            "limitDollars": 20,
+            "spentDollars": 5,
+            "scope": "each",
+            "per": "set",
+            "coverage": "all",
+            "models": [{ "providerID": "openai", "modelID": "gpt", "name": "GPT", "spentDollars": 2 }],
+            "vendors": [{ "id": "openai", "name": "OpenAI" }],
+            "picked": true,
+            "shared": false,
+            "resetsAt": "2026-12-01T00:00:00Z"
+        });
+        let mapped = budget(&value);
+        assert_eq!(mapped["id"], "rule_1");
+        assert_eq!(mapped["limit"], 20);
+        assert_eq!(mapped["models"][0]["spent"], 2);
+        assert_eq!(mapped["vendors"][0], "OpenAI");
+        assert!(mapped["resetsAt"].as_i64().unwrap() > 0);
+    }
+
+    #[test]
+    fn maps_go_meter_limits() {
+        let mapped = meter(&json!({ "percent": 100, "status": "rate-limited", "resetsAt": "2026-12-01T00:00:00Z" }));
+        assert_eq!(mapped["limited"], true);
+        assert_eq!(mapped["percent"], 100);
+    }
+}

@@ -205,3 +205,24 @@ pub async fn session(input: &Value) -> Result<Value> {
         _ => Err(anyhow!("unsupported voice model: {model}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_engine_versions() {
+        assert_eq!(engine("gpt-live-1").map(|engine| engine.id), Some("openai-live"));
+        assert_eq!(engine("gpt-realtime-2.1").map(|engine| engine.id), Some("openai-realtime"));
+        assert_eq!(engine("grok-voice-3.0").map(|engine| engine.id), Some("xai-realtime"));
+        assert_eq!(engine("gemini-3.8-live").map(|engine| engine.id), Some("gemini-live"));
+        assert!(engine("unknown").is_none());
+    }
+
+    #[test]
+    fn exposes_transports() {
+        let value = models();
+        let items = value["models"].as_array().unwrap();
+        assert!(items.iter().any(|item| item["model"] == "gpt-realtime-2.1" && item["transports"].as_array().unwrap().len() == 2));
+    }
+}
