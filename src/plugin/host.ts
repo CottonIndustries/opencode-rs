@@ -1711,7 +1711,12 @@ function makeTuiContext(plugin: PluginRecord): Json {
   const memory = new Map<string, Json>()
   const storage = {
     store: (key: string, options: Json) => {
-      const state = structuredClone(options?.initial ?? {})
+      let state: Json
+      try {
+        state = JSON.parse(Deno.readTextFileSync(storageFile(`${prefix}${key}`)))
+      } catch {
+        state = structuredClone(options?.initial ?? {})
+      }
       return [
         state,
         async (mutation: Function) => {
