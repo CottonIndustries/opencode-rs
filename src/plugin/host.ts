@@ -38,6 +38,9 @@ const storageDir: string = config.storageDir ?? ""
 const shellProgram: string = config.shell ?? ""
 let bunShellCwd = directory
 let bunShellEnv: Record<string, string> = {}
+let tuiTheme: Json = config.theme ?? {}
+let tuiThemeMode: string = config.themeMode ?? "dark"
+let tuiInput: Json = {}
 
 // ---------------------------------------------------------------- transport
 
@@ -256,6 +259,9 @@ async function receive(message: Json) {
         .catch((error) => log("error", `event dispatch failed: ${String(error)}`))
     } else if (message.method === "tool.abort") {
       abortControllers.get(message.params?.callID)?.abort()
+    } else if (message.method === "tui.theme") {
+      tuiTheme = message.params?.theme ?? {}
+      tuiThemeMode = String(message.params?.mode ?? "dark")
     }
     return
   }
@@ -1668,134 +1674,209 @@ function registerTuiCommand(plugin: PluginRecord, command: Json): () => void {
   return dispose
 }
 
+function jsxResolve(value: Json, depth = 0): Json {
+  let current = value
+  let steps = 0
+  while (typeof current === "function" && steps < 32) {
+    current = current()
+    steps += 1
+  }
+  return current
+}
+
+function jsxProp(props: Json, ...names: string[]): Json {
+  for (const name of names) {
+    const value = jsxResolve(props?.[name])
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
+}
+
+function jsxDim(value: Json): string | number | undefined {
+  const resolved = jsxResolve(value)
+  if (typeof resolved === "number" && Number.isFinite(resolved)) return resolved
+  if (typeof resolved === "string" && resolved.trim()) return resolved
+  return undefined
+}
+
+function jsxStyle(props: Json): Json {
+  const attributes = Number(jsxProp(props, "attributes") ?? 0)
+  const color = jsxColor(jsxProp(props, "fg", "color", "foreground"))
+  const background = jsxColor(jsxProp(props, "bg", "backgroundColor", "background"))
+  return {
+    ...(color ? { color } : {}),
+    ...(background ? { background } : {}),
+    ...(jsxProp(props, "bold") || (attributes & 1) !== 0 || props?.textAttributes === "bold" ? { bold: true } : {}),
+    ...(jsxProp(props, "dim") || (attributes & 2) !== 0 ? { dim: true } : {}),
+    ...(jsxProp(props, "italic") || (attributes & 4) !== 0 ? { italic: true } : {}),
+    ...(jsxProp(props, "underline") || (attributes & 8) !== 0 ? { underline: true } : {}),
+    ...(jsxProp(props, "strikethrough") || (attributes & 128) !== 0 ? { strikethrough: true } : {}),
+    ...(jsxProp(props, "inverse") || (attributes & 32) !== 0 ? { inverse: true } : {}),
+  }
+}
+
+function jsxSegments(value: Json, inherited: Json = {}, depth = 0): Json[] {
+  if (depth > 32) return []
+  const current = jsxResolve(value)
+  if (current === null || current === undefined || current === false || current === true) return []
+  if (typeof current === "string" || typeof current === "number" || typeof current === "bigint") {
+    return [{ text: String(current), ...inherited }]
+  }
+  if (Array.isArray(current)) return current.flatMap((item) => jsxSegments(item, inherited, depth + 1))
+  if (typeof current !== "object") return []
+  const props = current.props ?? {}
+  const style = { ...inherited, ...jsxStyle(props) }
+  const type = typeof current.type === "string" ? current.type.toLowerCase() : ""
+  if (type === "#text" || type === "text-node" || (current.text !== undefined && current.children === undefined)) {
+    const text = current.text ?? props.text ?? props.content
+    return text === undefined || text === null ? [] : [{ text: String(text), ...style }]
+  }
+  const children = props.children !== undefined ? props.children : current.children
+  if (children !== undefined) return jsxSegments(children, style, depth + 1)
+  const text = current.text ?? props.text ?? props.content
+  return text === undefined || text === null ? [] : [{ text: String(text), ...style }]
+}
+
 function jsxText(value: Json): string {
-  if (value === null || value === undefined || value === false || value === true) return ""
-  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") return String(value)
-  if (Array.isArray(value)) return value.map(jsxText).filter(Boolean).join("")
-  if (typeof value === "function") {
-    try {
-      return jsxText(value())
-    } catch {
-      return ""
-    }
-  }
-  if (typeof value === "object") {
-    if (value.text !== undefined) return jsxText(value.text)
-    if (value.children !== undefined) return jsxText(value.children)
-    if (value.props) {
-      const props = value.props
-      if (typeof props === "string") return props
-      if (props.children !== undefined) return jsxText(props.children)
-      if (props.text !== undefined) return jsxText(props.text)
-      if (props.content !== undefined) return jsxText(props.content)
-    }
-  }
-  return ""
+  return jsxSegments(value).map((segment) => segment.text).join("")
+}
+
+function jsxNumber(value: Json): number | undefined {
+  const resolved = jsxResolve(value)
+  const number = Number(resolved)
+  return Number.isFinite(number) ? number : undefined
 }
 
 function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
-  if (depth > 8 || budget.nodes > 200) return null
-  if (value === null || value === undefined || value === false || value === true) return null
-  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") {
-    const text = String(value)
-    return text ? { type: "text", text } : null
+  if (depth > 32 || budget.nodes > 2000) return null
+  const current = jsxResolve(value)
+  if (current === null || current === undefined || current === false || current === true) return null
+  if (typeof current === "string" || typeof current === "number" || typeof current === "bigint") {
+    const text = String(current)
+    return text ? { type: "text", text, segments: [{ text }] } : null
   }
-  if (Array.isArray(value)) {
-    const children = value.map((item) => jsxLayout(item, depth + 1, budget)).filter(Boolean)
+  if (Array.isArray(current)) {
+    const children = current.map((item) => jsxLayout(item, depth + 1, budget)).filter(Boolean)
     return children.length ? { type: "box", direction: "column", children } : null
   }
-  if (typeof value === "function") {
-    try {
-      return jsxLayout(value(), depth + 1, budget)
-    } catch {
-      return null
-    }
-  }
-  if (typeof value !== "object") return null
-  const props = value.props ?? {}
-  const children = props.children !== undefined ? props.children : value.children
-  const type = typeof value.type === "string" ? value.type.toLowerCase() : ""
-  if (type.includes("text") || type === "span" || type === "b" || type === "i" || type === "strong" || type === "em") {
-    const text = jsxText(value)
-    if (!text.trim()) return null
+  if (typeof current !== "object") return null
+  const props = current.props ?? {}
+  const children = props.children !== undefined ? props.children : current.children
+  const type = typeof current.type === "string" ? current.type.toLowerCase() : ""
+  const isText = type !== "textarea" && (type.includes("text") || type === "span" || type === "b" || type === "i" || type === "strong" || type === "em")
+  if (isText) {
+    const segments = jsxSegments(current)
+    const text = segments.map((segment) => segment.text).join("")
+    if (!text) return null
     budget.nodes += 1
-    const color = jsxColor(props.fg ?? props.color)
-    const background = jsxColor(props.bg ?? props.backgroundColor)
+    const wrap = String(jsxProp(props, "wrap", "wrapMode") ?? "").toLowerCase()
     return {
       type: "text",
       text,
-      ...(type === "b" || type === "strong" || props.bold ? { bold: true } : {}),
-      ...(type === "i" || type === "em" || props.italic ? { italic: true } : {}),
-      ...(props.dim ? { dim: true } : {}),
-      ...(props.underline ? { underline: true } : {}),
-      ...(color ? { color } : {}),
-      ...(background ? { background } : {}),
+      ...(segments.length ? { segments } : {}),
+      ...(["none", "word", "char"].includes(wrap) ? { wrap } : {}),
     }
   }
   if (type.includes("input") || type === "textarea") {
-    const text = String(props.value ?? props.placeholder ?? props.defaultValue ?? "")
+    const text = String(jsxProp(props, "value", "placeholder", "defaultValue") ?? "")
     if (!text) return null
     budget.nodes += 1
-    return { type: "text", text, ...(props.placeholder && !props.value ? { dim: true } : {}) }
+    return { type: "text", text, segments: [{ text, ...(jsxProp(props, "placeholder") && !jsxProp(props, "value") ? { dim: true } : {}) }] }
   }
   if (type.includes("select")) {
-    const options = Array.isArray(props.options) ? props.options : []
-    const selected = props.value ?? props.selected
+    const options = Array.isArray(jsxProp(props, "options")) ? jsxProp(props, "options") : []
+    const selected = jsxProp(props, "value", "selected")
     const text = options
       .map((option: Json) => (typeof option === "string" ? option : String(option?.label ?? option?.value ?? "")))
       .filter(Boolean)
-      .join(" ")
+      .join("  ")
     if (!text) return null
     budget.nodes += 1
-    return { type: "text", text: selected === undefined ? text : String(selected) + ": " + text, dim: !selected }
+    return { type: "text", text: selected === undefined ? text : String(selected) + ": " + text, segments: [{ text: selected === undefined ? text : String(selected) + ": " + text, dim: !selected }] }
   }
   if (type.includes("spinner")) {
     budget.nodes += 1
-    return { type: "text", text: String(props.text ?? props.label ?? "working..."), dim: true }
+    const text = String(jsxProp(props, "text", "label") ?? "working...")
+    return { type: "text", text, segments: [{ text, dim: true }] }
   }
   if (type.includes("progress")) {
-    const value = Number(props.value ?? 0)
-    const max = Number(props.max ?? 100) || 100
+    const value = Number(jsxProp(props, "value") ?? 0)
+    const max = Number(jsxProp(props, "max") ?? 100) || 100
     const filled = Math.max(0, Math.min(10, Math.round((value / max) * 10)))
     budget.nodes += 1
-    return { type: "text", text: "[" + "#".repeat(filled) + "-".repeat(10 - filled) + "] " + Math.round((value / max) * 100) + "%" }
+    const text = "[" + "#".repeat(filled) + "-".repeat(10 - filled) + "] " + Math.round((value / max) * 100) + "%"
+    return { type: "text", text, segments: [{ text }] }
   }
-  if (type.includes("markdown") || type === "code") {
-    const text = jsxText(props.content ?? children ?? value)
+  if (type.includes("markdown") || type === "code" || type.includes("diff")) {
+    const text = jsxText(props.content ?? children ?? current)
     if (!text.trim()) return null
     budget.nodes += 1
-    return { type: "text", text }
+    return { type: "text", text, segments: [{ text }] }
   }
   if (children === undefined) {
-    const text = jsxText(value)
+    const text = jsxText(current)
     if (!text.trim()) return null
     budget.nodes += 1
-    return { type: "text", text }
+    return { type: "text", text, segments: jsxSegments(current) }
   }
   budget.nodes += 1
-  const direction = String(props.flexDirection ?? props.direction ?? "column").toLowerCase() === "row" ? "row" : "column"
+  const direction = String(jsxProp(props, "flexDirection", "direction") ?? "column").toLowerCase() === "row" ? "row" : "column"
   const nested = jsxLayout(children, depth + 1, budget)
-  const items = nested ? (nested.type === "box" && nested.direction === direction ? nested.children : [nested]) : []
-  const padding = Number(props.padding ?? 0)
-  const gap = Number(props.gap ?? props.columnGap ?? props.rowGap ?? 0)
-  const border = typeof props.borderStyle === "string" ? props.borderStyle : props.border ? "single" : undefined
+  const items = nested ? (nested.type === "box" && nested.direction === direction && Object.keys(nested).length === 3 ? nested.children : [nested]) : []
+  const rawBorder = jsxProp(props, "borderStyle")
+  const borderValue = jsxProp(props, "border")
+  const border = typeof rawBorder === "string"
+    ? rawBorder
+    : borderValue === true || (Array.isArray(borderValue) && borderValue.some(Boolean))
+    ? "single"
+    : typeof borderValue === "string"
+    ? borderValue
+    : undefined
+  const padding = jsxNumber(jsxProp(props, "padding"))
+  const margin = jsxNumber(jsxProp(props, "margin"))
+  const grow = jsxNumber(jsxProp(props, "flexGrow"))
+  const shrink = jsxNumber(jsxProp(props, "flexShrink"))
+  const gap = jsxNumber(jsxProp(props, "gap", "columnGap", "rowGap"))
+  const normalize = (value: Json) =>
+    String(value ?? "").toLowerCase().replace("flex-start", "start").replace("flex-end", "end")
   return {
     type: "box",
     direction,
     children: items,
-    ...(Number.isFinite(padding) && padding > 0 ? { padding } : {}),
-    ...(Number.isFinite(Number(props.paddingTop)) ? { paddingTop: Number(props.paddingTop) } : {}),
-    ...(Number.isFinite(Number(props.paddingBottom)) ? { paddingBottom: Number(props.paddingBottom) } : {}),
-    ...(Number.isFinite(Number(props.paddingLeft)) ? { paddingLeft: Number(props.paddingLeft) } : {}),
-    ...(Number.isFinite(Number(props.paddingRight)) ? { paddingRight: Number(props.paddingRight) } : {}),
-    ...(Number.isFinite(gap) && gap > 0 ? { gap } : {}),
+    ...(padding !== undefined ? { padding } : {}),
+    ...(jsxNumber(jsxProp(props, "paddingTop")) !== undefined ? { paddingTop: jsxNumber(jsxProp(props, "paddingTop")) } : {}),
+    ...(jsxNumber(jsxProp(props, "paddingBottom")) !== undefined ? { paddingBottom: jsxNumber(jsxProp(props, "paddingBottom")) } : {}),
+    ...(jsxNumber(jsxProp(props, "paddingLeft")) !== undefined ? { paddingLeft: jsxNumber(jsxProp(props, "paddingLeft")) } : {}),
+    ...(jsxNumber(jsxProp(props, "paddingRight")) !== undefined ? { paddingRight: jsxNumber(jsxProp(props, "paddingRight")) } : {}),
+    ...(margin !== undefined ? { margin } : {}),
+    ...(jsxNumber(jsxProp(props, "marginTop")) !== undefined ? { marginTop: jsxNumber(jsxProp(props, "marginTop")) } : {}),
+    ...(jsxNumber(jsxProp(props, "marginBottom")) !== undefined ? { marginBottom: jsxNumber(jsxProp(props, "marginBottom")) } : {}),
+    ...(jsxNumber(jsxProp(props, "marginLeft")) !== undefined ? { marginLeft: jsxNumber(jsxProp(props, "marginLeft")) } : {}),
+    ...(jsxNumber(jsxProp(props, "marginRight")) !== undefined ? { marginRight: jsxNumber(jsxProp(props, "marginRight")) } : {}),
+    ...(gap !== undefined ? { gap } : {}),
+    ...(grow !== undefined ? { grow } : {}),
+    ...(shrink !== undefined ? { shrink } : {}),
+    ...(jsxDim(jsxProp(props, "flexBasis")) !== undefined ? { basis: jsxDim(jsxProp(props, "flexBasis")) } : {}),
     ...(border ? { border } : {}),
-    ...(props.title ?? props.borderTitle ? { title: String(props.title ?? props.borderTitle) } : {}),
-    ...(jsxColor(props.borderColor) ? { borderColor: jsxColor(props.borderColor) } : {}),
-    ...(jsxColor(props.backgroundColor ?? props.bg) ? { background: jsxColor(props.backgroundColor ?? props.bg) } : {}),
-    ...(Number.isFinite(Number(props.width)) ? { width: Number(props.width) } : {}),
-    ...(Number.isFinite(Number(props.height)) ? { height: Number(props.height) } : {}),
-    ...(props.alignItems ? { align: String(props.alignItems) } : {}),
+    ...(border && jsxProp(props, "title", "borderTitle") !== undefined ? { title: String(jsxProp(props, "title", "borderTitle")) } : {}),
+    ...(jsxColor(jsxProp(props, "borderColor")) ? { borderColor: jsxColor(jsxProp(props, "borderColor")) } : {}),
+    ...(jsxColor(jsxProp(props, "backgroundColor", "bg")) ? { background: jsxColor(jsxProp(props, "backgroundColor", "bg")) } : {}),
+    ...(jsxColor(jsxProp(props, "fg", "color")) ? { color: jsxColor(jsxProp(props, "fg", "color")) } : {}),
+    ...(jsxDim(jsxProp(props, "width")) !== undefined ? { width: jsxDim(jsxProp(props, "width")) } : {}),
+    ...(jsxDim(jsxProp(props, "height")) !== undefined ? { height: jsxDim(jsxProp(props, "height")) } : {}),
+    ...(jsxDim(jsxProp(props, "minWidth")) !== undefined ? { minWidth: jsxDim(jsxProp(props, "minWidth")) } : {}),
+    ...(jsxDim(jsxProp(props, "maxWidth")) !== undefined ? { maxWidth: jsxDim(jsxProp(props, "maxWidth")) } : {}),
+    ...(jsxDim(jsxProp(props, "minHeight")) !== undefined ? { minHeight: jsxDim(jsxProp(props, "minHeight")) } : {}),
+    ...(jsxDim(jsxProp(props, "maxHeight")) !== undefined ? { maxHeight: jsxDim(jsxProp(props, "maxHeight")) } : {}),
+    ...(normalize(jsxProp(props, "alignItems")) ? { align: normalize(jsxProp(props, "alignItems")) } : {}),
+    ...(normalize(jsxProp(props, "justifyContent")) ? { justify: normalize(jsxProp(props, "justifyContent")) } : {}),
+    ...(jsxProp(props, "position") ? { position: String(jsxProp(props, "position")) } : {}),
+    ...(jsxNumber(jsxProp(props, "left")) !== undefined ? { left: jsxNumber(jsxProp(props, "left")) } : {}),
+    ...(jsxNumber(jsxProp(props, "top")) !== undefined ? { top: jsxNumber(jsxProp(props, "top")) } : {}),
+    ...(jsxNumber(jsxProp(props, "right")) !== undefined ? { right: jsxNumber(jsxProp(props, "right")) } : {}),
+    ...(jsxNumber(jsxProp(props, "bottom")) !== undefined ? { bottom: jsxNumber(jsxProp(props, "bottom")) } : {}),
+    ...(jsxProp(props, "overflow") ? { overflow: String(jsxProp(props, "overflow")) } : {}),
+    ...(jsxProp(props, "visible") === false ? { hidden: true } : {}),
   }
 }
 
@@ -1805,11 +1886,17 @@ function jsxColor(value: unknown): string | undefined {
     const candidate = value as Record<string, unknown>
     if (typeof candidate.hex === "string") return candidate.hex
     if (typeof candidate.value === "string") return candidate.value
+    if (typeof candidate.r === "number" && typeof candidate.g === "number" && typeof candidate.b === "number") {
+      const channel = (number: number) => Math.max(0, Math.min(255, Math.round(number * 255))).toString(16).padStart(2, "0")
+      const alpha = typeof candidate.a === "number" && candidate.a < 1 ? channel(candidate.a) : ""
+      return "#" + channel(candidate.r) + channel(candidate.g) + channel(candidate.b) + alpha
+    }
   }
   return undefined
 }
 
 async function renderTuiSlots(input: Json): Promise<Json[]> {
+  tuiInput = input ?? {}
   const out: Json[] = []
   for (const slot of [...tuiSlots]) {
     try {
@@ -1938,7 +2025,8 @@ function makeTuiContext(plugin: PluginRecord): Json {
           log("error", `tui navigate failed: ${String(error)}`),
         )
       },
-      current: () => ({ type: "home" }),
+      current: () =>
+        tuiInput?.sessionID ? { type: "session", sessionID: String(tuiInput.sessionID) } : { type: "home" },
     },
     panel: {
       open: (name: string, options: Json) => {
@@ -1986,8 +2074,16 @@ function makeTuiContext(plugin: PluginRecord): Json {
       on: () => () => {},
       listen: () => () => {},
       session: {
-        list: () => [],
-        get: () => undefined,
+        list: () => (tuiInput?.sessionID ? [String(tuiInput.sessionID)] : []),
+        get: (id: string) => {
+          const session = String(id)
+          if (tuiInput?.sessionID !== session && tuiInput?.session?.id !== session) return undefined
+          return {
+            id: session,
+            sessionID: session,
+            location: { directory: tuiInput?.directory ?? directory },
+          }
+        },
         root: (id: string) => id,
         family: (id: string) => [id],
         cost: () => 0,
@@ -2013,11 +2109,15 @@ function makeTuiContext(plugin: PluginRecord): Json {
         permission: { list: () => [], sync: async () => {}, invalidate: () => {} },
       },
       shell: { list: () => [], get: () => undefined, sync: async () => {}, invalidate: () => {} },
-      location: { default: () => ({ directory }) },
+      location: { default: () => ({ directory: tuiInput?.directory ?? directory }) },
     },
     attention: {},
-    theme: {},
-    themeMode: "dark",
+    get theme() {
+      return tuiTheme
+    },
+    get themeMode() {
+      return tuiThemeMode
+    },
     markdown: { registerCodeBlockRenderer: noCleanup },
     keymap,
     storage,
@@ -2057,8 +2157,29 @@ async function prepareTuiFile(path: string) {
   ) return
   try {
     const text = await Deno.readTextFile(path)
-    if (text.includes('with { type: "json" }')) return
     let next = text
+    const runtime = String(config.runtimeDir ?? "").split(String.fromCharCode(92)).join("/").replace(new RegExp("/+$"), "")
+    if (runtime) {
+      const solid = JSON.stringify(cachedFileUrl(runtime + "/opentui_shim.ts"))
+      const core = JSON.stringify(cachedFileUrl(runtime + "/solid_shim.ts"))
+      next = next
+        .split('"opentui:runtime-module:%40opentui%2Fsolid"')
+        .join(solid)
+        .split("'opentui:runtime-module:%40opentui%2Fsolid'")
+        .join(solid)
+        .split('"opentui:runtime-module:solid-js"')
+        .join(core)
+        .split("'opentui:runtime-module:solid-js'")
+        .join(core)
+      next = next.replace(
+        'const runtimeProbe = "opentui:runtime-module:" + encodeURIComponent("@opentui/solid")',
+        "const runtimeProbe = " + solid,
+      )
+    }
+    if (text.includes('with { type: "json" }')) {
+      if (next !== text) await Deno.writeTextFile(path, next)
+      return
+    }
     for (const prefix of [
       'from "../../../package.json"',
       'from "../../package.json"',

@@ -157,10 +157,11 @@ if yours live elsewhere.
     and slash commands, key bindings, toasts, dialogs, persistent storage,
     router pages, session panels and footer/sidebar slots. Slot and page JSX is
     reduced to a small layout tree (boxes, rows, text, emphasis) and rendered
-    by ratatui; the full OpenTUI/Solid layout engine is not ported. Packages
-    whose TUI entry needs the OpenTUI runtime registry fall back to their v2 text
-    projection, which is enough for plugins such as Magic Context to show a
-    sidebar while the npm entry itself cannot load in Deno.
+    by ratatui. Compiled Solid JSX plugins run through a small Solid-compatible
+    runtime and a flex-like Rust layout engine with row/column placement,
+    padding, borders, wrapping and styled text segments. This is a renderer
+    subset rather than a port of the native OpenTUI engine, so advanced widgets
+    fall back to text.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants

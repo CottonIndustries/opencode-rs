@@ -9,6 +9,7 @@ pub mod highlight;
 pub mod keymap;
 pub mod markdown;
 mod navigation;
+pub mod plugin_ui;
 pub mod prompt;
 mod reports;
 pub mod terminal;
@@ -238,7 +239,7 @@ struct Ui {
     theme_before: Option<String>,
     pending_editor: bool,
     plugin_status: String,
-    plugin_sidebar: Vec<String>,
+    plugin_sidebar: Vec<Value>,
     plugin_slots_at: Instant,
 }
 
@@ -347,121 +348,6 @@ fn layout_plain_lines(node: &Value, depth: usize) -> Vec<String> {
     }
 }
 
-fn plugin_layout_lines(layout: &Value, width: usize, theme: &Theme, depth: usize) -> Vec<Line<'static>> {
-    plugin_layout_lines_bg(layout, width, theme, depth, theme.dialog.bg)
-}
-
-fn plugin_color(value: &str, theme: &Theme) -> Option<Rgba> {
-    if let Some(color) = value.strip_prefix('#').and_then(Rgba::from_hex) {
-        return Some(color);
-    }
-    match value {
-        "text" => Some(theme.dialog.text),
-        "muted" | "dim" => Some(theme.dialog.muted),
-        "faint" => Some(theme.dialog.faint),
-        "border" => Some(theme.dialog.border),
-        "bg" | "background" => Some(theme.dialog.bg),
-        "success" => Some(theme.success.base),
-        "warning" => Some(theme.warning.base),
-        "error" => Some(theme.error.base),
-        "info" => Some(theme.info.base),
-        _ => None,
-    }
-}
-
-fn plugin_layout_lines_bg(
-    layout: &Value,
-    width: usize,
-    theme: &Theme,
-    depth: usize,
-    parent_bg: Rgba,
-) -> Vec<Line<'static>> {
-    if depth > 8 {
-        return Vec::new();
-    }
-    match layout.get("type").and_then(Value::as_str) {
-        Some("text") => {
-            let text = layout.get("text").and_then(Value::as_str).unwrap_or_default();
-            if text.is_empty() {
-                return Vec::new();
-            }
-            let color = layout
-                .get("color")
-                .and_then(Value::as_str)
-                .and_then(|value| plugin_color(value, theme))
-                .unwrap_or(theme.dialog.text);
-            let background = layout
-                .get("background")
-                .and_then(Value::as_str)
-                .and_then(|value| plugin_color(value, theme))
-                .unwrap_or(parent_bg);
-            let mut style = draw::st(color, background);
-            if layout.get("bold").and_then(Value::as_bool).unwrap_or(false) {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if layout.get("dim").and_then(Value::as_bool).unwrap_or(false) {
-                style = style.add_modifier(Modifier::DIM);
-            }
-            if layout.get("italic").and_then(Value::as_bool).unwrap_or(false) {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            if layout.get("underline").and_then(Value::as_bool).unwrap_or(false) {
-                style = style.add_modifier(Modifier::UNDERLINED);
-            }
-            let item = Span::styled(text.to_string(), style);
-            draw::paragraph(&[item], width.max(1), draw::Wrap::Word, background)
-        }
-        Some("box") => {
-            let background = layout
-                .get("background")
-                .and_then(Value::as_str)
-                .and_then(|value| plugin_color(value, theme))
-                .unwrap_or(parent_bg);
-            let children = layout.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
-            if layout.get("direction").and_then(Value::as_str) == Some("row") {
-                let gap = layout.get("gap").and_then(Value::as_u64).unwrap_or(2).min(8) as usize;
-                let text = children
-                    .iter()
-                    .map(layout_text)
-                    .filter(|text| !text.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(&" ".repeat(gap));
-                if text.is_empty() {
-                    Vec::new()
-                } else {
-                    draw::paragraph(&[span(text, theme.dialog.text, background)], width.max(1), draw::Wrap::Word, background)
-                }
-            } else {
-                let padding = layout.get("padding").and_then(Value::as_u64).unwrap_or(0) as usize;
-                let top = layout.get("paddingTop").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
-                let bottom = layout.get("paddingBottom").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
-                let left = layout.get("paddingLeft").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
-                let right = layout.get("paddingRight").and_then(Value::as_u64).map(|value| value as usize).unwrap_or(padding);
-                let inner_width = width.saturating_sub(left.saturating_add(right)).max(1);
-                let mut lines = Vec::new();
-                for _ in 0..top {
-                    lines.push(line(vec![], background));
-                }
-                for child in &children {
-                    for mut item in plugin_layout_lines_bg(child, inner_width, theme, depth + 1, background) {
-                        if left > 0 {
-                            let mut spans = vec![span(" ".repeat(left), background, background)];
-                            spans.append(&mut item.spans);
-                            item = line(spans, background);
-                        }
-                        lines.push(item);
-                    }
-                }
-                for _ in 0..bottom {
-                    lines.push(line(vec![], background));
-                }
-                lines
-            }
-        }
-        _ => Vec::new(),
-    }
-}
-
 impl Ui {
     fn new(app: Arc<App>, opts: &StartOptions) -> Result<Ui> {
         let settings = Settings::load();
@@ -543,6 +429,7 @@ impl Ui {
         };
         let name = ui.settings.theme();
         ui.set_theme(&name);
+        ui.publish_theme();
         ui.pick_model(opts.model.clone());
         ui.tabs = tabs::load(&ui.app.directory).into_iter().filter(|id| crate::session::load(&ui.app.project, id).is_ok()).collect();
         ui.saved_tabs = ui.tabs.clone();
@@ -773,6 +660,11 @@ impl Ui {
         vec![crate::paths::get().config.clone(), self.app.worktree.join(".opencode"), self.cwd().join(".opencode")]
     }
 
+    fn publish_theme(&self) {
+        let mode = if self.mode == Mode::Light { "light" } else { "dark" };
+        self.app.plugins.set_tui_theme(theme::plugin_theme(&self.theme), mode);
+    }
+
     fn set_theme(&mut self, name: &str) -> bool {
         let sources = theme::sources(&self.theme_dirs());
         let found = sources.iter().find(|(n, _)| n == name).or_else(|| sources.iter().find(|(n, _)| n == "opencode"));
@@ -781,6 +673,7 @@ impl Ui {
                 Ok(t) => {
                     self.theme = t;
                     self.cache = None;
+                    self.publish_theme();
                     return n == name;
                 }
                 Err(e) => self.toast(Variant::Error, Some("Invalid theme".into()), format!("{name}: {e}")),
@@ -2631,6 +2524,7 @@ impl Ui {
         self.plugin_slots_at = Instant::now();
         let input = json!({
             "sessionID": self.sid(),
+            "directory": self.cwd().to_string_lossy(),
             "mode": if self.shell { "shell" } else { "normal" },
             "showDetails": true,
         });
@@ -2643,6 +2537,7 @@ impl Ui {
                 .get("layout")
                 .map(|layout| layout_plain_lines(layout, 0))
                 .unwrap_or_default();
+            let layout = slot.get("layout").cloned();
             let text = if plain.is_empty() {
                 slot.get("text").and_then(Value::as_str).unwrap_or_default().to_string()
             } else {
@@ -2661,7 +2556,7 @@ impl Ui {
                     status.push_str(&text.replace('\n', " "));
                 }
                 "sidebar.content" | "sidebar.footer" => {
-                    sidebar.extend(text.lines().map(|line| line.to_string()));
+                    sidebar.push(layout.unwrap_or_else(|| json!({ "type": "text", "text": text })));
                 }
                 _ => {}
             }
@@ -3111,7 +3006,7 @@ impl Ui {
                     cursor = Some(position);
                 }
                 Dialog::Text { title, text, scroll, layout } => {
-                    let mut lines = plugin_layout_lines(layout, 60, &t, 0);
+                    let mut lines = plugin_ui::render(layout, area.width.saturating_sub(6).max(20) as usize, &t, d_t.bg);
                     if lines.is_empty() {
                         for paragraph in text.split('\n') {
                             if paragraph.is_empty() {
@@ -3819,10 +3714,8 @@ impl Ui {
         }
         if !self.plugin_sidebar.is_empty() {
             let mut s = vec![line(vec![Span::styled("Plugins", ts)], bg)];
-            for text in &self.plugin_sidebar {
-                for wrapped in draw::wrap(&[span(text.clone(), t.muted, bg)], inner_w.max(1), draw::Wrap::Word) {
-                    s.push(line(wrapped, bg));
-                }
+            for layout in &self.plugin_sidebar {
+                s.extend(plugin_ui::render(layout, inner_w.max(1), &t, bg));
             }
             sections.push(s);
         }

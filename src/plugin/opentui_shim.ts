@@ -1,48 +1,93 @@
-export function createElement(type: unknown, props?: Record<string, unknown>) {
-  return { type, props: props ?? {} };
+// A compact @opentui/solid surface for plugin UI. It reuses the Solid-style
+// element runtime below; renderer hooks return inert state because the Rust TUI
+// owns focus, sizing and painting.
+export * from "./solid_shim.ts"
+
+type Json = any
+
+export function useRenderer() {
+  return {
+    requestRender: () => {},
+    width: 80,
+    height: 24,
+    terminalWidth: 80,
+    terminalHeight: 24,
+    setTerminalTitle: () => {},
+    copyToClipboard: async () => {},
+    getSelection: () => undefined,
+  }
 }
 
-export function spread(
-  element: Record<string, unknown>,
-  props: Record<string, unknown>,
-) {
-  element.props = Object.assign({}, element.props ?? {}, props);
+export function useTerminalDimensions() {
+  return { width: 80, height: 24 }
 }
 
-export function createTextNode(text: string) {
-  return { type: "text", props: { children: text } };
+export function useStdout() {
+  return { write: () => {} }
 }
 
-export function createComponent(component: unknown, props: unknown) {
-  return typeof component === "function"
-    ? (component as Function)(props)
-    : { type: "component", props };
+export function useStderr() {
+  return { write: () => {} }
 }
 
-export function createMemo(fn: Function) {
-  return fn();
+export function useStdin() {
+  return {}
 }
 
-export function mergeProps(...values: unknown[]) {
-  return Object.assign({}, ...values);
+export function useKeyboard(_handler?: Function) {}
+
+export function usePaste(_handler?: Function) {}
+
+export function useFocus() {
+  return {
+    focused: () => false,
+    focus: () => {},
+    blur: () => {},
+    isFocus: () => false,
+  }
 }
 
-export function memo(fn: Function) {
-  return fn;
+export function useApp() {
+  return { version: "2.2.7", exit: () => {} }
 }
 
-export function effect(fn: Function) {
-  return fn();
+export function useArgs() {
+  return []
 }
 
-export function insert() {}
-export function insertNode() {}
-export function setProp() {}
-export function use() {}
-
-export function jsx(type: unknown, props?: Record<string, unknown>) {
-  return { type, props: props ?? {} };
+export function useExit() {
+  return () => {}
 }
 
-export const jsxs = jsx;
-export const Fragment = "fragment";
+export function Suspense(props: Json) {
+  return props?.children
+}
+
+export function SuspenseList(props: Json) {
+  return props?.children
+}
+
+export function Dynamic(props: Json) {
+  const component = props?.component
+  const rest = { ...props }
+  delete rest.component
+  return typeof component === "function" ? component(rest) : rest?.children
+}
+
+export function ErrorBoundary(props: Json) {
+  return props?.children
+}
+
+export function Portal(props: Json) {
+  return props?.children
+}
+
+export function extend(...values: Json[]) {
+  return Object.assign({}, ...values)
+}
+
+export function ensureRuntimePluginSupport() {}
+
+export function render(node: Json, _options?: Json) {
+  return node
+}

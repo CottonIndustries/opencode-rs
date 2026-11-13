@@ -231,6 +231,30 @@ impl std::ops::Deref for Theme {
     }
 }
 
+/// Resolved theme tokens in the shape plugin TUI contexts read.
+pub fn plugin_theme(theme: &Theme) -> Value {
+    let color = |value: Rgba| Value::String(value.hex());
+    let mut accent = Map::new();
+    for step in STEPS {
+        accent.insert(step.to_string(), color(theme.hue("accent", step)));
+    }
+    json!({
+        "text": {
+            "base": color(theme.base.text),
+            "muted": color(theme.base.muted),
+            "feedback": {
+                "error": { "base": color(theme.base.error.base) },
+                "warning": { "base": color(theme.base.warning.base) },
+                "success": { "base": color(theme.base.success.base) },
+                "info": { "base": color(theme.base.info.base) }
+            }
+        },
+        "background": { "base": color(theme.base.bg) },
+        "border": { "base": color(theme.base.border) },
+        "hue": { "accent": Value::Object(accent) }
+    })
+}
+
 impl Theme {
     /// Move a hue-scale color `amount` steps toward 900 (`increase`) or 100 (`decrease`).
     /// Colors outside every hue scale are returned unchanged, as upstream does.

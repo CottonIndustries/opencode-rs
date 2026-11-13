@@ -33,7 +33,8 @@ fn client_cancels() -> &'static Mutex<HashMap<String, CancellationToken>> {
 }
 const HOST_TS: &str = include_str!("host.ts");
 const OPENTUI_SHIM_TS: &str = include_str!("opentui_shim.ts");
-const OPENTUI_MISSING_TS: &str = include_str!("opentui_missing.ts");
+const SOLID_SHIM_TS: &str = include_str!("solid_shim.ts");
+const OPENTUI_CORE_SHIM_TS: &str = include_str!("opentui_core_shim.ts");
 const PLUGIN_API_VERSION: &str = "2.2.7";
 const V1_PLUGIN_API_VERSION: &str = "1.19.5";
 
@@ -594,9 +595,13 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
     if std::fs::read_to_string(&shim).ok().as_deref() != Some(OPENTUI_SHIM_TS) {
         std::fs::write(&shim, OPENTUI_SHIM_TS)?;
     }
-    let missing = dir.join("opentui_missing.ts");
-    if std::fs::read_to_string(&missing).ok().as_deref() != Some(OPENTUI_MISSING_TS) {
-        std::fs::write(&missing, OPENTUI_MISSING_TS)?;
+    let solid = dir.join("solid_shim.ts");
+    if std::fs::read_to_string(&solid).ok().as_deref() != Some(SOLID_SHIM_TS) {
+        std::fs::write(&solid, SOLID_SHIM_TS)?;
+    }
+    let core = dir.join("opentui_core_shim.ts");
+    if std::fs::read_to_string(&core).ok().as_deref() != Some(OPENTUI_CORE_SHIM_TS) {
+        std::fs::write(&core, OPENTUI_CORE_SHIM_TS)?;
     }
     let mut dependencies = Map::new();
     for (name, version) in extra_dependencies {
@@ -629,20 +634,22 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
     });
     if let Some(values) = imports.get_mut("imports").and_then(Value::as_object_mut) {
         let shim_url = Value::String(file_url(&shim));
-        for name in ["@opentui/solid", "@opentui/solid/jsx-runtime", "@opentui/solid/jsx-dev-runtime"] {
+        for name in [
+            "@opentui/solid",
+            "@opentui/solid/jsx-runtime",
+            "@opentui/solid/jsx-dev-runtime",
+            "@opentui/solid/runtime-plugin-support",
+            "@opentui/solid/runtime-plugin-support/configure",
+            "opentui:runtime-module:%40opentui%2Fsolid",
+        ] {
             values.insert(name.to_string(), shim_url.clone());
         }
-        // OpenTUI plugins probe the host runtime registry through custom scheme
-        // modules. Deno has no registry hook, so point those probes at a module
-        // that fails in the shape plugins use to detect a missing registry. The
-        // plugin then uses its plain-text projection, which this host renders,
-        // instead of aborting the whole TUI entry import.
-        for module in ["%40opentui%2Fsolid", "solid-js"] {
-            values.insert(
-                format!("opentui:runtime-module:{module}"),
-                Value::String(file_url(&missing)),
-            );
+        let solid_url = Value::String(file_url(&solid));
+        for name in ["solid-js", "solid-js/store", "solid-js/web", "opentui:runtime-module:solid-js"] {
+            values.insert(name.to_string(), solid_url.clone());
         }
+        let core_url = Value::String(file_url(&core));
+        values.insert("@opentui/core".into(), core_url);
         // Deno import maps cannot append a suffix to an `npm:` prefix, so
         // package subpaths need exact entries.
         const PLUGIN_SUBPATHS: &[&str] = &[
@@ -740,6 +747,9 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
             // share one Effect and one @opencode/plugin instance.
             if name == "effect"
                 || name == "@opencode/plugin"
+                || name == "solid-js"
+                || name.starts_with("solid-js/")
+                || name.starts_with("@opentui/")
                 || name.starts_with("@opencode/")
                 || name.starts_with("@opencode-ai/")
             {
@@ -1096,6 +1106,17 @@ impl Manager {
         }
     }
 
+    /// Publish the active TUI theme so plugin slots can resolve theme tokens.
+    pub fn set_tui_theme(&self, theme: Value, mode: &str) {
+        if let Some(inner) = &self.inner {
+            let _ = inner.tx.send(json!({
+                "type": "notification",
+                "method": "tui.theme",
+                "params": { "theme": theme, "mode": mode }
+            }));
+        }
+    }
+
     pub fn emit(&self, mut event: Value) {
         crate::event_store::append(&mut event);
         let _ = self.events.send(event.clone());
@@ -1407,6 +1428,8 @@ async fn start(
         "shell": shell.program,
         "storageDir": crate::paths::get().data.join("storage").join("plugin").join("kv").to_string_lossy(),
         "runtimeDir": dir.to_string_lossy(),
+        "theme": {},
+        "themeMode": "dark",
         "plugins": plugins,
         "state": snapshot,
         "tui": std::env::var_os("OPENCODE_TUI").is_some(),
