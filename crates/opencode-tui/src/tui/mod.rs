@@ -951,7 +951,7 @@ impl Ui {
                             let title = value.get("title").and_then(Value::as_str).unwrap_or(&page).to_string();
                             let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
                             let layout = value.get("layout").cloned().unwrap_or(Value::Null);
-                            app.emit(AppEvent::PluginPage { title, text, layout });
+                            app.emit(AppEvent::PluginPage { page: page.clone(), title, text, layout });
                         }
                         Err(error) => app.emit(AppEvent::Notice { message: format!("Plugin page failed: {error}") }),
                     }
@@ -1688,6 +1688,7 @@ impl Ui {
         tokio::spawn(async move {
             let remote = reports::usage_limits().await;
             app.emit(AppEvent::PluginPage {
+                page: String::new(),
                 title: "Usage".into(),
                 text: format!("{local}\n\n{remote}"),
                 layout: Value::Null,
@@ -1704,7 +1705,7 @@ impl Ui {
             let text = tokio::task::spawn_blocking(move || reports::diff(&worker, &directory))
                 .await
                 .unwrap_or_else(|error| format!("Diff failed: {error}"));
-            app.emit(AppEvent::PluginPage { title: "Diff".into(), text, layout: Value::Null });
+            app.emit(AppEvent::PluginPage { page: String::new(), title: "Diff".into(), text, layout: Value::Null });
         });
     }
 
@@ -1713,7 +1714,7 @@ impl Ui {
         let app = self.app.clone();
         tokio::spawn(async move {
             let text = tokio::task::spawn_blocking(reports::stats).await.unwrap_or_else(|error| format!("Statistics failed: {error}"));
-            app.emit(AppEvent::PluginPage { title: "Usage statistics".into(), text, layout: Value::Null });
+            app.emit(AppEvent::PluginPage { page: String::new(), title: "Usage statistics".into(), text, layout: Value::Null });
         });
     }
 
@@ -1793,7 +1794,7 @@ impl Ui {
                 Ok(link) => format!("Pairing link:\n\n{link}\n\nThe link can be used once and expires in five minutes."),
                 Err(error) => format!("Pairing failed: {error}"),
             };
-            app.emit(AppEvent::PluginPage { title: "Pair device".into(), text, layout: Value::Null });
+            app.emit(AppEvent::PluginPage { page: String::new(), title: "Pair device".into(), text, layout: Value::Null });
         });
     }
 
@@ -1804,7 +1805,7 @@ impl Ui {
                 Ok(text) => text,
                 Err(error) => format!("Restart failed: {error}"),
             };
-            app.emit(AppEvent::PluginPage { title: "Service".into(), text, layout: Value::Null });
+            app.emit(AppEvent::PluginPage { page: String::new(), title: "Service".into(), text, layout: Value::Null });
         });
     }
 
@@ -1836,7 +1837,7 @@ impl Ui {
                 Ok(text) => text,
                 Err(error) => format!("Side question failed: {error}"),
             };
-            app.emit(AppEvent::PluginPage { title: "btw".into(), text, layout: Value::Null });
+            app.emit(AppEvent::PluginPage { page: String::new(), title: "btw".into(), text, layout: Value::Null });
         });
     }
 
@@ -2012,6 +2013,7 @@ impl Ui {
     }
 
     fn dialog_key(&mut self, k: &Key, ev: &KeyEvent) {
+        let plugin_app = self.app.clone();
         let act = {
             let km = &self.keys;
             match self.dialog.as_mut() {
@@ -2021,6 +2023,134 @@ impl Ui {
                         Act::Close
                     } else {
                         Act::None
+                    }
+                }
+                Some(Dialog::Plugin { page, layout, scroll, focus, .. }) => {
+                    if !page.is_empty() {
+                        let event = json!({
+                            "name": k.name,
+                            "ctrl": k.ctrl,
+                            "alt": k.alt,
+                            "shift": k.shift,
+                            "sequence": format!("{:?}", ev.code),
+                        });
+                        let app = plugin_app.clone();
+                        tokio::spawn(async move {
+                            let _ = app.plugins.tui_key(event).await;
+                        });
+                    }
+                    let controls = plugin_ui::controls(layout);
+                    match k.name.as_str() {
+                        "escape" => Act::Close,
+                        "return" if !page.is_empty() && !controls.is_empty() => {
+                            let id = format!("tui-control-{focus}");
+                            let value = controls
+                                .get(*focus)
+                                .map(|control| control.value.clone())
+                                .unwrap_or_default();
+                            let page = page.clone();
+                            let app = plugin_app.clone();
+                            tokio::spawn(async move {
+                                if let Ok(result) = app.plugins.tui_event(&id, "submit", Value::String(value)).await {
+                                    if result.get("handled").and_then(Value::as_bool) == Some(true) {
+                                        app.emit(AppEvent::PluginInvalidate);
+                                    }
+                                }
+                            });
+                            Act::None
+                        }
+                        "tab" | "down" | "up" if !controls.is_empty() => {
+                            let step = if k.name == "up" || (k.name == "tab" && k.shift) { -1 } else { 1 };
+                            *focus = (*focus as isize + step).rem_euclid(controls.len() as isize) as usize;
+                            Act::None
+                        }
+                        "up" if controls.is_empty() => {
+                            *scroll = scroll.saturating_sub(1);
+                            Act::None
+                        }
+                        "down" if controls.is_empty() => {
+                            *scroll += 1;
+                            Act::None
+                        }
+                        "pageup" => {
+                            *scroll = scroll.saturating_sub(12);
+                            Act::None
+                        }
+                        "pagedown" => {
+                            *scroll += 12;
+                            Act::None
+                        }
+                        "left" | "right" => {
+                            if let Some(control) = controls.get(*focus) {
+                                if control.kind == plugin_ui::ControlKind::Select && !control.options.is_empty() {
+                                    let step = if k.name == "left" { -1 } else { 1 };
+                                    let next = (control.selected as isize + step)
+                                        .rem_euclid(control.options.len() as isize)
+                                        as usize;
+                                    plugin_ui::set_control_selected(layout, *focus, next);
+                                    if !page.is_empty() {
+                                        let id = format!("tui-control-{focus}");
+                                        let value = control.options.get(next).cloned().unwrap_or_default();
+                                        let app = plugin_app.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(result) = app.plugins.tui_event(&id, "select", Value::String(value)).await {
+                                                if result.get("handled").and_then(Value::as_bool) == Some(true) {
+                                                    app.emit(AppEvent::PluginInvalidate);
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            Act::None
+                        }
+                        "backspace" => {
+                            if let Some(control) = controls.get(*focus) {
+                                if control.kind == plugin_ui::ControlKind::Input {
+                                    let mut value = control.value.clone();
+                                    value.pop();
+                                    plugin_ui::set_control_value(layout, *focus, value.clone());
+                                    if !page.is_empty() {
+                                        let id = format!("tui-control-{focus}");
+                                        let app = plugin_app.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(result) = app.plugins.tui_event(&id, "input", Value::String(value)).await {
+                                                if result.get("handled").and_then(Value::as_bool) == Some(true) {
+                                                    app.emit(AppEvent::PluginInvalidate);
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            Act::None
+                        }
+                        _ if k.ctrl && k.name == "c" => Act::Close,
+                        _ => {
+                            if let KeyCode::Char(c) = ev.code {
+                                if !k.ctrl && !k.alt {
+                                    if let Some(control) = controls.get(*focus) {
+                                        if control.kind == plugin_ui::ControlKind::Input {
+                                            let mut value = control.value.clone();
+                                            value.push(c);
+                                            plugin_ui::set_control_value(layout, *focus, value.clone());
+                                            if !page.is_empty() {
+                                                let id = format!("tui-control-{focus}");
+                                                let app = plugin_app.clone();
+                                                tokio::spawn(async move {
+                                                    if let Ok(result) = app.plugins.tui_event(&id, "input", Value::String(value)).await {
+                                                        if result.get("handled").and_then(Value::as_bool) == Some(true) {
+                                                            app.emit(AppEvent::PluginInvalidate);
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Act::None
+                        }
                     }
                 }
                 Some(Dialog::Text { scroll, .. }) => match k.name.as_str() {
@@ -2527,6 +2657,8 @@ impl Ui {
             "directory": self.cwd().to_string_lossy(),
             "mode": if self.shell { "shell" } else { "normal" },
             "showDetails": true,
+            "width": self.size.0,
+            "height": self.size.1,
         });
         let slots = self.app.plugins.tui_slots(input).await;
         let mut status = String::new();
@@ -2803,6 +2935,7 @@ impl Ui {
 
     fn on_paste(&mut self, s: &str) {
         let text = s.replace("\r\n", "\n").replace('\r', "\n");
+        let paste_app = self.app.clone();
         match self.dialog.as_mut() {
             Some(Dialog::Select(sel)) => {
                 sel.filter.insert(text.lines().next().unwrap_or(""));
@@ -2819,6 +2952,24 @@ impl Ui {
             }
             Some(Dialog::McpAuth(a)) => {
                 a.editor.insert(text.lines().next().unwrap_or(""));
+                return;
+            }
+            Some(Dialog::Plugin { page, layout, focus, .. }) => {
+                if let Some(control) = plugin_ui::controls(layout).get(*focus) {
+                    if control.kind == plugin_ui::ControlKind::Input {
+                        let mut value = control.value.clone();
+                        value.push_str(&text);
+                        plugin_ui::set_control_value(layout, *focus, value);
+                    }
+                }
+                if !page.is_empty() {
+                    let text = text.clone();
+                    let app = paste_app.clone();
+                    tokio::spawn(async move {
+                        let _ = app.plugins.tui_paste(&text).await;
+                        app.emit(AppEvent::PluginInvalidate);
+                    });
+                }
                 return;
             }
             Some(_) => return,
@@ -2861,8 +3012,33 @@ impl Ui {
             AppEvent::Error { session, message } if session == sid => self.toast(Variant::Error, None, message),
             AppEvent::Busy { session, busy: false } if session == sid => self.interrupt = None,
             AppEvent::Notice { message } if !message.is_empty() && !message.starts_with("Compacting") => self.info(message),
-            AppEvent::PluginPage { title, text, layout } => {
-                self.dialog = Some(Dialog::Text { title, text, layout, scroll: 0 });
+            AppEvent::PluginPage { page, title, text, layout } => {
+                let (focus, scroll) = match &self.dialog {
+                    Some(Dialog::Plugin { page: current, focus, scroll, .. }) if current == &page => (*focus, *scroll),
+                    _ => (0, 0),
+                };
+                self.dialog = Some(if layout.is_object() {
+                    Dialog::Plugin { page, title, text, layout, scroll, focus }
+                } else {
+                    Dialog::Text { title, text, layout, scroll }
+                });
+            }
+            AppEvent::PluginInvalidate => {
+                self.plugin_slots_at = Instant::now() - Duration::from_secs(3);
+                if let Some(Dialog::Plugin { page, .. }) = &self.dialog {
+                    if !page.is_empty() {
+                        let page = page.clone();
+                        let app = self.app.clone();
+                        tokio::spawn(async move {
+                            if let Ok(value) = app.plugins.execute_tui_page(&page, Value::Null).await {
+                                let title = value.get("title").and_then(Value::as_str).unwrap_or(&page).to_string();
+                                let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                                let layout = value.get("layout").cloned().unwrap_or(Value::Null);
+                                app.emit(AppEvent::PluginPage { page, title, text, layout });
+                            }
+                        });
+                    }
+                }
             }
             AppEvent::McpAuth { name, url, instructions, handle } => {
                 self.dialog = Some(Dialog::McpAuth(dialog::McpAuth {
@@ -3007,6 +3183,33 @@ impl Ui {
                 }
                 Dialog::Text { title, text, scroll, layout } => {
                     let mut lines = plugin_ui::render(layout, area.width.saturating_sub(6).max(20) as usize, &t, d_t.bg);
+                    if lines.is_empty() {
+                        for paragraph in text.split('\n') {
+                            if paragraph.is_empty() {
+                                lines.push(line(vec![], d_t.bg));
+                            } else {
+                                lines.extend(draw::paragraph(
+                                    &[span(paragraph.to_string(), d_t.text, d_t.bg)],
+                                    60,
+                                    draw::Wrap::Word,
+                                    d_t.bg,
+                                ));
+                            }
+                        }
+                    }
+                    let visible: Vec<Line<'static>> = lines.into_iter().skip(*scroll).collect();
+                    let panel = dialog::draw_text(buf, area, &t, title, "esc", visible, false);
+                    self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
+                    cursor = None;
+                }
+                Dialog::Plugin { title, text, scroll, layout, focus, .. } => {
+                    let mut lines = plugin_ui::render_focused(
+                        layout,
+                        area.width.saturating_sub(6).max(20) as usize,
+                        &t,
+                        d_t.bg,
+                        *focus,
+                    );
                     if lines.is_empty() {
                         for paragraph in text.split('\n') {
                             if paragraph.is_empty() {

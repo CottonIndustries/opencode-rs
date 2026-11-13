@@ -283,6 +283,43 @@ fn plugin_layout_flattens_rows_and_columns() {
 }
 
 #[tokio::test]
+async fn plugin_page_edits_input_and_cycles_select() {
+    let mut ui = ui().await;
+    let layout = serde_json::json!({
+        "type": "box",
+        "direction": "column",
+        "children": [
+            { "type": "input", "value": "", "placeholder": "name" },
+            { "type": "select", "options": ["one", "two"], "selected": 0 }
+        ]
+    });
+    ui.on_app_event(AppEvent::PluginPage {
+        page: String::new(),
+        title: "Interactive".into(),
+        text: String::new(),
+        layout,
+    });
+    let event = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    let key = keymap::from_event(&event).unwrap();
+    ui.dialog_key(&key, &event);
+    let Some(Dialog::Plugin { layout, .. }) = ui.dialog.as_ref() else {
+        panic!("plugin dialog did not open");
+    };
+    let controls = plugin_ui::controls(layout);
+    assert_eq!(controls[0].value, "x");
+    let event = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+    let key = keymap::from_event(&event).unwrap();
+    ui.dialog_key(&key, &event);
+    let event = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+    let key = keymap::from_event(&event).unwrap();
+    ui.dialog_key(&key, &event);
+    let Some(Dialog::Plugin { layout, .. }) = ui.dialog.as_ref() else {
+        panic!("plugin dialog disappeared");
+    };
+    assert_eq!(plugin_ui::controls(layout)[1].selected, 1);
+}
+
+#[tokio::test]
 async fn mcp_auth_dialog_shows_url_and_closes() {
     let mut ui = ui().await;
     ui.on_app_event(AppEvent::McpAuth {

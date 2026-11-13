@@ -41,6 +41,20 @@ let bunShellEnv: Record<string, string> = {}
 let tuiTheme: Json = config.theme ?? {}
 let tuiThemeMode: string = config.themeMode ?? "dark"
 let tuiInput: Json = {}
+let lastTuiInvalidate = 0
+
+function invalidateTui() {
+  const now = Date.now()
+  if (now - lastTuiInvalidate < 50) return
+  lastTuiInvalidate = now
+  try {
+    notify("tui.invalidate")
+  } catch {
+    // stdout may be gone during shutdown
+  }
+}
+
+;(globalThis as Json).__opencodeRequestRender = invalidateTui
 
 // ---------------------------------------------------------------- transport
 
@@ -106,8 +120,71 @@ async function dispatch(method: string, params: Json): Promise<Json> {
     case "tui.page": {
       const page = tuiPages.get(String(params.id))
       if (!page) throw new Error(`TUI page not found: ${String(params.id)}`)
-      const rendered = await settle(page.render({ data: params.data }))
-      return { title: page.name, text: jsxText(rendered), layout: jsxLayout(rendered) }
+      const key = `page:${String(params.id)}:${JSON.stringify(params.data ?? null)}`
+      let rendered = tuiPageRoots.get(key)
+      if (!rendered) {
+        ;(globalThis as Json).__opencodeKeyboard = []
+        rendered = await settle(page.render({ data: params.data }))
+        tuiPageRoots.set(key, rendered)
+      }
+      return { id: String(params.id), title: page.name, text: jsxText(rendered), layout: jsxLayout(rendered) }
+    }
+    case "tui.key": {
+      const handlers = ((globalThis as Json).__opencodeKeyboard ?? []) as Function[]
+      let handled = false
+      for (const handler of handlers) {
+        try {
+          const result = await settle(handler(params.event ?? {}))
+          if (result === true) handled = true
+        } catch (error) {
+          log("error", `tui key handler failed: ${String(error)}`)
+        }
+      }
+      return { handled }
+    }
+    case "tui.paste": {
+      const handlers = ((globalThis as Json).__opencodePaste ?? []) as Function[]
+      for (const handler of handlers) {
+        try {
+          await settle(handler(String(params.text ?? "")))
+        } catch (error) {
+          log("error", `tui paste handler failed: ${String(error)}`)
+        }
+      }
+      return {}
+    }
+    case "tui.event": {
+      const element = tuiControls.get(String(params.id))
+      const props = element?.props ?? {}
+      const kind = String(params.kind ?? "input")
+      const value = params.value
+      let handled = false
+      try {
+        if (kind === "submit") {
+          if (typeof props.onSubmit === "function") {
+            await settle(props.onSubmit(value))
+            handled = true
+          }
+        } else if (kind === "select") {
+          if (typeof props.onChange === "function") {
+            await settle(props.onChange(value))
+            handled = true
+          }
+        } else {
+          if (typeof props.onInput === "function") {
+            await settle(props.onInput(value))
+            handled = true
+          }
+          if (typeof props.onChange === "function") {
+            await settle(props.onChange(value))
+            handled = true
+          }
+        }
+        return { handled }
+      } catch (error) {
+        log("error", `tui control ${String(params.id)} failed: ${String(error)}`)
+        return { handled: false, error: String(error) }
+      }
     }
     case "integration.list":
       return projectIntegrations()
@@ -321,6 +398,8 @@ const tuiPlugins: PluginRecord[] = []
 const tuiCommands = new Map<string, Json>()
 const tuiAliases = new Map<string, string>()
 const tuiSlots: Array<{ placement: string; render: Function; plugin: string }> = []
+const tuiControls = new Map<string, Json>()
+const tuiPageRoots = new Map<string, Json>()
 const tuiPages = new Map<string, { name: string; render: Function; plugin: string }>()
 const rpcs = new Map<string, { plugin: PluginRecord; definition: Json; handlers: Json }>()
 
@@ -1747,7 +1826,7 @@ function jsxNumber(value: Json): number | undefined {
   return Number.isFinite(number) ? number : undefined
 }
 
-function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
+function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): Json | null {
   if (depth > 32 || budget.nodes > 2000) return null
   const current = jsxResolve(value)
   if (current === null || current === undefined || current === false || current === true) return null
@@ -1778,25 +1857,45 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
     }
   }
   if (type.includes("input") || type === "textarea") {
-    const text = String(jsxProp(props, "value", "placeholder", "defaultValue") ?? "")
-    if (!text) return null
+    const value = String(jsxProp(props, "value", "defaultValue") ?? "")
+    const placeholder = String(jsxProp(props, "placeholder") ?? "")
     budget.nodes += 1
-    return { type: "text", text, segments: [{ text, ...(jsxProp(props, "placeholder") && !jsxProp(props, "value") ? { dim: true } : {}) }] }
+    const id = `tui-control-${budget.controls++}`
+    tuiControls.set(id, current)
+    return {
+      type: "input",
+      id,
+      value,
+      placeholder,
+      focused: jsxProp(props, "focused") === true,
+      multiline: type === "textarea" || jsxProp(props, "multiline") === true,
+      cursor: Number(jsxProp(props, "cursor") ?? value.length),
+    }
   }
   if (type.includes("select")) {
     const options = Array.isArray(jsxProp(props, "options")) ? jsxProp(props, "options") : []
-    const selected = jsxProp(props, "value", "selected")
-    const text = options
+    const values = options
       .map((option: Json) => (typeof option === "string" ? option : String(option?.label ?? option?.value ?? "")))
       .filter(Boolean)
-      .join("  ")
-    if (!text) return null
+    const selectedValue = jsxProp(props, "value", "selected")
+    const selected = values.findIndex((value: string) => value === String(selectedValue))
     budget.nodes += 1
-    return { type: "text", text: selected === undefined ? text : String(selected) + ": " + text, segments: [{ text: selected === undefined ? text : String(selected) + ": " + text, dim: !selected }] }
+    const id = `tui-control-${budget.controls++}`
+    tuiControls.set(id, current)
+    return {
+      type: "select",
+      id,
+      options: values,
+      selected: selected >= 0 ? selected : Number(jsxProp(props, "selectedIndex") ?? 0),
+      focused: jsxProp(props, "focused") === true,
+    }
   }
   if (type.includes("spinner")) {
     budget.nodes += 1
-    const text = String(jsxProp(props, "text", "label") ?? "working...")
+    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    const frame = frames[Math.floor(Date.now() / 80) % frames.length]
+    const text = `${frame} ${String(jsxProp(props, "text", "label") ?? "working...")}`
+    setTimeout(invalidateTui, 80)
     return { type: "text", text, segments: [{ text, dim: true }] }
   }
   if (type.includes("progress")) {
@@ -1807,11 +1906,18 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
     const text = "[" + "#".repeat(filled) + "-".repeat(10 - filled) + "] " + Math.round((value / max) * 100) + "%"
     return { type: "text", text, segments: [{ text }] }
   }
-  if (type.includes("markdown") || type === "code" || type.includes("diff")) {
+  if (type.includes("markdown")) {
     const text = jsxText(props.content ?? children ?? current)
     if (!text.trim()) return null
     budget.nodes += 1
-    return { type: "text", text, segments: [{ text }] }
+    return { type: "markdown", text }
+  }
+  if (type === "code" || type.includes("diff")) {
+    const text = jsxText(props.content ?? children ?? current)
+    if (!text.trim()) return null
+    budget.nodes += 1
+    const lang = String(jsxProp(props, "lang", "language", "filetype") ?? "")
+    return { type: type.includes("diff") ? "diff" : "code", text, lang }
   }
   if (children === undefined) {
     const text = jsxText(current)
@@ -1839,6 +1945,20 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
   const gap = jsxNumber(jsxProp(props, "gap", "columnGap", "rowGap"))
   const normalize = (value: Json) =>
     String(value ?? "").toLowerCase().replace("flex-start", "start").replace("flex-end", "end")
+  if (type.includes("scrollbox") && props.ref && typeof props.ref === "object" && props.ref.current) {
+    const target = props.ref.current
+    if (target.scrollTop === undefined) target.scrollTop = Number(jsxProp(props, "scrollTop", "scrollY") ?? 0)
+    if (typeof target.scrollBy !== "function") {
+      target.scrollBy = (delta: number) => {
+        target.scrollTop = Math.max(0, Number(target.scrollTop ?? 0) + Number(delta ?? 0))
+        invalidateTui()
+      }
+      target.scrollTo = (value: number) => {
+        target.scrollTop = Math.max(0, Number(value ?? 0))
+        invalidateTui()
+      }
+    }
+  }
   return {
     type: "box",
     direction,
@@ -1856,7 +1976,9 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
     ...(gap !== undefined ? { gap } : {}),
     ...(grow !== undefined ? { grow } : {}),
     ...(shrink !== undefined ? { shrink } : {}),
-    ...(jsxDim(jsxProp(props, "flexBasis")) !== undefined ? { basis: jsxDim(jsxProp(props, "flexBasis")) } : {}),
+    ...(jsxDim(jsxProp(props, "flexBasis", "basis")) !== undefined ? { basis: jsxDim(jsxProp(props, "flexBasis", "basis")) } : {}),
+    ...(jsxProp(props, "alignSelf") ? { alignSelf: normalize(jsxProp(props, "alignSelf")) } : {}),
+    ...(String(jsxProp(props, "flexWrap", "wrap") ?? "").toLowerCase().includes("wrap") ? { wrap: "wrap" } : {}),
     ...(border ? { border } : {}),
     ...(border && jsxProp(props, "title", "borderTitle") !== undefined ? { title: String(jsxProp(props, "title", "borderTitle")) } : {}),
     ...(jsxColor(jsxProp(props, "borderColor")) ? { borderColor: jsxColor(jsxProp(props, "borderColor")) } : {}),
@@ -1875,7 +1997,17 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
     ...(jsxNumber(jsxProp(props, "top")) !== undefined ? { top: jsxNumber(jsxProp(props, "top")) } : {}),
     ...(jsxNumber(jsxProp(props, "right")) !== undefined ? { right: jsxNumber(jsxProp(props, "right")) } : {}),
     ...(jsxNumber(jsxProp(props, "bottom")) !== undefined ? { bottom: jsxNumber(jsxProp(props, "bottom")) } : {}),
-    ...(jsxProp(props, "overflow") ? { overflow: String(jsxProp(props, "overflow")) } : {}),
+    ...(type.includes("scrollbox") ? { overflow: "scroll" } : jsxProp(props, "overflow") ? { overflow: String(jsxProp(props, "overflow")) } : {}),
+    ...(jsxNumber(jsxProp(props, "scrollTop", "scrollY")) !== undefined
+      ? { scrollTop: jsxNumber(jsxProp(props, "scrollTop", "scrollY")) }
+      : props.ref?.current?.scrollTop !== undefined
+      ? { scrollTop: Number(props.ref.current.scrollTop) }
+      : {}),
+    ...(jsxNumber(jsxProp(props, "scrollLeft", "scrollX")) !== undefined
+      ? { scrollLeft: jsxNumber(jsxProp(props, "scrollLeft", "scrollX")) }
+      : props.ref?.current?.scrollLeft !== undefined
+      ? { scrollLeft: Number(props.ref.current.scrollLeft) }
+      : {}),
     ...(jsxProp(props, "visible") === false ? { hidden: true } : {}),
   }
 }
@@ -1897,6 +2029,10 @@ function jsxColor(value: unknown): string | undefined {
 
 async function renderTuiSlots(input: Json): Promise<Json[]> {
   tuiInput = input ?? {}
+  ;(globalThis as Json).__opencodeDimensions = {
+    width: Number(tuiInput.width ?? 80),
+    height: Number(tuiInput.height ?? 24),
+  }
   const out: Json[] = []
   for (const slot of [...tuiSlots]) {
     try {
@@ -2068,7 +2204,7 @@ function makeTuiContext(plugin: PluginRecord): Json {
     options: plugin.options,
     location: { directory, worktree, project },
     app: { version: config.version, channel: config.channel, platform: Deno.build.os },
-    renderer: { requestRender: () => {} },
+    renderer: { requestRender: invalidateTui },
     client: makeClientProxy(),
     data: {
       on: () => () => {},

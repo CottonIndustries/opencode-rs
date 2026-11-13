@@ -179,12 +179,16 @@ if yours live elsewhere.
   - Package `./tui` entries load in TUI mode with `ctx.keymap`, command palette
     and slash commands, key bindings, toasts, dialogs, persistent storage,
     router pages, session panels and footer/sidebar slots. Slot and page JSX is
-    reduced to a small layout tree (boxes, rows, text, emphasis) and rendered
-    by ratatui. Compiled Solid JSX plugins run through a small Solid-compatible
-    runtime and a flex-like Rust layout engine with row/column placement,
-    padding, borders, wrapping and styled text segments. This is a renderer
-    subset rather than a port of the native OpenTUI engine, so advanced widgets
-    fall back to text.
+    reduced to a layout tree and rendered by ratatui. Compiled Solid JSX
+    plugins run through a Solid-compatible runtime and a flexbox-style Rust
+    layout engine with row/column placement, basis, grow/shrink, wrap,
+    align/justify, padding, borders, overflow clipping and scrolling. Markdown
+    and code blocks use the native markdown and syntax renderers; inputs,
+    textareas and selects are editable and focused from the keyboard; pages
+    route keys and paste events back to plugin handlers and support
+    `requestRender` animation ticks. This remains a renderer subset rather than
+    a port of the native OpenTUI engine, so uncommon widgets and mouse text
+    selection still fall back to text.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants

@@ -36,7 +36,8 @@ pub enum AppEvent {
     Title { session: String, title: String },
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
-    PluginPage { title: String, text: String, layout: serde_json::Value },
+    PluginPage { page: String, title: String, text: String, layout: serde_json::Value },
+    PluginInvalidate,
     McpAuth {
         name: String,
         url: String,
@@ -887,6 +888,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "server.notice",
             "properties": { "message": text, "title": title }
+        }),
+        AppEvent::PluginInvalidate => json!({
+            "id": id(),
+            "type": "plugin.invalidate",
+            "properties": {}
         }),
         AppEvent::McpAuth { name, url, .. } => json!({
             "id": id(),

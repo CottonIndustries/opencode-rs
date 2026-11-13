@@ -1267,6 +1267,18 @@ impl Manager {
         self.request("tui.command.execute", json!({ "name": name, "input": input })).await
     }
 
+    pub async fn tui_event(&self, id: &str, kind: &str, value: Value) -> Result<Value> {
+        self.request("tui.event", json!({ "id": id, "kind": kind, "value": value })).await
+    }
+
+    pub async fn tui_key(&self, event: Value) -> Result<Value> {
+        self.request("tui.key", json!({ "event": event })).await
+    }
+
+    pub async fn tui_paste(&self, text: &str) -> Result<Value> {
+        self.request("tui.paste", json!({ "text": text })).await
+    }
+
     /// Render the TUI plugin slot tree. The host extracts text from JSX so the
     /// Rust TUI can display it without an OpenTUI renderer.
     pub async fn tui_slots(&self, input: Value) -> Vec<Value> {
@@ -1613,6 +1625,9 @@ async fn start(
                                         app.plugins.publish_v2(event);
                                     }
                                 }
+                                Some("tui.invalidate") => {
+                                    app.emit(crate::app::AppEvent::PluginInvalidate);
+                                }
                                 Some("client.cancel") => {
                                     let cancel_id = message.pointer("/params/cancelID").and_then(Value::as_str);
                                     if let Some(token) = cancel_id.and_then(|id| client_cancels().lock().unwrap().get(id).cloned()) {
@@ -1779,6 +1794,12 @@ async fn host_call(method: &str, params: Value, app: &Arc<Mutex<Option<Weak<crat
             let path = params.get("path").and_then(Value::as_str).unwrap_or_default();
             let args = params.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
             client_call(&app, path, args).await
+        }
+        method if method.starts_with("tui.") => {
+            let Some(app) = attached() else {
+                return Err(anyhow!("application is not ready"));
+            };
+            client_call(&app, method, vec![params]).await
         }
         _ => Err(anyhow!("unknown host request: {method}")),
     }
@@ -2122,7 +2143,7 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             let title = page.get("title").and_then(Value::as_str).unwrap_or(id).to_string();
             let text = page.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
             let layout = page.get("layout").cloned().unwrap_or(Value::Null);
-            app.emit(crate::app::AppEvent::PluginPage { title, text, layout });
+            app.emit(crate::app::AppEvent::PluginPage { page: id.to_string(), title, text, layout });
             Ok(Value::Null)
         }
         "tui.panel" => {
@@ -2154,7 +2175,7 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                     .and_then(|slot| slot.get("layout"))
                     .cloned()
                     .unwrap_or(Value::Null);
-                app.emit(crate::app::AppEvent::PluginPage { title: name, text, layout });
+                app.emit(crate::app::AppEvent::PluginPage { page: name.clone(), title: name, text, layout });
             }
             Ok(Value::Null)
         }

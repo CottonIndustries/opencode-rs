@@ -72,6 +72,10 @@ export function createMemo(fn: Function) {
   return () => resolveValue(fn)
 }
 
+export function createRef() {
+  return { current: undefined as Json }
+}
+
 export function createSignal(initial: Json) {
   let value = resolveValue(initial)
   const read = () => value

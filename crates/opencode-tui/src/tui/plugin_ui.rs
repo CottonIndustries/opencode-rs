@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::draw;
 use super::theme::{Rgba, Theme};
+use super::{highlight, markdown};
 
 const MAX_DEPTH: usize = 32;
 const MAX_LINES: usize = 400;
@@ -92,6 +93,27 @@ struct Text {
 enum Kind {
     Text(Text),
     Box(Vec<Node>),
+    Markdown(String),
+    Code { text: String, lang: String },
+    Diff(String),
+    Input(Input),
+    Select(Select),
+}
+
+#[derive(Clone)]
+struct Input {
+    value: String,
+    placeholder: String,
+    cursor: usize,
+    focused: bool,
+    multiline: bool,
+}
+
+#[derive(Clone)]
+struct Select {
+    options: Vec<String>,
+    selected: usize,
+    focused: bool,
 }
 
 #[derive(Clone)]
@@ -104,11 +126,17 @@ struct Node {
     max_width: Option<Dim>,
     min_height: Option<Dim>,
     max_height: Option<Dim>,
+    basis: Option<Dim>,
     padding: Edges,
     margin: Edges,
     gap: usize,
     grow: f32,
     shrink: f32,
+    align_self: Option<Align>,
+    wrap: bool,
+    overflow: bool,
+    scroll_top: usize,
+    scroll_left: usize,
     border: Option<String>,
     border_color: Option<Rgba>,
     title: Option<String>,
@@ -118,6 +146,8 @@ struct Node {
     position: Position,
     left: Option<usize>,
     top: Option<usize>,
+    right: Option<usize>,
+    bottom: Option<usize>,
     hidden: bool,
 }
 
@@ -306,11 +336,17 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 max_width: None,
                 min_height: None,
                 max_height: None,
+                basis: None,
                 padding: Edges::default(),
                 margin: Edges::default(),
                 gap: 0,
                 grow: 0.0,
                 shrink: 1.0,
+                align_self: None,
+                wrap: false,
+                overflow: false,
+                scroll_top: 0,
+                scroll_left: 0,
                 border: None,
                 border_color: None,
                 title: None,
@@ -320,8 +356,66 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 position: Position::Relative,
                 left: None,
                 top: None,
+                right: None,
+                bottom: None,
                 hidden: false,
             })
+        }
+        Some("markdown") => {
+            let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(leaf(Kind::Markdown(text), color(value.get("background"), theme)))
+        }
+        Some("code") | Some("diff") => {
+            let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let kind = if value.get("type").and_then(Value::as_str) == Some("diff") {
+                Kind::Diff(text)
+            } else {
+                Kind::Code {
+                    text,
+                    lang: value.get("lang").and_then(Value::as_str).unwrap_or_default().to_string(),
+                }
+            };
+            Some(leaf(kind, color(value.get("background"), theme)))
+        }
+        Some("input") => {
+            let value_text = value.get("value").and_then(Value::as_str).unwrap_or_default().to_string();
+            let placeholder = value.get("placeholder").and_then(Value::as_str).unwrap_or_default().to_string();
+            Some(leaf(
+                Kind::Input(Input {
+                    value: value_text,
+                    placeholder,
+                    cursor: number(value.get("cursor")).unwrap_or(0),
+                    focused: bool_of(value.get("focused")),
+                    multiline: bool_of(value.get("multiline")),
+                }),
+                color(value.get("background"), theme),
+            ))
+        }
+        Some("select") => {
+            let options = value
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Some(leaf(
+                Kind::Select(Select {
+                    options,
+                    selected: number(value.get("selected")).unwrap_or(0),
+                    focused: bool_of(value.get("focused")),
+                }),
+                color(value.get("background"), theme),
+            ))
         }
         Some("box") => {
             let background = color(value.get("background"), theme);
@@ -377,11 +471,26 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 max_width: dim(value.get("maxWidth")),
                 min_height: dim(value.get("minHeight")),
                 max_height: dim(value.get("maxHeight")),
+                basis: dim(value.get("basis")),
                 padding,
                 margin,
                 gap: number(value.get("gap")).unwrap_or(0).min(16),
                 grow: value.get("grow").and_then(Value::as_f64).unwrap_or(0.0) as f32,
                 shrink: value.get("shrink").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                align_self: match value.get("alignSelf").and_then(Value::as_str) {
+                    Some("center") => Some(Align::Center),
+                    Some("end") | Some("flex-end") => Some(Align::End),
+                    Some("stretch") => Some(Align::Stretch),
+                    Some("start") | Some("flex-start") => Some(Align::Start),
+                    _ => None,
+                },
+                wrap: value.get("wrap").and_then(Value::as_str) == Some("wrap"),
+                overflow: value
+                    .get("overflow")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value != "visible"),
+                scroll_top: number(value.get("scrollTop")).unwrap_or(0),
+                scroll_left: number(value.get("scrollLeft")).unwrap_or(0),
                 border: value
                     .get("border")
                     .and_then(Value::as_str)
@@ -397,10 +506,48 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 },
                 left: number(value.get("left")),
                 top: number(value.get("top")),
+                right: number(value.get("right")),
+                bottom: number(value.get("bottom")),
                 hidden: bool_of(value.get("hidden")),
             })
         }
         _ => None,
+    }
+}
+
+fn leaf(kind: Kind, background: Option<Rgba>) -> Node {
+    Node {
+        kind,
+        direction: Direction::Column,
+        width: None,
+        height: None,
+        min_width: None,
+        max_width: None,
+        min_height: None,
+        max_height: None,
+        basis: None,
+        padding: Edges::default(),
+        margin: Edges::default(),
+        gap: 0,
+        grow: 0.0,
+        shrink: 1.0,
+        align_self: None,
+        wrap: false,
+        overflow: false,
+        scroll_top: 0,
+        scroll_left: 0,
+        border: None,
+        border_color: None,
+        title: None,
+        background,
+        align: Align::Start,
+        justify: Justify::Start,
+        position: Position::Relative,
+        left: None,
+        top: None,
+        right: None,
+        bottom: None,
+        hidden: false,
     }
 }
 
@@ -422,6 +569,28 @@ impl Node {
                 .iter()
                 .flat_map(|segment| segment.text.split('\n'))
                 .map(draw::width)
+                .max()
+                .unwrap_or(0)
+                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Markdown(text) => text
+                .lines()
+                .map(draw::width)
+                .max()
+                .unwrap_or(0)
+                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Code { text, .. } | Kind::Diff(text) => text
+                .lines()
+                .map(draw::width)
+                .max()
+                .unwrap_or(0)
+                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Input(input) => draw::width(&input.value)
+                .max(draw::width(&input.placeholder))
+                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Select(select) => select
+                .options
+                .iter()
+                .map(|option| draw::width(option) + 2)
                 .max()
                 .unwrap_or(0)
                 .min(parent.saturating_sub(padding + border).max(1)),
@@ -507,7 +676,47 @@ impl Node {
                     height: lines.len().max(1),
                 }
             }
+            Kind::Markdown(text) => Size {
+                width: content_width,
+                height: wrapped_line_count(text, inner_width),
+            },
+            Kind::Code { text, .. } | Kind::Diff(text) => Size {
+                width: content_width,
+                height: text.lines().count().max(1),
+            },
+            Kind::Input(input) => Size {
+                width: content_width,
+                height: if input.multiline { input.value.lines().count().max(1) } else { 1 },
+            },
+            Kind::Select(select) => Size {
+                width: content_width,
+                height: select.options.len().max(1),
+            },
             Kind::Box(children) => {
+                if self.direction == Direction::Row && self.wrap {
+                    let mut line_width = 0usize;
+                    let mut line_height = 0usize;
+                    let mut total_height = 0usize;
+                    let mut width = 0usize;
+                    for child in children.iter().filter(|child| child.position == Position::Relative) {
+                        let child_size = child.measure(inner_width, false);
+                        let child_width = child_size.width + child.outer_width();
+                        let child_height = child_size.height + child.outer_height();
+                        if line_width > 0 && line_width + child_width > inner_width {
+                            total_height += line_height + self.gap;
+                            line_width = 0;
+                            line_height = 0;
+                        }
+                        line_width += child_width + self.gap;
+                        line_height = line_height.max(child_height);
+                        width = width.max(line_width.saturating_sub(self.gap));
+                    }
+                    total_height += line_height;
+                    return Size {
+                        width: content_width.max(width + padding + border) + self.outer_width(),
+                        height: total_height + padding + border + self.outer_height(),
+                    };
+                }
                 let mut width = 0usize;
                 let mut height = 0usize;
                 let mut flow = 0usize;
@@ -516,8 +725,15 @@ impl Node {
                     .filter(|child| child.position == Position::Relative)
                 {
                     flow += 1;
-                    let child_size =
+                    let mut child_size =
                         child.measure(inner_width, self.direction == Direction::Column);
+                    if let Some(basis) = child.basis {
+                        if self.direction == Direction::Row {
+                            child_size.width = basis.resolve(inner_width) + child.outer_width();
+                        } else {
+                            child_size.height = basis.resolve(inner_width) + child.outer_height();
+                        }
+                    }
                     if self.direction == Direction::Row {
                         width = width.saturating_add(child_size.width + child.outer_width());
                         height = height.max(child_size.height + child.outer_height());
@@ -592,6 +808,37 @@ impl Node {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        if self.overflow {
+            if let Kind::Box(children) = &self.kind {
+                let content_height = children
+                    .iter()
+                    .filter(|child| child.position == Position::Relative)
+                    .map(|child| child.measure(area.width as usize, true).height)
+                    .sum::<usize>()
+                    + self.gap.saturating_mul(children.len().saturating_sub(1));
+                let content_height = content_height.max(area.height as usize) as u16;
+                let mut temp = Buffer::empty(Rect::new(0, 0, area.width, content_height));
+                draw::fill(&mut temp, Rect::new(0, 0, area.width, content_height), background);
+                self.render_children(
+                    &mut temp,
+                    Rect::new(0, 0, area.width, content_height),
+                    theme,
+                    background,
+                    children,
+                );
+                for y in 0..area.height {
+                    for x in 0..area.width {
+                        let sx = x as usize + self.scroll_left;
+                        let sy = y as usize + self.scroll_top;
+                        if sx >= area.width as usize || sy >= temp.area.height as usize {
+                            continue;
+                        }
+                        buffer[(area.x + x, area.y + y)] = temp[(sx as u16, sy as u16)].clone();
+                    }
+                }
+            }
+            return;
+        }
         match &self.kind {
             Kind::Text(text) => {
                 let spans = text_spans(text, background);
@@ -616,6 +863,85 @@ impl Node {
                         )];
                         padded.append(&mut spans);
                         spans = padded;
+                    }
+                    let line = draw::line(spans, background);
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
+            }
+            Kind::Markdown(text) => {
+                let lines = markdown::render(text, area.width as usize, theme, background);
+                for (index, line) in lines.into_iter().enumerate().take(area.height as usize) {
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
+            }
+            Kind::Code { text, lang } => {
+                for (index, source) in text.lines().enumerate().take(area.height as usize) {
+                    let spans = highlight::line(source, lang, &theme.syntax, theme.base.text)
+                        .into_iter()
+                        .map(|(text, color)| draw::span(text, color, background))
+                        .collect::<Vec<_>>();
+                    let line = draw::line(spans, background);
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
+            }
+            Kind::Diff(text) => {
+                for (index, source) in text.lines().enumerate().take(area.height as usize) {
+                    let color = if source.starts_with('+') {
+                        theme.base.success.base
+                    } else if source.starts_with('-') {
+                        theme.base.error.base
+                    } else if source.starts_with("@@") {
+                        theme.base.info.base
+                    } else {
+                        theme.base.text
+                    };
+                    let line = draw::line(vec![draw::span(source.to_string(), color, background)], background);
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
+            }
+            Kind::Input(input) => {
+                let text = if input.value.is_empty() {
+                    input.placeholder.clone()
+                } else {
+                    input.value.clone()
+                };
+                let color = if input.value.is_empty() {
+                    theme.base.muted
+                } else {
+                    theme.base.text
+                };
+                let mut spans = Vec::new();
+                if input.focused {
+                    let cursor = input.cursor.min(text.chars().count());
+                    let before: String = text.chars().take(cursor).collect();
+                    let at: String = text.chars().skip(cursor).take(1).collect();
+                    let after: String = text.chars().skip(cursor + 1).collect();
+                    if !before.is_empty() {
+                        spans.push(draw::span(before, color, background));
+                    }
+                    spans.push(Span::styled(
+                        if at.is_empty() { " ".to_string() } else { at },
+                        draw::st(color, background).add_modifier(Modifier::REVERSED),
+                    ));
+                    if !after.is_empty() {
+                        spans.push(draw::span(after, color, background));
+                    }
+                } else {
+                    spans.push(draw::span(text, color, background));
+                }
+                let line = draw::line(spans, background);
+                draw::draw_line(buffer, area.x, area.y, area.width, &line);
+            }
+            Kind::Select(select) => {
+                for (index, option) in select.options.iter().enumerate().take(area.height as usize) {
+                    let selected = index == select.selected;
+                    let prefix = if selected { "▸ " } else { "  " };
+                    let color = if selected { theme.base.text } else { theme.base.muted };
+                    let mut spans = vec![draw::span(format!("{prefix}{option}"), color, background)];
+                    if selected && select.focused {
+                        for span in &mut spans {
+                            span.style = span.style.add_modifier(Modifier::BOLD);
+                        }
                     }
                     let line = draw::line(spans, background);
                     draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
@@ -648,18 +974,28 @@ impl Node {
         }
         for child in absolute {
             let width = child.content_width(area.width as usize, false) + child.outer_width();
-            let x = child.left.unwrap_or(0) + (area.x as usize);
-            let y = child.top.unwrap_or(0) + (area.y as usize);
+            let height = child.measure(area.width as usize, false).height;
+            let x = match (child.left, child.right) {
+                (Some(left), _) => left + area.x as usize,
+                (None, Some(right)) => (area.x as usize)
+                    .saturating_add(area.width as usize)
+                    .saturating_sub(width + right),
+                _ => area.x as usize,
+            };
+            let y = match (child.top, child.bottom) {
+                (Some(top), _) => top + area.y as usize,
+                (None, Some(bottom)) => (area.y as usize)
+                    .saturating_add(area.height as usize)
+                    .saturating_sub(height + bottom),
+                _ => area.y as usize,
+            };
             child.render(
                 buffer,
                 Rect {
                     x: x.min(u16::MAX as usize) as u16,
                     y: y.min(u16::MAX as usize) as u16,
                     width: width.min(area.width as usize) as u16,
-                    height: child
-                        .measure(area.width as usize, false)
-                        .height
-                        .min(area.height as usize) as u16,
+                    height: height.min(area.height as usize) as u16,
                 },
                 theme,
                 background,
@@ -681,7 +1017,13 @@ impl Node {
         let available = area.height as usize;
         let mut sizes: Vec<Size> = children
             .iter()
-            .map(|child| child.measure(area.width as usize, true))
+            .map(|child| {
+                let mut size = child.measure(area.width as usize, true);
+                if let Some(basis) = child.basis {
+                    size.height = basis.resolve(area.height as usize) + child.outer_height();
+                }
+                size
+            })
             .collect();
         let mut total = sizes.iter().map(|size| size.height).sum::<usize>()
             + self.gap.saturating_mul(children.len().saturating_sub(1));
@@ -737,7 +1079,7 @@ impl Node {
             let content_height = height
                 .saturating_sub(child.margin.top + child.margin.bottom)
                 .max(1);
-            let x = match self.align {
+            let x = match child.align_self.unwrap_or(self.align) {
                 Align::Center => {
                     area.x as usize
                         + (area.width as usize).saturating_sub(outer_width) / 2
@@ -777,12 +1119,51 @@ impl Node {
         if children.is_empty() {
             return;
         }
+        if self.wrap {
+            let available = area.width as usize;
+            let mut x = area.x as usize;
+            let mut y = area.y as usize;
+            let mut line_height = 0usize;
+            for child in children {
+                let width = child
+                    .width
+                    .or(child.basis)
+                    .map(|width| width.resolve(available) + child.outer_width())
+                    .unwrap_or_else(|| child.measure(available, false).width)
+                    .min(available);
+                if width == 0 {
+                    continue;
+                }
+                if x > area.x as usize && x + width > area.x as usize + available {
+                    y += line_height + self.gap;
+                    x = area.x as usize;
+                    line_height = 0;
+                }
+                let measured = child.measure(width, false);
+                let height = measured.height.max(1);
+                child.render(
+                    buffer,
+                    Rect {
+                        x: (x + child.margin.left).min(u16::MAX as usize) as u16,
+                        y: (y + child.margin.top).min(u16::MAX as usize) as u16,
+                        width: width.saturating_sub(child.margin.left + child.margin.right).max(1) as u16,
+                        height: height.saturating_sub(child.margin.top + child.margin.bottom).max(1) as u16,
+                    },
+                    theme,
+                    background,
+                );
+                x += width + self.gap;
+                line_height = line_height.max(height);
+            }
+            return;
+        }
         let available = area.width as usize;
         let mut widths: Vec<usize> = children
             .iter()
             .map(|child| {
                 let explicit = child
                     .width
+                    .or(child.basis)
                     .map(|width| width.resolve(available) + child.outer_width());
                 explicit.unwrap_or_else(|| child.measure(available, false).width)
             })
@@ -839,7 +1220,7 @@ impl Node {
             let content_height = height
                 .saturating_sub(child.margin.top + child.margin.bottom)
                 .max(1);
-            let y = match self.align {
+            let y = match child.align_self.unwrap_or(self.align) {
                 Align::Center => area.y as usize + row_height.saturating_sub(height) / 2,
                 Align::End => area.y as usize + row_height.saturating_sub(height),
                 _ => area.y as usize + child.margin.top,
@@ -887,6 +1268,17 @@ fn flow_offset(
         _ => 0,
     };
     (start + offset, gap)
+}
+
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    let width = width.max(1);
+    text.lines()
+        .map(|line| {
+            let cells = draw::width(line).max(1);
+            (cells + width - 1) / width
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 fn text_spans(text: &Text, default_bg: Rgba) -> Vec<Span<'static>> {
@@ -996,6 +1388,122 @@ fn buffer_lines(buffer: &Buffer, width: u16, height: u16) -> Vec<Line<'static>> 
     out
 }
 
+/// Interactive control exposed by a plugin layout.
+#[derive(Clone, Debug)]
+pub struct Control {
+    pub path: Vec<usize>,
+    pub kind: ControlKind,
+    pub value: String,
+    pub options: Vec<String>,
+    pub selected: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlKind {
+    Input,
+    Select,
+}
+
+pub fn controls(layout: &Value) -> Vec<Control> {
+    let mut out = Vec::new();
+    collect_controls(layout, &mut Vec::new(), &mut out);
+    out
+}
+
+fn collect_controls(value: &Value, path: &mut Vec<usize>, out: &mut Vec<Control>) {
+    let Some(kind) = value.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    if kind == "input" {
+        out.push(Control {
+            path: path.clone(),
+            kind: ControlKind::Input,
+            value: value.get("value").and_then(Value::as_str).unwrap_or_default().to_string(),
+            options: Vec::new(),
+            selected: 0,
+        });
+    } else if kind == "select" {
+        let options = value
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(|item| item.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        out.push(Control {
+            path: path.clone(),
+            kind: ControlKind::Select,
+            value: String::new(),
+            options,
+            selected: number(value.get("selected")).unwrap_or(0),
+        });
+    }
+    if let Some(children) = value.get("children").and_then(Value::as_array) {
+        for (index, child) in children.iter().enumerate() {
+            path.push(index);
+            collect_controls(child, path, out);
+            path.pop();
+        }
+    }
+}
+
+fn node_at_mut<'a>(value: &'a mut Value, path: &[usize]) -> Option<&'a mut Value> {
+    let mut current = value;
+    for index in path {
+        current = current.get_mut("children")?.get_mut(*index)?;
+    }
+    Some(current)
+}
+
+pub fn set_control_value(layout: &mut Value, index: usize, value: String) {
+    let Some(control) = controls(layout).get(index).cloned() else {
+        return;
+    };
+    if let Some(node) = node_at_mut(layout, &control.path) {
+        node["value"] = Value::String(value.clone());
+        node["cursor"] = Value::from(value.chars().count());
+    }
+}
+
+pub fn set_control_selected(layout: &mut Value, index: usize, selected: usize) {
+    let Some(control) = controls(layout).get(index).cloned() else {
+        return;
+    };
+    if let Some(node) = node_at_mut(layout, &control.path) {
+        node["selected"] = Value::from(selected);
+    }
+}
+
+pub fn set_focus(layout: &mut Value, focus: usize) {
+    let mut current = 0;
+    set_focus_inner(layout, focus, &mut current);
+}
+
+fn set_focus_inner(value: &mut Value, focus: usize, current: &mut usize) {
+    let Some(kind) = value.get("type").and_then(Value::as_str).map(String::from) else {
+        return;
+    };
+    if kind == "input" || kind == "select" {
+        value["focused"] = Value::Bool(*current == focus);
+        *current += 1;
+    }
+    if let Some(children) = value.get_mut("children").and_then(Value::as_array_mut) {
+        for child in children {
+            set_focus_inner(child, focus, current);
+        }
+    }
+}
+
+pub fn render_focused(
+    layout: &Value,
+    width: usize,
+    theme: &Theme,
+    background: Rgba,
+    focus: usize,
+) -> Vec<Line<'static>> {
+    let mut copy = layout.clone();
+    set_focus(&mut copy, focus);
+    render(&copy, width, theme, background)
+}
+
 /// Render a plugin layout tree at `width` columns. `background` is the surface
 /// the slot sits on, so boxes without an explicit background blend in.
 pub fn render(layout: &Value, width: usize, theme: &Theme, background: Rgba) -> Vec<Line<'static>> {
@@ -1084,6 +1592,98 @@ mod tests {
             lines.iter().any(|line| line.trim_end() == "two"),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn markdown_renders_headings_and_code() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "markdown",
+                "text": "# Heading\n\n```rust\nfn main() {}\n```"
+            }),
+            24,
+        );
+        assert!(lines.iter().any(|line| line.contains("Heading")), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("fn main")), "{lines:?}");
+    }
+
+    #[test]
+    fn controls_edit_inputs_and_selects() {
+        let mut layout = serde_json::json!({
+            "type": "box",
+            "direction": "column",
+            "children": [
+                { "type": "input", "value": "hello", "placeholder": "name" },
+                { "type": "select", "options": ["one", "two"], "selected": 0 }
+            ]
+        });
+        let controls = controls(&layout);
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[0].kind, ControlKind::Input);
+        assert_eq!(controls[1].kind, ControlKind::Select);
+        set_control_value(&mut layout, 0, "world".into());
+        set_control_selected(&mut layout, 1, 1);
+        let lines = render_json(layout, 20);
+        assert!(lines.iter().any(|line| line.contains("world")), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("two")), "{lines:?}");
+    }
+
+    #[test]
+    fn overflow_clips_and_scrolls_children() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "height": 2,
+                "overflow": "scroll",
+                "scrollTop": 1,
+                "children": [
+                    { "type": "text", "text": "zero" },
+                    { "type": "text", "text": "one" },
+                    { "type": "text", "text": "two" },
+                    { "type": "text", "text": "three" }
+                ]
+            }),
+            10,
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("one"), "{lines:?}");
+        assert!(lines[1].contains("two"), "{lines:?}");
+    }
+
+    #[test]
+    fn row_wraps_children() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "direction": "row",
+                "wrap": "wrap",
+                "children": [
+                    { "type": "text", "text": "aaaa" },
+                    { "type": "text", "text": "bbbb" },
+                    { "type": "text", "text": "cccc" }
+                ]
+            }),
+            9,
+        );
+        assert!(lines.iter().any(|line| line.contains("aaaa") && line.contains("bbbb")), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("cccc")), "{lines:?}");
+        assert!(lines.len() >= 2, "{lines:?}");
+    }
+
+    #[test]
+    fn basis_controls_row_widths() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "direction": "row",
+                "children": [
+                    { "type": "text", "text": "a", "basis": 3 },
+                    { "type": "text", "text": "b", "basis": 3 }
+                ]
+            }),
+            10,
+        );
+        assert!(lines.iter().any(|line| line.contains('a') && line.contains('b')), "{lines:?}");
     }
 
     #[test]

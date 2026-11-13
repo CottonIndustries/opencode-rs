@@ -198,6 +198,7 @@ pub enum Dialog {
     Terminal(super::terminal::TerminalDialog),
     McpAuth(McpAuth),
     Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
+    Plugin { page: String, title: String, text: String, scroll: usize, layout: serde_json::Value, focus: usize },
 }
 
 /// Geometry shared by drawing and mouse hit testing.
