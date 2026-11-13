@@ -44,6 +44,22 @@ impl Dim {
 enum Direction {
     Row,
     Column,
+    RowReverse,
+    ColumnReverse,
+}
+
+impl Direction {
+    fn is_row(self) -> bool {
+        matches!(self, Direction::Row | Direction::RowReverse)
+    }
+
+    fn is_column(self) -> bool {
+        matches!(self, Direction::Column | Direction::ColumnReverse)
+    }
+
+    fn reversed(self) -> bool {
+        matches!(self, Direction::RowReverse | Direction::ColumnReverse)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -436,6 +452,8 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
             };
             let direction = match value.get("direction").and_then(Value::as_str) {
                 Some("row") => Direction::Row,
+                Some("row-reverse") => Direction::RowReverse,
+                Some("column-reverse") => Direction::ColumnReverse,
                 _ => Direction::Column,
             };
             let align = match value.get("align").and_then(Value::as_str) {
@@ -608,13 +626,13 @@ impl Node {
                         .width
                         .map(|value| value.resolve(inner))
                         .unwrap_or_else(|| child.intrinsic_width(inner));
-                    if self.direction == Direction::Row {
+                    if self.direction.is_row() {
                         width = width.saturating_add(child_width + child.outer_width());
                     } else {
                         width = width.max(child_width + child.outer_width());
                     }
                 }
-                if self.direction == Direction::Row && flow.len() > 1 {
+                if self.direction.is_row() && flow.len() > 1 {
                     width = width.saturating_add((flow.len() - 1) * self.gap);
                 }
                 width + padding + border
@@ -693,7 +711,7 @@ impl Node {
                 height: select.options.len().max(1),
             },
             Kind::Box(children) => {
-                if self.direction == Direction::Row && self.wrap {
+                if self.direction.is_row() && self.wrap {
                     let mut line_width = 0usize;
                     let mut line_height = 0usize;
                     let mut total_height = 0usize;
@@ -726,15 +744,15 @@ impl Node {
                 {
                     flow += 1;
                     let mut child_size =
-                        child.measure(inner_width, self.direction == Direction::Column);
+                        child.measure(inner_width, self.direction.is_column());
                     if let Some(basis) = child.basis {
-                        if self.direction == Direction::Row {
+                        if self.direction.is_row() {
                             child_size.width = basis.resolve(inner_width) + child.outer_width();
                         } else {
                             child_size.height = basis.resolve(inner_width) + child.outer_height();
                         }
                     }
-                    if self.direction == Direction::Row {
+                    if self.direction.is_row() {
                         width = width.saturating_add(child_size.width + child.outer_width());
                         height = height.max(child_size.height + child.outer_height());
                     } else {
@@ -744,7 +762,7 @@ impl Node {
                 }
                 if flow > 1 {
                     let gaps = (flow - 1) * self.gap;
-                    if self.direction == Direction::Row {
+                    if self.direction.is_row() {
                         width = width.saturating_add(gaps);
                     } else {
                         height = height.saturating_add(gaps);
@@ -836,6 +854,22 @@ impl Node {
                         buffer[(area.x + x, area.y + y)] = temp[(sx as u16, sy as u16)].clone();
                     }
                 }
+                if content_height > area.height && area.width > 1 {
+                    let track = area.height as usize;
+                    let thumb = ((track * track) / content_height as usize).clamp(1, track);
+                    let max_scroll = (content_height as usize).saturating_sub(track);
+                    let offset = if max_scroll == 0 {
+                        0
+                    } else {
+                        (self.scroll_top * (track - thumb)) / max_scroll
+                    };
+                    let color = theme.base.muted.over(background);
+                    let style = Style::default().fg(color.color()).bg(background.color());
+                    for row in 0..track {
+                        let glyph = if row >= offset && row < offset + thumb { "█" } else { "│" };
+                        set(buffer, area.x + area.width - 1, area.y + row as u16, glyph, style);
+                    }
+                }
             }
             return;
         }
@@ -910,27 +944,47 @@ impl Node {
                 } else {
                     theme.base.text
                 };
-                let mut spans = Vec::new();
-                if input.focused {
-                    let cursor = input.cursor.min(text.chars().count());
-                    let before: String = text.chars().take(cursor).collect();
-                    let at: String = text.chars().skip(cursor).take(1).collect();
-                    let after: String = text.chars().skip(cursor + 1).collect();
-                    if !before.is_empty() {
-                        spans.push(draw::span(before, color, background));
-                    }
-                    spans.push(Span::styled(
-                        if at.is_empty() { " ".to_string() } else { at },
-                        draw::st(color, background).add_modifier(Modifier::REVERSED),
-                    ));
-                    if !after.is_empty() {
-                        spans.push(draw::span(after, color, background));
-                    }
+                let lines: Vec<String> = if input.multiline {
+                    text.split('\n').map(String::from).collect()
                 } else {
-                    spans.push(draw::span(text, color, background));
+                    vec![text.clone()]
+                };
+                let mut cursor_line = 0;
+                let mut cursor_col = 0;
+                if input.focused {
+                    let mut remaining = input.cursor;
+                    for (index, line) in lines.iter().enumerate() {
+                        let len = line.chars().count();
+                        if remaining <= len {
+                            cursor_line = index;
+                            cursor_col = remaining;
+                            break;
+                        }
+                        remaining = remaining.saturating_sub(len + 1);
+                    }
                 }
-                let line = draw::line(spans, background);
-                draw::draw_line(buffer, area.x, area.y, area.width, &line);
+                for (index, line_text) in lines.iter().enumerate().take(area.height as usize) {
+                    let mut spans = Vec::new();
+                    if input.focused && index == cursor_line {
+                        let before: String = line_text.chars().take(cursor_col).collect();
+                        let at: String = line_text.chars().skip(cursor_col).take(1).collect();
+                        let after: String = line_text.chars().skip(cursor_col + 1).collect();
+                        if !before.is_empty() {
+                            spans.push(draw::span(before, color, background));
+                        }
+                        spans.push(Span::styled(
+                            if at.is_empty() { " ".to_string() } else { at },
+                            draw::st(color, background).add_modifier(Modifier::REVERSED),
+                        ));
+                        if !after.is_empty() {
+                            spans.push(draw::span(after, color, background));
+                        }
+                    } else {
+                        spans.push(draw::span(line_text.clone(), color, background));
+                    }
+                    let line = draw::line(spans, background);
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
             }
             Kind::Select(select) => {
                 for (index, option) in select.options.iter().enumerate().take(area.height as usize) {
@@ -967,7 +1021,15 @@ impl Node {
             .iter()
             .filter(|child| child.position == Position::Absolute)
             .collect();
-        if self.direction == Direction::Row {
+        if self.direction.reversed() {
+            let mut reversed = flow.clone();
+            reversed.reverse();
+            if self.direction.is_row() {
+                self.render_row(buffer, area, theme, background, &reversed);
+            } else {
+                self.render_column(buffer, area, theme, background, &reversed);
+            }
+        } else if self.direction.is_row() {
             self.render_row(buffer, area, theme, background, &flow);
         } else {
             self.render_column(buffer, area, theme, background, &flow);

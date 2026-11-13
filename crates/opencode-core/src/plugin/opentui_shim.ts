@@ -30,8 +30,60 @@ export function useRenderer() {
 }
 
 export function useTerminalDimensions() {
-  const dimensions = (globalThis as Json).__opencodeDimensions ?? { width: 80, height: 24 }
-  return { width: Number(dimensions.width ?? 80), height: Number(dimensions.height ?? 24) }
+  const dimensions = () => {
+    const value = (globalThis as Json).__opencodeDimensions ?? { width: 80, height: 24 }
+    return { width: Number(value.width ?? 80), height: Number(value.height ?? 24) }
+  }
+  const accessor = dimensions as Json
+  Object.defineProperty(accessor, "width", {
+    get: () => dimensions().width,
+  })
+  Object.defineProperty(accessor, "height", {
+    get: () => dimensions().height,
+  })
+  return accessor
+}
+
+export function onResize(callback: Function) {
+  if (typeof callback === "function") {
+    const value = (globalThis as Json).__opencodeDimensions ?? { width: 80, height: 24 }
+    callback(Number(value.width ?? 80), Number(value.height ?? 24))
+  }
+}
+
+export function onAnimationTick(fps: Json, callback: Function, _options?: Json) {
+  if (typeof callback !== "function") return
+  const rate = typeof fps === "function" ? Number(fps()) : Number(fps ?? 60)
+  if (!Number.isFinite(rate) || rate <= 0) return
+  return setInterval(() => callback(1000 / rate), Math.max(1, Math.round(1000 / rate)))
+}
+
+export function onFocus(_callback: Function) {}
+export function onBlur(_callback: Function) {}
+export function useSelectionHandler(_callback: Function) {}
+export function useKeyHandler(callback: Function, options?: Json) {
+  return useKeyboard(callback, options)
+}
+
+export function useTimeline(options?: Json) {
+  const duration = Number(options?.duration ?? 0)
+  return {
+    duration,
+    play: () => {},
+    pause: () => {},
+    restart: () => {},
+    seek: () => {},
+    stop: () => {},
+    isPlaying: () => false,
+    currentTime: () => 0,
+    onComplete: (_callback: Function) => {},
+    onUpdate: (_callback: Function) => {},
+  }
+}
+
+export function createDynamic(component: Json, props: Json) {
+  const value = typeof component === "function" ? component() : component
+  return typeof value === "function" ? value(props) : { type: value, props }
 }
 
 export function useStdout() {
@@ -46,7 +98,7 @@ export function useStdin() {
   return {}
 }
 
-export function useKeyboard(handler?: Function) {
+export function useKeyboard(handler?: Function, _options?: Json) {
   if (typeof handler !== "function") return
   const key = "__opencodeKeyboard"
   const target = ((globalThis as Json)[key] ??= [] as Function[])

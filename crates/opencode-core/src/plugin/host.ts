@@ -146,7 +146,7 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       const handlers = ((globalThis as Json).__opencodePaste ?? []) as Function[]
       for (const handler of handlers) {
         try {
-          await settle(handler(String(params.text ?? "")))
+          await settle(handler({ text: String(params.text ?? "") }))
         } catch (error) {
           log("error", `tui paste handler failed: ${String(error)}`)
         }
@@ -1935,7 +1935,10 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     return { type: "text", text, segments: jsxSegments(current) }
   }
   budget.nodes += 1
-  const direction = String(jsxProp(props, "flexDirection", "direction") ?? "column").toLowerCase() === "row" ? "row" : "column"
+  const flexDirection = String(jsxProp(props, "flexDirection", "direction") ?? "column").toLowerCase()
+  const direction = flexDirection === "row" || flexDirection === "row-reverse" || flexDirection === "column-reverse"
+    ? flexDirection
+    : "column"
   const nested = jsxLayout(children, depth + 1, budget)
   const items = nested ? (nested.type === "box" && nested.direction === direction && Object.keys(nested).length === 3 ? nested.children : [nested]) : []
   const rawBorder = jsxProp(props, "borderStyle")

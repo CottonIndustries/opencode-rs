@@ -2033,6 +2033,8 @@ impl Ui {
                             "alt": k.alt,
                             "shift": k.shift,
                             "sequence": format!("{:?}", ev.code),
+                            "eventType": "press",
+                            "repeated": false,
                         });
                         let app = plugin_app.clone();
                         tokio::spawn(async move {
