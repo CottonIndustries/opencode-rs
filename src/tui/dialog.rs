@@ -180,7 +180,7 @@ pub enum Dialog {
     Help,
     Status,
     Rename(Prompt),
-    Text { title: String, text: String, scroll: usize },
+    Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
 }
 
 /// Geometry shared by drawing and mouse hit testing.

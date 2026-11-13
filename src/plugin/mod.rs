@@ -2023,7 +2023,8 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             let page = app.plugins.execute_tui_page(id, first.get("data").cloned().unwrap_or(Value::Null)).await?;
             let title = page.get("title").and_then(Value::as_str).unwrap_or(id).to_string();
             let text = page.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
-            app.emit(crate::app::AppEvent::PluginPage { title, text });
+            let layout = page.get("layout").cloned().unwrap_or(Value::Null);
+            app.emit(crate::app::AppEvent::PluginPage { title, text, layout });
             Ok(Value::Null)
         }
         "tui.panel" => {
@@ -2049,7 +2050,13 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                 .collect::<Vec<_>>()
                 .join("\n\n");
             if !text.trim().is_empty() {
-                app.emit(crate::app::AppEvent::PluginPage { title: name, text });
+                let layout = slots
+                    .iter()
+                    .find(|slot| slot.get("placement").and_then(Value::as_str) == Some("session.panel"))
+                    .and_then(|slot| slot.get("layout"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                app.emit(crate::app::AppEvent::PluginPage { title: name, text, layout });
             }
             Ok(Value::Null)
         }

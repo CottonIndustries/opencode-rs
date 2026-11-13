@@ -104,7 +104,7 @@ async function dispatch(method: string, params: Json): Promise<Json> {
       const page = tuiPages.get(String(params.id))
       if (!page) throw new Error(`TUI page not found: ${String(params.id)}`)
       const rendered = await settle(page.render({ data: params.data }))
-      return { title: page.name, text: jsxText(rendered) }
+      return { title: page.name, text: jsxText(rendered), layout: jsxLayout(rendered) }
     }
     case "integration.list":
       return projectIntegrations()
@@ -1693,13 +1693,61 @@ function jsxText(value: Json): string {
   return ""
 }
 
+function jsxLayout(value: Json, depth = 0, budget = { nodes: 0 }): Json | null {
+  if (depth > 8 || budget.nodes > 200) return null
+  if (value === null || value === undefined || value === false || value === true) return null
+  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") {
+    const text = String(value)
+    return text ? { type: "text", text } : null
+  }
+  if (Array.isArray(value)) {
+    const children = value.map((item) => jsxLayout(item, depth + 1, budget)).filter(Boolean)
+    return children.length ? { type: "box", direction: "column", children } : null
+  }
+  if (typeof value === "function") {
+    try {
+      return jsxLayout(value(), depth + 1, budget)
+    } catch {
+      return null
+    }
+  }
+  if (typeof value !== "object") return null
+  const props = value.props ?? {}
+  const children = props.children !== undefined ? props.children : value.children
+  const type = typeof value.type === "string" ? value.type.toLowerCase() : ""
+  if (type.includes("text") || type === "span" || type === "b" || type === "i" || type === "strong" || type === "em") {
+    const text = jsxText(value)
+    if (!text.trim()) return null
+    budget.nodes += 1
+    return {
+      type: "text",
+      text,
+      ...(type === "b" || type === "strong" ? { bold: true } : {}),
+      ...(type === "i" || type === "em" ? { italic: true } : {}),
+      ...(props.fg ? { color: String(props.fg) } : {}),
+      ...(props.dim ? { dim: true } : {}),
+    }
+  }
+  if (children === undefined) {
+    const text = jsxText(value)
+    if (!text.trim()) return null
+    budget.nodes += 1
+    return { type: "text", text }
+  }
+  budget.nodes += 1
+  const direction = String(props.flexDirection ?? props.direction ?? "column").toLowerCase() === "row" ? "row" : "column"
+  const nested = jsxLayout(children, depth + 1, budget)
+  const items = nested ? (nested.type === "box" && nested.direction === direction ? nested.children : [nested]) : []
+  return { type: "box", direction, children: items }
+}
+
 async function renderTuiSlots(input: Json): Promise<Json[]> {
   const out: Json[] = []
   for (const slot of [...tuiSlots]) {
     try {
       const rendered = await settle(slot.render(input))
       const text = jsxText(rendered).trim()
-      if (text) out.push({ placement: slot.placement, text, plugin: slot.plugin })
+      if (text) out.push({ placement: slot.placement, text, layout: jsxLayout(rendered), plugin: slot.plugin })
     } catch (error) {
       log("error", `tui slot ${slot.placement} failed: ${String(error)}`)
     }

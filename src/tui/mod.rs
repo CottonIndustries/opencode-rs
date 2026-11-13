@@ -301,6 +301,62 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(url).spawn();
 }
 
+fn layout_text(node: &Value) -> String {
+    match node.get("type").and_then(Value::as_str) {
+        Some("text") => node.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+        Some("box") => node
+            .get("children")
+            .and_then(Value::as_array)
+            .map(|children| children.iter().map(layout_text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("  "))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn plugin_layout_lines(layout: &Value, width: usize, theme: &Theme, depth: usize) -> Vec<Line<'static>> {
+    if depth > 8 {
+        return Vec::new();
+    }
+    match layout.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            let text = layout.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                return Vec::new();
+            }
+            let color = match layout.get("color").and_then(Value::as_str) {
+                Some("success") => theme.success.base,
+                Some("warning") => theme.warning.base,
+                Some("error") => theme.error.base,
+                Some("muted") | Some("dim") => theme.muted,
+                _ => theme.dialog.text,
+            };
+            let item = if layout.get("bold").and_then(Value::as_bool).unwrap_or(false) {
+                Span::styled(text.to_string(), draw::bold(draw::st(color, theme.dialog.bg)))
+            } else {
+                span(text.to_string(), color, theme.dialog.bg)
+            };
+            draw::paragraph(&[item], width.max(1), draw::Wrap::Word, theme.dialog.bg)
+        }
+        Some("box") => {
+            let children = layout.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
+            if layout.get("direction").and_then(Value::as_str) == Some("row") {
+                let text = children.iter().map(layout_text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("  ");
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    draw::paragraph(&[span(text, theme.dialog.text, theme.dialog.bg)], width.max(1), draw::Wrap::Word, theme.dialog.bg)
+                }
+            } else {
+                children
+                    .iter()
+                    .flat_map(|child| plugin_layout_lines(child, width, theme, depth + 1))
+                    .collect()
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 impl Ui {
     fn new(app: Arc<App>, opts: &StartOptions) -> Result<Ui> {
         let settings = Settings::load();
@@ -853,7 +909,8 @@ impl Ui {
                         Ok(value) => {
                             let title = value.get("title").and_then(Value::as_str).unwrap_or(&page).to_string();
                             let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
-                            app.emit(AppEvent::PluginPage { title, text });
+                            let layout = value.get("layout").cloned().unwrap_or(Value::Null);
+                            app.emit(AppEvent::PluginPage { title, text, layout });
                         }
                         Err(error) => app.emit(AppEvent::Notice { message: format!("Plugin page failed: {error}") }),
                     }
@@ -2313,8 +2370,8 @@ impl Ui {
             AppEvent::Error { session, message } if session == sid => self.toast(Variant::Error, None, message),
             AppEvent::Busy { session, busy: false } if session == sid => self.interrupt = None,
             AppEvent::Notice { message } if !message.is_empty() && !message.starts_with("Compacting") => self.info(message),
-            AppEvent::PluginPage { title, text } => {
-                self.dialog = Some(Dialog::Text { title, text, scroll: 0 });
+            AppEvent::PluginPage { title, text, layout } => {
+                self.dialog = Some(Dialog::Text { title, text, layout, scroll: 0 });
             }
             AppEvent::Toast { title, message, variant } => {
                 let variant = match variant.as_str() {
@@ -2411,18 +2468,20 @@ impl Ui {
                     self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
                     cursor = None;
                 }
-                Dialog::Text { title, text, scroll } => {
-                    let mut lines = Vec::new();
-                    for paragraph in text.split('\n') {
-                        if paragraph.is_empty() {
-                            lines.push(line(vec![], d_t.bg));
-                        } else {
-                            lines.extend(draw::paragraph(
-                                &[span(paragraph.to_string(), d_t.text, d_t.bg)],
-                                60,
-                                draw::Wrap::Word,
-                                d_t.bg,
-                            ));
+                Dialog::Text { title, text, scroll, layout } => {
+                    let mut lines = plugin_layout_lines(layout, 60, &t, 0);
+                    if lines.is_empty() {
+                        for paragraph in text.split('\n') {
+                            if paragraph.is_empty() {
+                                lines.push(line(vec![], d_t.bg));
+                            } else {
+                                lines.extend(draw::paragraph(
+                                    &[span(paragraph.to_string(), d_t.text, d_t.bg)],
+                                    60,
+                                    draw::Wrap::Word,
+                                    d_t.bg,
+                                ));
+                            }
                         }
                     }
                     let visible: Vec<Line<'static>> = lines.into_iter().skip(*scroll).collect();

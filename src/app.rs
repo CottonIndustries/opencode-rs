@@ -36,7 +36,7 @@ pub enum AppEvent {
     Title { session: String, title: String },
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
-    PluginPage { title: String, text: String },
+    PluginPage { title: String, text: String, layout: serde_json::Value },
 }
 
 impl AppEvent {
@@ -815,7 +815,7 @@ pub(crate) fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "type": "server.notice",
             "properties": { "message": message, "title": title, "variant": variant }
         }),
-        AppEvent::PluginPage { title, text } => json!({
+        AppEvent::PluginPage { title, text, .. } => json!({
             "id": id(),
             "type": "server.notice",
             "properties": { "message": text, "title": title }
