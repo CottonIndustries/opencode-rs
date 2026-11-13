@@ -147,8 +147,12 @@ fn convert(config: Value) -> Value {
         if let Some(models) = item.get("models") {
             value.insert("models".into(), models.clone());
         }
-        if let Some(settings) = item.get("settings") {
-            value.insert("options".into(), settings.clone());
+        if let Some(settings) = item.get("settings").and_then(Value::as_object) {
+            let mut settings = settings.clone();
+            for key in ["apiKey", "authToken", "accessToken"] {
+                settings.remove(key);
+            }
+            value.insert("options".into(), Value::Object(settings));
         }
         provider.insert(id.clone(), Value::Object(value));
     }

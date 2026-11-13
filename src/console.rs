@@ -84,6 +84,9 @@ fn convert_config(remote: &Value) -> Value {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
+            for key in ["apiKey", "authToken", "accessToken"] {
+                options.remove(key);
+            }
             if let Some(headers) = provider.get("headers").and_then(Value::as_object) {
                 options.insert("headers".into(), Value::Object(headers.clone()));
             }
