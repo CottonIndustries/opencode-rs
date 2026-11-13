@@ -175,6 +175,37 @@ pub async fn instructions(app: &App) -> Option<String> {
     }
 }
 
+/// Reference guidance contributed by plugins. Only references with a
+/// description are advertised, matching upstream.
+async fn references_block(app: &App) -> Option<String> {
+    let value = app.plugins.request("reference.list", serde_json::json!({})).await.ok()?;
+    let references = value.as_array()?;
+    let mut entries = Vec::new();
+    for reference in references {
+        let Some(name) = reference.get("name").and_then(|value| value.as_str()) else { continue };
+        let Some(description) = reference.get("description").and_then(|value| value.as_str()) else { continue };
+        let path = reference.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+        entries.push((name, path, description));
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let mut lines = vec![
+        "Project references provide additional directories that can be accessed when relevant.".to_string(),
+        "<available_references>".to_string(),
+    ];
+    for (name, path, description) in entries {
+        lines.push("  <reference>".into());
+        lines.push(format!("    <name>{name}</name>"));
+        lines.push(format!("    <path>{path}</path>"));
+        lines.push(format!("    <description>{description}</description>"));
+        lines.push("  </reference>".into());
+    }
+    lines.push("</available_references>".into());
+    Some(lines.join("\n"))
+}
+
 pub fn skills_block(skills: &[crate::tools::skill::Skill]) -> String {
     let mut lines = vec![
         "Skills provide specialized instructions and workflows for specific tasks.".to_string(),
@@ -203,6 +234,9 @@ pub async fn system(app: &App, agent: &Agent, model: &Model, tools: &[String]) -
     let mut ctx = vec![environment(app)];
     if let Some(i) = instructions(app).await {
         ctx.push(i);
+    }
+    if let Some(references) = references_block(app).await {
+        ctx.push(references);
     }
     if tools.iter().any(|t| t == "skill") {
         ctx.push(skills_block(&app.skills()));
