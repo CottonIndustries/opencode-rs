@@ -1413,6 +1413,7 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 .and_then(Value::as_str)
                 .map(|cwd| crate::util::resolve(&app.directory, cwd))
                 .unwrap_or_else(|| app.directory.clone());
+            let timeout = request.body.get("timeout").and_then(Value::as_u64).unwrap_or(0);
             let shell = crate::tools::shell::detect();
             let file = crate::paths::get().tmp.join("shell").join(format!("{id}.log"));
             let metadata = request.body.get("metadata").cloned().unwrap_or_else(|| json!({}));
@@ -1431,19 +1432,48 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 .get("sessionID")
                 .and_then(Value::as_str)
                 .map(|session| crate::job::create("shell", session, &command, json!({ "shellID": id.clone(), "command": command.clone() })));
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "shell.created",
+                "properties": { "info": info.clone() }
+            }));
             let task_id = id.clone();
+            let task_app = app.clone();
             tokio::spawn(async move {
                 let mut cmd = tokio::process::Command::new(&shell.program);
                 cmd.args(&shell.args).arg(&command).current_dir(&directory);
+                cmd.kill_on_drop(true);
                 #[cfg(windows)]
                 {
                     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     use std::os::windows::process::CommandExt;
                     cmd.creation_flags(CREATE_NO_WINDOW);
                 }
-                let output = cmd.output().await;
-                let mut shells = shells().lock().unwrap();
-                if let Some(record) = shells.get_mut(&task_id) {
+                let output = if timeout > 0 {
+                    match tokio::time::timeout(std::time::Duration::from_millis(timeout), cmd.output()).await {
+                        Ok(output) => output,
+                        Err(_) => {
+                            let mut records = shells().lock().unwrap();
+                            if let Some(record) = records.get_mut(&task_id) {
+                                record.info["status"] = json!("timeout");
+                                record.info["time"]["completed"] = json!(crate::util::now_ms());
+                            }
+                            if let Some(job) = &job {
+                                crate::job::finish(job, "error", Some(json!({ "timeout": true })));
+                            }
+                            task_app.plugins.emit(json!({
+                                "id": crate::util::id("evt"),
+                                "type": "shell.exited",
+                                "properties": { "id": task_id, "status": "timeout" }
+                            }));
+                            return;
+                        }
+                    }
+                } else {
+                    cmd.output().await
+                };
+                let mut records = shells().lock().unwrap();
+                if let Some(record) = records.get_mut(&task_id) {
                     match output {
                         Ok(output) => {
                             let stdout = crate::util::decode_output(&output.stdout);
@@ -1472,6 +1502,14 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                     }
                 } else if let Some(job) = &job {
                     crate::job::finish(job, "cancelled", None);
+                }
+                drop(records);
+                if let Some(record) = shells().lock().unwrap().get(&task_id) {
+                    task_app.plugins.emit(json!({
+                        "id": crate::util::id("evt"),
+                        "type": "shell.exited",
+                        "properties": { "id": task_id, "exit": record.info.get("exit"), "status": record.info.get("status") }
+                    }));
                 }
             });
             Ok(json!({ "data": info }))
@@ -1503,6 +1541,11 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
         }
         ("DELETE", ["api", "shell", id]) => {
             shells().lock().unwrap().remove(*id);
+            app.plugins.emit(json!({
+                "id": crate::util::id("evt"),
+                "type": "shell.deleted",
+                "properties": { "id": id }
+            }));
             Ok(Value::Null)
         }
         ("GET", ["api", "websearch", "provider"]) => {
