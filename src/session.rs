@@ -438,16 +438,25 @@ fn file(project: &str, id: &str) -> PathBuf {
 pub fn save(s: &Session) -> Result<()> {
     let d = dir(&s.project);
     std::fs::create_dir_all(&d)?;
+    let bytes = serde_json::to_vec(s)?;
     let tmp = d.join(format!("{}.json.tmp", s.id));
-    std::fs::write(&tmp, serde_json::to_vec(s)?)?;
+    std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, file(&s.project, &s.id))?;
+    crate::db::save(&s.id, &s.project, s.time_updated, &String::from_utf8_lossy(&bytes));
     Ok(())
 }
 
 pub fn load(project: &str, id: &str) -> Result<Session> {
+    if let Some(data) = crate::db::load(id) {
+        if let Ok(session) = serde_json::from_str::<Session>(&data) {
+            return Ok(session);
+        }
+    }
     let p = file(project, id);
     if p.is_file() {
-        return Ok(serde_json::from_slice(&std::fs::read(p)?)?);
+        let session: Session = serde_json::from_slice(&std::fs::read(p)?)?;
+        crate::db::save(&session.id, &session.project, session.time_updated, &serde_json::to_string(&session)?);
+        return Ok(session);
     }
     // search all projects
     let root = crate::paths::get().storage().join("session");
@@ -455,7 +464,9 @@ pub fn load(project: &str, id: &str) -> Result<Session> {
         for e in rd.flatten() {
             let p = e.path().join(format!("{id}.json"));
             if p.is_file() {
-                return Ok(serde_json::from_slice(&std::fs::read(p)?)?);
+                let session: Session = serde_json::from_slice(&std::fs::read(p)?)?;
+                crate::db::save(&session.id, &session.project, session.time_updated, &serde_json::to_string(&session)?);
+                return Ok(session);
             }
         }
     }
@@ -517,36 +528,45 @@ pub fn list(project: &str) -> Vec<Summary> {
         #[serde(default)]
         tokens_total: Usage,
     }
-    let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir(project)) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            if let Ok(bytes) = std::fs::read(&p) {
-                if let Ok(h) = serde_json::from_slice::<Head>(&bytes) {
-                    out.push(Summary {
-                        id: h.id,
-                        title: h.title,
-                        parent_id: h.parent_id,
-                        time_created: h.time_created,
-                        time_updated: h.time_updated,
-                        directory: h.directory,
-                        metadata: h.metadata,
-                        permissions: h.permissions,
-                        revert: h.revert,
-                        viewed_at: h.viewed_at,
-                        idle_ms: h.idle_ms,
-                        busy_at: h.busy_at,
-                        last_outcome: h.last_outcome,
-                        fork: h.fork,
-                        archived: h.archived,
-                        cost: h.cost_total,
-                        tokens: h.tokens_total,
-                    });
+    let mut data = crate::db::list(project);
+    if data.is_empty() {
+        if let Ok(rd) = std::fs::read_dir(dir(project)) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(session) = serde_json::from_str::<Session>(&text) {
+                        crate::db::save(&session.id, &session.project, session.time_updated, &text);
+                    }
                 }
             }
+        }
+        data = crate::db::list(project);
+    }
+    let mut out = Vec::new();
+    for text in data {
+        if let Ok(h) = serde_json::from_str::<Head>(&text) {
+            out.push(Summary {
+                id: h.id,
+                title: h.title,
+                parent_id: h.parent_id,
+                time_created: h.time_created,
+                time_updated: h.time_updated,
+                directory: h.directory,
+                metadata: h.metadata,
+                permissions: h.permissions,
+                revert: h.revert,
+                viewed_at: h.viewed_at,
+                idle_ms: h.idle_ms,
+                busy_at: h.busy_at,
+                last_outcome: h.last_outcome,
+                fork: h.fork,
+                archived: h.archived,
+                cost: h.cost_total,
+                tokens: h.tokens_total,
+            });
         }
     }
     out.sort_by(|a, b| b.time_updated.cmp(&a.time_updated));
@@ -563,8 +583,12 @@ pub fn delete(project: &str, id: &str) -> Result<usize> {
             stack.push(s.id.clone());
         }
         let p = file(project, &cur);
-        if p.is_file() {
+        let existed = p.is_file();
+        if existed {
             std::fs::remove_file(p)?;
+        }
+        let indexed = crate::db::delete(&cur);
+        if existed || indexed {
             removed += 1;
         }
     }

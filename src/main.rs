@@ -8,6 +8,7 @@ mod auth;
 mod cli;
 mod command;
 mod config;
+mod db;
 mod engine;
 mod event_store;
 mod formatter;
