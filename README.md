@@ -37,6 +37,7 @@ if yours live elsewhere.
 | `opencode mcp auth <name>` / `mcp logout <name>` | Authorize or forget a remote MCP server with OAuth |
 | `opencode plugin list\|add\|remove\|check\|update` | Manage configured plugins; `check` compares pinned npm targets with the registry and `update` rewrites them |
 | `opencode pair [--url U]` | Create a single-use pairing link for a running server (`/auth/connect/:code`) |
+| `opencode skills` | List available built-in, project and global skills |
 | `opencode debug paths\|config\|agents\|skills\|prompt\|plugins` | Troubleshooting (`plugins` also lists plugin tools, TUI commands, pages and slots) |
 | `opencode debug plugin-tool <name> [json]` | Execute a plugin tool with the given input |
 | `opencode debug plugin-tui <name> [input]` | Execute a plugin TUI command |
@@ -149,9 +150,10 @@ if yours live elsewhere.
     by ratatui; the full OpenTUI/Solid layout engine is not ported.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
-  commands (`/new /sessions /models /agents /compact /variant /thinking /details
-  /export /init /review /help /quit` + custom), `@file` attachments, prompt
-  history, queued messages.
+  commands (`/new /sessions /models /agents /skills /compact /variant /thinking
+  /details /export /init /review /help /quit` + custom), `@file` attachments,
+  `@skill` mentions, prompt history, queued messages. Project skills live in
+  `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
 
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`
 and are indexed in `storage/sessions.db` for loading and listing. Durable
