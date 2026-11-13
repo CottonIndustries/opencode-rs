@@ -554,3 +554,39 @@ impl Manager {
         self.configs.read().unwrap().keys().map(|n| (n.clone(), st.get(n).cloned())).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn attaches_socket_client_tools() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let responder = pending.clone();
+        tokio::spawn(async move {
+            while let Some(text) = rx.recv().await {
+                let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+                let Some(id) = message.get("id").and_then(Value::as_u64) else { continue };
+                let result = match message.get("method").and_then(Value::as_str) {
+                    Some("initialize") => json!({ "protocolVersion": PROTOCOL, "capabilities": {}, "serverInfo": { "name": "demo" } }),
+                    Some("tools/list") => json!({ "tools": [{ "name": "echo", "description": "Echo", "inputSchema": { "type": "object" } }] }),
+                    _ => json!({}),
+                };
+                let response = json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                if let Some(sender) = responder.lock().unwrap().remove(&id) {
+                    let _ = sender.send(response);
+                }
+            }
+        });
+        let client = Arc::new(Client::socket("demo", tx, pending, Duration::from_secs(2)));
+        let manager = Manager::new(BTreeMap::new(), std::env::temp_dir());
+        manager.attach_socket("demo", client).await.unwrap();
+        let tools = manager.tools().await;
+        assert!(tools.iter().any(|tool| tool.name() == "demo_echo"));
+        assert!(matches!(manager.status.lock().unwrap().get("demo"), Some(Status::Connected { tools: 1 })));
+        manager.detach_socket("demo");
+        assert!(!manager.tools().await.iter().any(|tool| tool.name() == "demo_echo"));
+    }
+}
