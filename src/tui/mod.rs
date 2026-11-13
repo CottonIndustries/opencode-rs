@@ -2999,17 +2999,27 @@ impl Ui {
             let bg = if active { t.raised_high } else { t.bg };
             let dot = if h.is_busy() { SPINNER[(self.frame / 2) % SPINNER.len()] } else { " " };
             let ts = if active { draw::bold(draw::st(t.text, bg)) } else { draw::st(t.muted, bg) };
-            let xs = if active { draw::bold(draw::st(t.text, bg)) } else { draw::st(t.muted, bg) };
-            let close = if self.tab_hover.as_deref() == Some(id.as_str()) { "✕" } else { " " };
-            let spans = vec![
+            let xs = draw::st(t.muted, bg);
+            // Upstream pins the close mark to the tab's right edge (absolute right=1) and the
+            // title gives up two cells while hovered. Pad the label so it fills that width instead
+            // of leaving the mark next to a short title.
+            let hovered = self.tab_hover.as_deref() == Some(id.as_str());
+            let title_width = w as usize - if hovered { 5 } else { 3 };
+            let mut label = draw::truncate(&title, title_width);
+            let used = draw::width(&label);
+            if used < title_width {
+                label.push_str(&" ".repeat(title_width - used));
+            }
+            let mut spans = vec![
                 span(" ", t.text, bg),
                 span(dot, t.hue("interactive", 200), bg),
                 span(" ", t.text, bg),
-                Span::styled(draw::truncate(&title, w as usize - 6), ts),
-                span(" ", t.text, bg),
-                Span::styled(close, xs),
-                span(" ", t.text, bg),
+                Span::styled(label, ts),
             ];
+            if hovered {
+                spans.push(Span::styled("✕", xs));
+                spans.push(span(" ", t.text, bg));
+            }
             draw::draw_line(buf, x, area.y, w, &line(spans, bg));
             self.hits.tabs.push((x, x + w, id.clone()));
             self.hits.tab_close.push((x + w - 2, x + w - 1, id));

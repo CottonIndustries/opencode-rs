@@ -201,7 +201,9 @@ async fn tab_close_button_renders_on_hover_and_closes() {
     });
     let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
     t.draw(|f| ui.draw(f)).unwrap();
-    assert!(dump(&t).lines().next().unwrap_or_default().contains('✕'), "close mark missing on hover");
+    let hovered = dump(&t).lines().next().unwrap_or_default().to_string();
+    assert!(hovered.contains('✕'), "close mark missing on hover");
+    assert_eq!(hovered.chars().position(|c| c == '✕'), Some(column as usize), "close mark is not at the right edge: {hovered:?}");
     ui.on_mouse(event::MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
         column,
