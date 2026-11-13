@@ -17,7 +17,7 @@ pub struct Subagent {
 /// Subagents the calling agent may launch.
 pub fn available(app: &App, caller: &Agent) -> Vec<(String, Option<String>)> {
     let mut rules = crate::permission::defaults();
-    if let Some(p) = &app.config.permission {
+    if let Some(p) = &app.config().permission {
         rules.extend(crate::permission::from_config(p));
     }
     rules.extend(caller.permissions.iter().cloned());

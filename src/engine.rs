@@ -96,7 +96,7 @@ pub fn select_model(app: &App, agent: &Agent, opts: &PromptOptions, session_mode
         .ok_or_else(|| anyhow!("No model available. Set an API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY), run `opencode auth login`, or set \"model\" in opencode.json."))?;
     let r = crate::models::resolve(&app.providers.read().unwrap(), &reference)?;
     let variant = opts.variant.clone().or(r.variant).or_else(|| agent.variant.clone());
-    if r.provider.key.is_none() && !app.config.provider.contains_key(&r.provider.id) && r.provider.id != "opencode" {
+    if r.provider.key.is_none() && !app.config().provider.contains_key(&r.provider.id) && r.provider.id != "opencode" {
         let env = r.provider.env.first().cloned().unwrap_or_else(|| format!("{}_API_KEY", r.provider.id.to_uppercase()));
         return Err(anyhow!("No credentials for provider {}. Set {env} or run `opencode auth login {}`.", r.provider.id, r.provider.id));
     }
@@ -734,11 +734,11 @@ async fn run_loop(app: Arc<App>, handle: Arc<Handle>, agent: Agent, sel: Selecti
             let active = s.active_messages();
             active.first().is_some_and(|m| m.parts.iter().any(|p| matches!(p, Part::Compaction { .. }))) && active.len() <= 3
         });
-        if app.config.compaction.auto
+        if app.config().compaction.auto
             && !fresh_checkpoint
             && sel.model.context > 0
             && res.usage.total_context() as f64
-                >= sel.model.context as f64 * app.config.compaction.threshold(sel.model.context)
+                >= sel.model.context as f64 * app.config().compaction.threshold(sel.model.context)
         {
             let continuing = res.tool_calls > 0;
             if let Err(e) = compact(&app, &handle, &agent, &sel, &registry, continuing).await {
@@ -1820,7 +1820,7 @@ pub async fn generate_title(app: &Arc<App>, handle: &Arc<Handle>) -> Result<()> 
     let main = handle.with(|s| s.model.clone()).ok_or_else(|| anyhow!("no model"))?;
     let provider_id = main.split('/').next().unwrap_or("").to_string();
     let providers = app.providers();
-    let small = crate::models::small_model(&app.config, &providers, &provider_id).unwrap_or(main);
+    let small = crate::models::small_model(&app.config(), &providers, &provider_id).unwrap_or(main);
     let sel = select_model(app, &agent, &PromptOptions { model: Some(small), ..Default::default() }, None)?;
     let mut sel = Selection { variant: if sel.model.has_reasoning_type("toggle") { Some("off".into()) } else { Some("low".into()).filter(|v| sel.model.variants().contains(v)) }, ..sel };
     resolve_model_hook(app, &agent, &mut sel, &handle.id(), "title").await;

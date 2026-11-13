@@ -515,10 +515,10 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
                 "directory": app.directory.to_string_lossy(),
                 "worktree": app.worktree.to_string_lossy(),
                 "project": app.project,
-                "config": serde_json::to_value(&app.config)?,
+                "config": serde_json::to_value(&app.config())?,
             }
         })),
-        ("GET", ["api", "config"]) => Ok(json!({ "data": serde_json::to_value(&app.config)? })),
+        ("GET", ["api", "config"]) => Ok(json!({ "data": serde_json::to_value(&app.config())? })),
         ("GET", ["api", "integration"]) => {
             let value = app.plugins.request("integration.list", json!({})).await?;
             Ok(json!({ "data": if value.is_null() { json!([]) } else { value } }))
@@ -1179,8 +1179,7 @@ async fn route(app: &Arc<App>, request: &Request, segments: &[String]) -> Result
             "vcs": if app.is_git { "git" } else { "none" },
         })),
         ("POST", ["api", "location", "reload"]) => {
-            let loaded = crate::config::load(&app.directory, &app.worktree)?;
-            app.mcp.reconfigure(loaded.config.mcp.clone());
+            app.reload_config()?;
             app.reject_all_pending("");
             for form in app.forms.all() {
                 let _ = app.forms.cancel(&form.id);

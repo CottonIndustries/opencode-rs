@@ -5,7 +5,8 @@ use serde_json::Value;
 use std::path::Path;
 
 pub async fn format(app: &crate::app::App, file: &Path) -> Result<bool> {
-    let Some(Value::Object(formatters)) = app.config.formatter.as_ref() else {
+    let config = app.config();
+    let Some(Value::Object(formatters)) = config.formatter.as_ref() else {
         return Ok(false);
     };
     let extension = file.extension().and_then(|value| value.to_str()).map(|value| format!(".{value}"));

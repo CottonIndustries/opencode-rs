@@ -138,7 +138,7 @@ fn file_uri(path: &Path) -> String {
 /// Format diagnostics for a tool result, or an empty string when no server
 /// handles the file.
 pub async fn diagnostics_text(app: &crate::app::App, path: &Path) -> String {
-    if app.config.lsp.is_none() {
+    if app.config().lsp.is_none() {
         return String::new();
     }
     let text = match std::fs::read_to_string(path) {
@@ -189,7 +189,8 @@ mod tests {
 }
 
 pub async fn diagnostics(app: &crate::app::App, path: &Path, text: &str) -> Result<Vec<Value>> {
-    let Some(config) = app.config.lsp.as_ref().and_then(|config| config_for(config, path)) else {
+    let app_config = app.config();
+    let Some(config) = app_config.lsp.as_ref().and_then(|config| config_for(config, path)) else {
         return Ok(Vec::new());
     };
     let command = config

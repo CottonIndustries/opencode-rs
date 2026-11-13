@@ -604,7 +604,7 @@ impl Ui {
     fn pick_model(&mut self, explicit: Option<String>) {
         let session = self.handle.with(|s| s.model.clone());
         let agent = self.app.agent(&self.agent).ok().and_then(|a| a.model.clone());
-        let candidates = [explicit, session, agent, self.app.config.model.clone()];
+        let candidates = [explicit, session, agent, self.app.config().model.clone()];
         let mut chosen = candidates.into_iter().flatten().find(|m| self.valid_model(m));
         if chosen.is_none() {
             chosen = self.prefs.recent.iter().find(|m| self.valid_model(m)).cloned();
@@ -1346,7 +1346,7 @@ impl Ui {
 
     fn open_models(&mut self) {
         let providers = self.app.providers();
-        let available = crate::models::available(&self.app.config, &providers);
+        let available = crate::models::available(&self.app.config(), &providers);
         let current = self.model.clone().unwrap_or_default();
         let mut opts = Vec::new();
         let mut shown: HashSet<String> = HashSet::new();

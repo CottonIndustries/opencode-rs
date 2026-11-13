@@ -125,7 +125,7 @@ pub fn instruction_files(app: &App) -> Vec<PathBuf> {
     }
     chain.reverse();
     out.extend(chain);
-    for pattern in &app.config.instructions {
+    for pattern in &app.config().instructions {
         if pattern.starts_with("http://") || pattern.starts_with("https://") {
             continue;
         }
@@ -160,7 +160,7 @@ pub async fn instructions(app: &App) -> Option<String> {
             blocks.push(format!("Instructions from: {}\n{}", f.display(), c));
         }
     }
-    for url in app.config.instructions.iter().filter(|p| p.starts_with("http")) {
+    for url in app.config().instructions.iter().filter(|p| p.starts_with("http")) {
         let res = crate::http::send(crate::http::client().get(url).timeout(std::time::Duration::from_secs(5))).await;
         if let Ok(r) = res {
             if let Ok(t) = r.text().await {

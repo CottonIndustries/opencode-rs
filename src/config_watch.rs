@@ -27,9 +27,14 @@ pub fn start(app: std::sync::Arc<crate::app::App>) {
             let current = stamps(&app.config_files);
             if current != previous {
                 previous = current;
-                app.emit(crate::app::AppEvent::Notice {
-                    message: "Configuration files changed. Restart opencode to apply them.".into(),
-                });
+                match app.reload_config() {
+                    Ok(()) => app.emit(crate::app::AppEvent::Notice {
+                        message: "Configuration reloaded.".into(),
+                    }),
+                    Err(error) => app.emit(crate::app::AppEvent::Notice {
+                        message: format!("Configuration changed: {error}"),
+                    }),
+                }
             }
         }
     });

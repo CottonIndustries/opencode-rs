@@ -146,13 +146,18 @@ impl Tool for WebSearch {
     }
     async fn execute(&self, input: Value, ctx: &Context) -> Result<Output> {
         let query = req_str(&input, "query")?.to_string();
-        let requested = ctx.app.config.websearch.as_ref().and_then(|w| w.provider.as_deref());
-        let plugin_provider = ctx.app.plugins.websearch_provider(requested);
-        let builtin = configured(&ctx.app.config);
+        let requested = ctx
+            .app
+            .config()
+            .websearch
+            .as_ref()
+            .and_then(|w| w.provider.clone());
+        let plugin_provider = ctx.app.plugins.websearch_provider(requested.as_deref());
+        let builtin = configured(&ctx.app.config());
         // A provider named in config or selected by a plugin's default wins
         // over an unrelated builtin API key.
         let plugin_selected = plugin_provider.is_some()
-            && (requested.is_some() || ctx.app.config.websearch.as_ref().and_then(|w| w.provider.as_ref()).is_none());
+            && (requested.is_some() || ctx.app.config().websearch.as_ref().and_then(|w| w.provider.as_ref()).is_none());
         if !plugin_selected {
             if let Some((provider, key)) = builtin {
                 return builtin_search(ctx, &provider, &key, &query).await;
@@ -161,7 +166,7 @@ impl Tool for WebSearch {
         if let Some(provider) = plugin_provider {
             return plugin_search(ctx, &provider, &query).await;
         }
-        if let Some((provider, key)) = configured(&ctx.app.config) {
+        if let Some((provider, key)) = configured(&ctx.app.config()) {
             return builtin_search(ctx, &provider, &key, &query).await;
         }
         Err(anyhow!("No web search integration is configured"))

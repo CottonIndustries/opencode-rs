@@ -128,7 +128,7 @@ pub struct App {
     pub worktree: PathBuf,
     pub is_git: bool,
     pub project: String,
-    pub config: Config,
+    pub config: std::sync::RwLock<Config>,
     pub config_files: Vec<PathBuf>,
     pub providers: RwLock<BTreeMap<String, Provider>>,
     pub agents: RwLock<BTreeMap<String, Agent>>,
@@ -177,7 +177,7 @@ impl App {
             directory,
             worktree,
             is_git,
-            config,
+            config: std::sync::RwLock::new(config),
             config_files,
             providers: RwLock::new(providers),
             agents: RwLock::new(agents),
@@ -290,7 +290,7 @@ impl App {
             crate::job::resume(app.clone());
             crate::config_watch::start(app.clone());
             app.load_mcp_prompts().await;
-            if app.config.experimental.schedules {
+            if app.config().experimental.schedules {
                 crate::schedule::start(app.clone());
             }
             return Ok(app);
@@ -313,7 +313,7 @@ impl App {
         *app.plugin_base.lock().unwrap() = Some(base);
         app.plugins.attach(&app);
         app.load_mcp_prompts().await;
-        if app.config.experimental.schedules {
+        if app.config().experimental.schedules {
             crate::schedule::start(app.clone());
         }
         Ok(app)
@@ -366,7 +366,8 @@ impl App {
             Some(base) => (base.providers, base.agents, base.commands),
             None => (self.providers(), self.agents(), self.commands()),
         };
-        let applied = crate::plugin::apply_state(state, &self.config, &base_providers, &base_agents, &base_commands);
+        let config = self.config();
+        let applied = crate::plugin::apply_state(state, &config, &base_providers, &base_agents, &base_commands);
         *self.providers.write().unwrap() = applied.providers;
         *self.agents.write().unwrap() = applied.agents;
         *self.skills.write().unwrap() = applied.skills;
@@ -432,6 +433,38 @@ impl App {
         self.providers.read().unwrap().clone()
     }
 
+    pub fn config(&self) -> Config {
+        self.config.read().unwrap().clone()
+    }
+
+    pub fn replace_config(&self, config: Config) {
+        *self.config.write().unwrap() = config;
+    }
+
+    /// Reload configuration and registries from disk. Plugin transforms are
+    /// reapplied by a restart, so an active plugin manager keeps the current
+    /// configuration until then.
+    pub fn reload_config(&self) -> Result<()> {
+        if self.plugins.enabled() {
+            return Err(anyhow!(
+                "configuration reload requires a restart while plugins are active"
+            ));
+        }
+        let crate::config::Loaded { config, directories, .. } =
+            crate::config::load(&self.directory, &self.worktree)?;
+        let providers = crate::models::providers(&config);
+        let agents = crate::agent::load(&config, &directories);
+        let skills = crate::tools::skill::discover(&config, &directories, &self.directory);
+        let commands = crate::command::load(&config, &directories);
+        self.mcp.reconfigure(config.mcp.clone());
+        *self.providers.write().unwrap() = providers;
+        *self.agents.write().unwrap() = agents;
+        *self.skills.write().unwrap() = skills;
+        *self.commands.write().unwrap() = commands;
+        *self.config.write().unwrap() = config;
+        Ok(())
+    }
+
     pub fn session_statuses(&self) -> Vec<(String, bool, Option<serde_json::Value>)> {
         self.sessions
             .lock()
@@ -482,7 +515,7 @@ impl App {
                 return id.clone();
             }
         }
-        crate::agent::default_agent(&self.config, &self.agents.read().unwrap())
+        crate::agent::default_agent(&self.config(), &self.agents.read().unwrap())
     }
 
     pub fn primary_agents(&self) -> Vec<Agent> {
@@ -504,7 +537,7 @@ impl App {
                 return Some(reference.clone());
             }
         }
-        crate::models::default_model(&self.config, &self.providers.read().unwrap())
+        crate::models::default_model(&self.config(), &self.providers.read().unwrap())
     }
 
     fn insert(&self, s: Session) -> Arc<Handle> {
@@ -563,11 +596,12 @@ impl App {
         title: String,
         metadata: serde_json::Value,
     ) -> Result<()> {
-        if let Some(message) = crate::policy::blocked(&self.config.policies, action, resources) {
+        let config = self.config();
+        if let Some(message) = crate::policy::blocked(&config.policies, action, resources) {
             return Err(anyhow!(message));
         }
         let mut rules = permission::defaults();
-        if let Some(p) = &self.config.permission {
+        if let Some(p) = &config.permission {
             rules.extend(permission::from_config(p));
         }
         rules.extend(agent.permissions.iter().cloned());

@@ -1987,7 +1987,7 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
     match path {
         "state.snapshot" => {
             let mut value = snapshot(
-                &app.config,
+                &app.config(),
                 &app.providers(),
                 &app.agents(),
                 &app.skills(),
@@ -2157,7 +2157,7 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             app.emit(crate::app::AppEvent::Notice { message });
             Ok(Value::Null)
         }
-        "config.get" => Ok(serde_json::to_value(&app.config)?),
+        "config.get" => Ok(serde_json::to_value(&app.config())?),
         "session.list" => {
             let mut list = crate::session::list(&app.project);
             let filter = first.get("query").unwrap_or(&first);

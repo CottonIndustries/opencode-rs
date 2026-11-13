@@ -307,20 +307,20 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
         Arc::new(artifact::Delete),
         Arc::new(question::QuestionTool),
     ];
-    if websearch::configured(&app.config).is_some() || app.plugins.has_websearch() {
+    if websearch::configured(&app.config()).is_some() || app.plugins.has_websearch() {
         tools.push(Arc::new(websearch::WebSearch));
     }
     if app.mcp.configured() > 0 {
         tools.push(Arc::new(mcp_resource::ListResources));
         tools.push(Arc::new(mcp_resource::ReadResource));
     }
-    if app.config.experimental.todo {
+    if app.config().experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
     }
-    if app.config.experimental.codemode {
+    if app.config().experimental.codemode {
         tools.push(Arc::new(codemode::Execute));
     }
-    if app.config.experimental.schedules {
+    if app.config().experimental.schedules {
         tools.push(Arc::new(schedule::Create));
         tools.push(Arc::new(schedule::List));
         tools.push(Arc::new(schedule::Pause));
@@ -395,7 +395,7 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
 
     // config and agent tool toggles + permission denies
     let mut rules = crate::permission::defaults();
-    if let Some(p) = &app.config.permission {
+    if let Some(p) = &app.config().permission {
         rules.extend(crate::permission::from_config(p));
     }
     rules.extend(agent.permissions.iter().cloned());
@@ -404,7 +404,7 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
         let toggled = |map: &std::collections::BTreeMap<String, bool>| {
             map.iter().filter(|(k, _)| crate::util::wildcard(k, n)).last().map(|(_, v)| *v)
         };
-        if toggled(&app.config.tools) == Some(false) || toggled(&agent.tools) == Some(false) {
+        if toggled(&app.config().tools) == Some(false) || toggled(&agent.tools) == Some(false) {
             return false;
         }
         !crate::permission::disabled(&rules, permission_action(n))

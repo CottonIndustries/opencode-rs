@@ -13,7 +13,7 @@ fn cwd() -> std::path::PathBuf {
 pub async fn models(provider: Option<String>, verbose: bool) -> Result<()> {
     let app = App::init(cwd()).await?;
     let all = app.providers();
-    let available = crate::models::available(&app.config, &all);
+    let available = crate::models::available(&app.config(), &all);
     let mut ids: Vec<&String> = all.keys().filter(|k| provider.as_ref().map_or(available.contains(k), |p| *k == p)).collect();
     ids.sort();
     if ids.is_empty() {
@@ -663,7 +663,7 @@ pub fn debug_events(session: Option<&str>) -> Result<()> {
 pub async fn debug_config() -> Result<()> {
     let app = App::init(cwd()).await?;
     eprintln!("Files: {}", app.config_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", "));
-    println!("{}", serde_json::to_string_pretty(&app.config)?);
+    println!("{}", serde_json::to_string_pretty(&app.config())?);
     Ok(())
 }
 

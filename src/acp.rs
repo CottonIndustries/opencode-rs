@@ -702,7 +702,7 @@ fn config_options(a: &Attached, sid: &str) -> Value {
     let app = &a.app;
     let (session_model, session_agent) = app.session(sid).map(|h| h.with(|s| (s.model.clone(), s.agent.clone()))).unwrap_or((None, None));
     let providers = app.providers();
-    let available = crate::models::available(&app.config, &providers);
+    let available = crate::models::available(&app.config(), &providers);
     let mut models: Vec<&crate::models::Model> = providers.values().filter(|p| available.contains(&p.id)).flat_map(|p| p.models.values()).collect();
     models.sort_by(|x, y| x.provider_id.cmp(&y.provider_id).then_with(|| x.name.cmp(&y.name)));
     let current = session_model.or_else(|| app.default_model()).unwrap_or_default();
