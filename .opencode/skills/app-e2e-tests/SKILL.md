@@ -65,7 +65,7 @@ Point a throwaway provider at it through `opencode.json`:
   "provider": {
     "local": {
       "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://127.0.0.1:<port>", "apiKey": "test" },
+      "options": { "baseURL": "http://127.0.0.1:<port>/v1", "apiKey": "test" },
       "models": { "test": { "name": "Test", "limit": { "context": 10000, "output": 1000 } } }
     }
   }

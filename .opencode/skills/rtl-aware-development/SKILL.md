@@ -10,7 +10,7 @@ Treat direction as independent from language. Test English in both directions as
 ## Scope in opencode-rs
 
 - The TUI is a character grid rendered by ratatui. It has no CSS direction, logical box model or browser scroll model. Keep terminal output stable and LTR; do not assume terminal fonts will shape Arabic or Hebrew correctly.
-- The HTML surfaces this repo can emit are share pages and any future web UI. Those follow the web rules below.
+- The share page is a simple LTR static transcript today. Apply the web rules below when extending it or adding any web UI.
 - Desktop and web apps are not ported; if one is added later, this skill applies to it unchanged.
 
 ## HTML guidelines
