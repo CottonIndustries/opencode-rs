@@ -139,9 +139,9 @@ if yours live elsewhere.
     project. `OPENCODE_DISABLE_PLUGINS=1` skips loading plugins.
   - Package `./tui` entries load in TUI mode with `ctx.keymap`, command palette
     and slash commands, key bindings, toasts, dialogs, persistent storage,
-    router pages, session panels and footer/sidebar slot text. Slot render
-    callbacks are evaluated and their JSX text content is displayed; the full
-    OpenTUI/Solid layout engine is not ported.
+    router pages, session panels and footer/sidebar slots. Slot and page JSX is
+    reduced to a small layout tree (boxes, rows, text, emphasis) and rendered
+    by ratatui; the full OpenTUI/Solid layout engine is not ported.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /sessions /models /agents /compact /variant /thinking /details
@@ -151,7 +151,9 @@ if yours live elsewhere.
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`
 and are indexed in `storage/sessions.db` for loading and listing. Durable
 events live in `storage/events.db`; the old `events.jsonl` log is imported on
-first use. Both databases migrate existing files automatically.
+first use. Both databases migrate existing files automatically and run in WAL
+mode. Generated images are content-addressed under `storage/media` and served
+at `/api/experimental/media/:hash`.
 
 ## Not ported
 
@@ -172,8 +174,9 @@ covers sessions (prompt, command, shell, fork, revert, compact, diff, forms,
 inbox, permissions, environment, move, generate), messages, agents, providers,
 models, projects, plugins, MCP (including add/connect/disconnect), filesystem
 read/list/find/write, background shells and jobs, scheduled tasks, web search,
-image/decision generation, artifacts, PTY and persistent terminals, VCS and
-worktrees, durable session logs and V2 events over SSE, plugin references, and
+image/decision generation with media blobs, artifacts, PTY and persistent
+terminals, VCS and worktrees, durable session logs and V2 events over SSE,
+plugin references, and
 pairing/auth. Integrations and credentials are handled by plugins and exposed
 through their HTTP routes; `aisdk` SDK/language hooks pass options through, but
 a plugin-returned model object cannot replace the Rust provider.
