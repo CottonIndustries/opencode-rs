@@ -42,3 +42,26 @@ pub fn start(app: std::sync::Arc<crate::app::App>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_expired_files_only() {
+        let dir = std::env::temp_dir().join(format!("opencode-retention-{}", crate::util::id("test")));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old.txt");
+        let fresh = dir.join("fresh.txt");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(&fresh, "fresh").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60));
+        file.set_times(times).unwrap();
+        cleanup_dir(&dir, RETENTION);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
