@@ -3780,6 +3780,7 @@ impl Ui {
             "showDetails": true,
             "width": self.size.0,
             "height": self.size.1,
+            "selection": self.selection_text(),
         });
         let slots = self.app.plugins.tui_slots(input).await;
         let mut status = String::new();

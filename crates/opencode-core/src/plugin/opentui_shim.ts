@@ -23,7 +23,7 @@ export function useRenderer() {
     },
     setTerminalTitle: (title: string) => (globalThis as Json).__opencodeTitle?.(String(title ?? "")),
     copyToClipboard: async (text: string) => (globalThis as Json).__opencodeCopy?.(String(text ?? "")),
-    getSelection: () => undefined,
+    getSelection: () => (globalThis as Json).__opencodeSelection ?? "",
     requestAnimationFrame: (callback: Function) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
   }

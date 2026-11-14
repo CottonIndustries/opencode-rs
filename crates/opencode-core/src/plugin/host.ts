@@ -2211,6 +2211,7 @@ function jsxColor(value: unknown): string | undefined {
 
 async function renderTuiSlots(input: Json): Promise<Json[]> {
   tuiInput = input ?? {}
+  ;(globalThis as Json).__opencodeSelection = String(tuiInput.selection ?? "")
   ;(globalThis as Json).__opencodeDimensions = {
     width: Number(tuiInput.width ?? 80),
     height: Number(tuiInput.height ?? 24),
