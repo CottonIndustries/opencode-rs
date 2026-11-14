@@ -482,10 +482,11 @@ pub fn save(s: &Session) -> Result<()> {
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, file(&s.project, &s.id))?;
     index(s, &String::from_utf8_lossy(&bytes))?;
+    crate::upstream::save(s);
     Ok(())
 }
 
-pub fn load(project: &str, id: &str) -> Result<Session> {
+fn load_local(project: &str, id: &str) -> Result<Session> {
     if let Some(data) = crate::db::load(id) {
         if let Ok(session) = serde_json::from_str::<Session>(&data) {
             return Ok(session);
@@ -512,6 +513,30 @@ pub fn load(project: &str, id: &str) -> Result<Session> {
         }
     }
     Err(anyhow!("session not found: {id}"))
+}
+
+pub fn load(project: &str, id: &str) -> Result<Session> {
+    let local = load_local(project, id).ok();
+    if let Some(mut session) = crate::upstream::load(id) {
+        if let Some(local) = local {
+            if local.time_updated > session.time_updated {
+                return Ok(local);
+            }
+            session.todos = local.todos;
+            session.approved = local.approved;
+            session.loaded_instructions = local.loaded_instructions;
+            session.environment = local.environment;
+            session.instruction_entries = local.instruction_entries;
+            if session.records.is_empty() {
+                session.records = local.records;
+            }
+            if session.shells.is_empty() {
+                session.shells = local.shells;
+            }
+        }
+        return Ok(session);
+    }
+    local.ok_or_else(|| anyhow!("session not found: {id}"))
 }
 
 #[derive(Debug, Clone)]
@@ -614,6 +639,15 @@ pub fn list(project: &str) -> Vec<Summary> {
             });
         }
     }
+    for summary in crate::upstream::summaries(project) {
+        if let Some(existing) = out.iter_mut().find(|item| item.id == summary.id) {
+            if summary.time_updated >= existing.time_updated {
+                *existing = summary;
+            }
+        } else {
+            out.push(summary);
+        }
+    }
     out.sort_by(|a, b| b.time_updated.cmp(&a.time_updated));
     out
 }
@@ -633,7 +667,8 @@ pub fn delete(project: &str, id: &str) -> Result<usize> {
             std::fs::remove_file(p)?;
         }
         let indexed = crate::db::delete(&cur);
-        if existed || indexed {
+        let upstream = crate::upstream::delete(&cur);
+        if existed || indexed || upstream {
             removed += 1;
         }
     }

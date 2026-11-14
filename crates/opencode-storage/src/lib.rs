@@ -10,6 +10,7 @@ pub mod migration;
 pub mod repository;
 pub mod session;
 pub mod share;
+pub mod upstream;
 pub mod snapshot;
 pub mod stats;
 pub mod vcs;

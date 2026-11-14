@@ -201,7 +201,12 @@ if yours live elsewhere.
   `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
 
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`
-and are indexed in `storage/sessions.db` for loading and listing. Durable
+and are indexed in `storage/sessions.db` for loading and listing. They are also
+mirrored into upstream opencode v2's `opencode.db` (`session_v2` and
+`session_message`), so the TypeScript TUI and this port share the same session
+list and message history. Existing upstream sessions load directly, and sessions
+created here are visible to upstream; the local JSON/database store remains the
+fallback when `OPENCODE_DB` has no upstream schema. Durable
 events live in `storage/events.db`; the old `events.jsonl` log is imported on
 first use. Both databases migrate existing files automatically and run in WAL
 mode. Sessions can bind a local workspace, jobs and background work are stored
