@@ -28,12 +28,26 @@ pub(super) fn render(
             return None;
         }
         let root = scene.root();
-        if !build(scene, &node, root, 0, theme) {
+        let mut specials = Vec::new();
+        if !build(scene, &node, root, 0, theme, &mut specials) {
             return None;
         }
         if std::env::var_os("OPENCODE_NATIVE_DEBUG").is_some() {
             scene.measure();
             eprintln!("[opentui-native] rects {:?}", scene.debug_rects());
+        }
+        if !specials.is_empty() {
+            scene.measure();
+            for (id, kind) in specials {
+                let width = scene
+                    .layout_rect(id)
+                    .map(|(_, _, width, _)| width as usize)
+                    .filter(|width| *width > 0)
+                    .unwrap_or(80);
+                let lines = special_lines(&kind, width, theme, background);
+                scene.layout(id, 2, 0, 0, 1, width as f32, 0);
+                scene.set_lines(id, &lines, Some(theme.base.text), Some(background));
+            }
         }
         scene.render(background)
     })
@@ -42,7 +56,14 @@ pub(super) fn render(
 fn supported(node: &Node) -> bool {
     if !matches!(
         node.kind,
-        Kind::Box(_) | Kind::Text(_) | Kind::Input(_) | Kind::Select(_)
+        Kind::Box(_)
+            | Kind::Text(_)
+            | Kind::Input(_)
+            | Kind::Select(_)
+            | Kind::Markdown(_)
+            | Kind::Code { .. }
+            | Kind::Diff(_)
+            | Kind::Image(_)
     ) {
         return false;
     }
@@ -61,11 +82,14 @@ fn build(
     parent: plugin_native::SceneHandle,
     index: u32,
     theme: &Theme,
+    specials: &mut Vec<(plugin_native::SceneHandle, Kind)>,
 ) -> bool {
     let tag = match node.kind {
         Kind::Box(_) => plugin_native::NODE_BOX,
         Kind::Text(_) | Kind::Input(_) | Kind::Select(_) => plugin_native::NODE_TEXT,
-        _ => return false,
+        Kind::Markdown(_) | Kind::Code { .. } | Kind::Diff(_) | Kind::Image(_) => {
+            plugin_native::NODE_TEXT
+        }
     };
     let Some(id) = scene.create(tag) else {
         return false;
@@ -75,7 +99,7 @@ fn build(
     match &node.kind {
         Kind::Box(children) => {
             for (child_index, child) in children.iter().enumerate() {
-                if !build(scene, child, id, child_index as u32, theme) {
+                if !build(scene, child, id, child_index as u32, theme, specials) {
                     return false;
                 }
             }
@@ -95,7 +119,9 @@ fn build(
                 return false;
             }
         }
-        _ => return false,
+        Kind::Markdown(_) | Kind::Code { .. } | Kind::Diff(_) | Kind::Image(_) => {
+            specials.push((id, node.kind.clone()));
+        }
     }
     scene.insert(parent, id, index)
 }
@@ -276,6 +302,42 @@ fn border_style(value: &str) -> Option<u32> {
     }
 }
 
+fn special_lines(kind: &Kind, width: usize, theme: &Theme, background: Rgba) -> Vec<Line<'static>> {
+    match kind {
+        Kind::Markdown(text) => markdown::render(text, width, theme, background),
+        Kind::Code { text, lang } => highlight::text(text, lang, &theme.syntax, theme.base.text)
+            .into_iter()
+            .map(|runs| {
+                let spans = runs
+                    .into_iter()
+                    .map(|(text, color)| draw::span(text, color, background))
+                    .collect::<Vec<_>>();
+                draw::line(spans, background)
+            })
+            .collect(),
+        Kind::Diff(text) => text
+            .lines()
+            .map(|source| {
+                let color = if source.starts_with('+') {
+                    theme.base.success.base
+                } else if source.starts_with('-') {
+                    theme.base.error.base
+                } else if source.starts_with("@@") {
+                    theme.base.info.base
+                } else {
+                    theme.base.text
+                };
+                draw::line(
+                    vec![draw::span(source.to_string(), color, background)],
+                    background,
+                )
+            })
+            .collect(),
+        Kind::Image(image) => super::image_lines(image, width, 20, theme, background),
+        _ => Vec::new(),
+    }
+}
+
 fn set_text(
     scene: &mut Scene,
     id: plugin_native::SceneHandle,
@@ -319,20 +381,17 @@ fn set_input(
     input: &Input,
     theme: &Theme,
 ) -> bool {
-    let mut value = if input.value.is_empty() {
+    let raw = if input.value.is_empty() {
         input.placeholder.clone()
     } else {
         input.value.clone()
     };
-    if input.focused {
-        value.push('▌');
-    }
     let fg = if input.value.is_empty() {
         theme.base.muted
     } else {
         theme.base.text
     };
-    let options = plugin_native::text_options(
+    let options = plugin_native::text_options_with(
         Some(fg),
         node.background,
         if input.multiline {
@@ -341,13 +400,47 @@ fn set_input(
             plugin_native::WRAP_NONE
         },
         plugin_native::TEXT_ALIGN_LEFT,
+        !input.multiline,
     );
-    let chunks = [plugin_native::StyledChunk {
-        text: value.as_str(),
-        fg: Some(fg),
-        bg: None,
-        attributes: 0,
-    }];
+    let mut before = String::new();
+    let mut after = String::new();
+    if input.focused {
+        let cursor = input.cursor.min(raw.chars().count());
+        before = raw.chars().take(cursor).collect();
+        after = raw.chars().skip(cursor).collect();
+    }
+    let mut chunks = Vec::new();
+    if input.focused {
+        if !before.is_empty() {
+            chunks.push(plugin_native::StyledChunk {
+                text: before.as_str(),
+                fg: Some(fg),
+                bg: None,
+                attributes: 0,
+            });
+        }
+        chunks.push(plugin_native::StyledChunk {
+            text: "▌",
+            fg: Some(theme.base.bg),
+            bg: Some(theme.base.text),
+            attributes: 0,
+        });
+        if !after.is_empty() {
+            chunks.push(plugin_native::StyledChunk {
+                text: after.as_str(),
+                fg: Some(fg),
+                bg: None,
+                attributes: 0,
+            });
+        }
+    } else if !raw.is_empty() {
+        chunks.push(plugin_native::StyledChunk {
+            text: raw.as_str(),
+            fg: Some(fg),
+            bg: None,
+            attributes: 0,
+        });
+    }
     scene.text_options(id, &options) && scene.styled_text(id, &chunks)
 }
 
@@ -358,28 +451,51 @@ fn set_select(
     select: &Select,
     theme: &Theme,
 ) -> bool {
-    let value = select
-        .options
-        .get(select.selected)
-        .map(|option| format!("▸ {option}"))
-        .unwrap_or_default();
-    let fg = if select.focused {
-        theme.base.text
-    } else {
-        theme.base.muted
-    };
-    let options = plugin_native::text_options(
-        Some(fg),
+    let options = plugin_native::text_options_with(
+        Some(theme.base.text),
         node.background,
         plugin_native::WRAP_NONE,
         plugin_native::TEXT_ALIGN_LEFT,
+        true,
     );
-    let chunks = [plugin_native::StyledChunk {
-        text: value.as_str(),
-        fg: Some(fg),
-        bg: None,
-        attributes: 0,
-    }];
+    let mut owned: Vec<(String, Option<Rgba>, u32)> = Vec::new();
+    for (index, option) in select.options.iter().enumerate() {
+        if index > 0 {
+            owned.push(("\n".to_string(), None, 0));
+        }
+        let selected = index == select.selected;
+        let text = if selected {
+            format!("▸ {option}")
+        } else {
+            format!("  {option}")
+        };
+        owned.push((
+            text,
+            Some(if selected {
+                theme.base.text
+            } else {
+                theme.base.muted
+            }),
+            if selected {
+                plugin_native::ATTR_BOLD
+            } else {
+                0
+            },
+        ));
+    }
+    if select.options.is_empty() {
+        owned.push(("  ".to_string(), Some(theme.base.muted), 0));
+    }
+    let chunks = owned
+        .iter()
+        .map(|(text, fg, attributes)| plugin_native::StyledChunk {
+            text: text.as_str(),
+            fg: *fg,
+            bg: None,
+            attributes: *attributes,
+        })
+        .collect::<Vec<_>>();
+    scene.layout(id, 2, 1, 0, 1, select.options.len().max(1) as f32, 0);
     scene.text_options(id, &options) && scene.styled_text(id, &chunks)
 }
 
@@ -492,6 +608,65 @@ mod tests {
             assert!(text.contains("left"), "{text:?}");
             assert!(text.contains("right"), "{text:?}");
         }
+    }
+
+    #[test]
+    fn renders_markdown_code_and_diff() {
+        let theme = theme::fallback(theme::Mode::Dark);
+        let layout = serde_json::json!({
+            "type": "box",
+            "direction": "column",
+            "children": [
+                { "type": "markdown", "text": "# Title\n\nBody" },
+                { "type": "code", "lang": "rust", "text": "fn main() {\n    println!(\"hi\");\n}" },
+                { "type": "diff", "text": "+ added\n- removed" }
+            ]
+        });
+        let lines = render(&layout, 40, &theme, theme.base.bg).expect("native renderer");
+        let text = text(&lines);
+        assert!(text.contains("Title"), "{text:?}");
+        assert!(text.contains("fn main"), "{text:?}");
+        assert!(text.contains("+ added"), "{text:?}");
+        assert!(text.contains("- removed"), "{text:?}");
+    }
+
+    #[test]
+    fn renders_input_cursor_and_select_options() {
+        let theme = theme::fallback(theme::Mode::Dark);
+        let layout = serde_json::json!({
+            "type": "box",
+            "direction": "column",
+            "children": [
+                { "type": "input", "value": "hello", "cursor": 2, "focused": true },
+                { "type": "select", "options": ["one", "two", "three"], "selected": 1, "focused": true }
+            ]
+        });
+        let lines = render(&layout, 30, &theme, theme.base.bg).expect("native renderer");
+        let text = text(&lines);
+        assert!(text.contains("he▌llo"), "{text:?}");
+        assert!(text.contains("▸ two"), "{text:?}");
+        assert!(text.contains("  one"), "{text:?}");
+        assert!(text.contains("  three"), "{text:?}");
+    }
+
+    #[test]
+    fn renders_image_data_url() {
+        let theme = theme::fallback(theme::Mode::Dark);
+        let layout = serde_json::json!({
+            "type": "box",
+            "direction": "column",
+            "children": [{
+                "type": "image",
+                "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2ZQAAAABJRU5ErkJggg==",
+                "alt": "[image]",
+                "width": 10,
+                "height": 5
+            }]
+        });
+        let lines = render(&layout, 20, &theme, theme.base.bg).expect("native renderer");
+        assert!(!lines.is_empty());
+        let text = text(&lines);
+        assert!(!text.trim().is_empty(), "{text:?}");
     }
 
     #[test]

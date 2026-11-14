@@ -739,6 +739,39 @@ impl Scene {
         unsafe { (self.api.scene_set_text_options)(self.context, &node, options) == OT_OK }
     }
 
+    pub fn set_lines(
+        &mut self,
+        node: OtHandle,
+        lines: &[Line<'static>],
+        fg: Option<Rgba>,
+        bg: Option<Rgba>,
+    ) -> bool {
+        let mut chunks: Vec<StyledChunk<'_>> = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                chunks.push(StyledChunk {
+                    text: "\n",
+                    fg: None,
+                    bg: None,
+                    attributes: 0,
+                });
+            }
+            for span in &line.spans {
+                if span.content.is_empty() {
+                    continue;
+                }
+                chunks.push(StyledChunk {
+                    text: span.content.as_ref(),
+                    fg: span.style.fg.and_then(color_to_rgba),
+                    bg: span.style.bg.and_then(color_to_rgba),
+                    attributes: modifier_bits(span.style.add_modifier),
+                });
+            }
+        }
+        let options = text_options_with(fg, bg, WRAP_NONE, TEXT_ALIGN_LEFT, true);
+        self.text_options(node, &options) && self.styled_text(node, &chunks)
+    }
+
     pub fn box_details(
         &mut self,
         node: OtHandle,
@@ -988,6 +1021,16 @@ pub fn paint_options(
 }
 
 pub fn text_options(fg: Option<Rgba>, bg: Option<Rgba>, wrap: u32, align: u32) -> TextOptions {
+    text_options_with(fg, bg, wrap, align, false)
+}
+
+pub fn text_options_with(
+    fg: Option<Rgba>,
+    bg: Option<Rgba>,
+    wrap: u32,
+    align: u32,
+    truncate: bool,
+) -> TextOptions {
     let mut options = TextOptions::default();
     if let Some(fg) = fg {
         options.foreground = color_words(fg);
@@ -997,7 +1040,54 @@ pub fn text_options(fg: Option<Rgba>, bg: Option<Rgba>, wrap: u32, align: u32) -
     }
     options.wrap_mode = wrap;
     options.text_align = align;
+    options.truncate = u32::from(truncate);
     options
+}
+
+pub fn color_to_rgba(color: Color) -> Option<Rgba> {
+    match color {
+        Color::Reset => None,
+        Color::Rgb(r, g, b) => Some(Rgba::from_ints(r, g, b, 255)),
+        Color::Black => Some(Rgba::BLACK),
+        Color::White => Some(Rgba::from_ints(255, 255, 255, 255)),
+        Color::Red => Some(Rgba::from_ints(255, 0, 0, 255)),
+        Color::Green => Some(Rgba::from_ints(0, 255, 0, 255)),
+        Color::Yellow => Some(Rgba::from_ints(255, 255, 0, 255)),
+        Color::Blue => Some(Rgba::from_ints(0, 0, 255, 255)),
+        Color::Magenta => Some(Rgba::from_ints(255, 0, 255, 255)),
+        Color::Cyan => Some(Rgba::from_ints(0, 255, 255, 255)),
+        Color::Gray | Color::DarkGray => Some(Rgba::from_ints(128, 128, 128, 255)),
+        Color::LightRed => Some(Rgba::from_ints(255, 102, 102, 255)),
+        Color::LightGreen => Some(Rgba::from_ints(102, 255, 102, 255)),
+        Color::LightYellow => Some(Rgba::from_ints(255, 255, 102, 255)),
+        Color::LightBlue => Some(Rgba::from_ints(102, 102, 255, 255)),
+        Color::LightMagenta => Some(Rgba::from_ints(255, 102, 255, 255)),
+        Color::LightCyan => Some(Rgba::from_ints(102, 255, 255, 255)),
+        Color::Indexed(_) => None,
+    }
+}
+
+pub fn modifier_bits(modifier: Modifier) -> u32 {
+    let mut value = 0;
+    if modifier.contains(Modifier::BOLD) {
+        value |= OT_ATTR_BOLD;
+    }
+    if modifier.contains(Modifier::DIM) {
+        value |= OT_ATTR_DIM;
+    }
+    if modifier.contains(Modifier::ITALIC) {
+        value |= OT_ATTR_ITALIC;
+    }
+    if modifier.contains(Modifier::UNDERLINED) {
+        value |= OT_ATTR_UNDERLINE;
+    }
+    if modifier.contains(Modifier::REVERSED) {
+        value |= OT_ATTR_INVERSE;
+    }
+    if modifier.contains(Modifier::CROSSED_OUT) {
+        value |= OT_ATTR_STRIKETHROUGH;
+    }
+    value
 }
 
 pub fn color_words(color: Rgba) -> [u16; 4] {

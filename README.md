@@ -181,10 +181,11 @@ if yours live elsewhere.
     router pages, session panels and footer/sidebar slots. Slot and page JSX is
     reduced to a layout tree. On Windows x64 the tree is rendered by OpenTUI's
     native Zig renderer through `opentui.dll` (loaded with `libloading`, no Bun
-    runtime); layouts that use markdown, code, diff or custom nodes fall back to
-    the Rust renderer. The native bridge covers boxes, text, padding, borders,
-    gaps, flex direction, grow/shrink, alignment, wrapping, backgrounds, spans,
-    colors and input/select text, and keeps a per-thread native context so
+    runtime). Markdown, code, diff and data-URL images are rendered into native
+    text spans; custom nodes and remote image sources fall back to the Rust
+    renderer. The native bridge covers boxes, text, padding, borders, gaps, flex
+    direction, grow/shrink, alignment, wrapping, backgrounds, spans, colors,
+    input cursors and select options, and keeps a per-thread native context so
     redraws reuse the renderer. Compiled Solid JSX plugins run through a
     Solid-compatible runtime. The Rust fallback keeps row/column placement,
     basis, grow/shrink, min/max constraints, wrap, align/justify, separate
@@ -196,8 +197,8 @@ if yours live elsewhere.
     and focused from the keyboard; pages route keys and paste events back to
     plugin handlers, honor renderer clipboard and terminal-title calls, and
     animate `requestRender` and `useTimeline` ticks. Custom OpenTUI renderables
-    and native image/video widgets still fall back to text. The Windows x64
-    native library is checked in at
+    and video widgets still fall back to text. The Windows x64 native library
+    is checked in at
     `crates/opencode-tui/native/x86_64-windows/opentui.dll` and copied beside
     the built binary; set `OPENCODE_OPENTUI_DLL` to use another copy. On other
     platforms the plugin surface uses the Rust renderer.
@@ -253,8 +254,7 @@ tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
 authorization are not part of it. Remote workspace/environment drivers are not
 implemented, and the native OpenTUI renderer is used only for the plugin
-surface; custom OpenTUI renderables and native image/video widgets fall back to
-text.
+surface; custom OpenTUI renderables and video widgets fall back to text.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
 RPC endpoints are available through the API and plugin host. `opencode serve`

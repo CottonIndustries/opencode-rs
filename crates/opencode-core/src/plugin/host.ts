@@ -1981,7 +1981,24 @@ function jsxLayout(
     budget.nodes += 1
     return { type: "text", text: "\n" }
   }
-  if (type === "image" || type === "video" || type.includes("canvas")) {
+  if (type === "image") {
+    budget.nodes += 1
+    const src = String(jsxProp(props, "src", "source", "url") ?? "")
+    const alt = String(jsxProp(props, "alt", "text", "label") ?? "[image]")
+    if (src.startsWith("data:image/")) {
+      const width = jsxDim(jsxProp(props, "width"))
+      const height = jsxDim(jsxProp(props, "height"))
+      return {
+        type: "image",
+        src,
+        alt,
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {}),
+      }
+    }
+    return { type: "text", text: alt, segments: [{ text: alt, dim: true }] }
+  }
+  if (type === "video" || type.includes("canvas")) {
     budget.nodes += 1
     const alt = String(jsxProp(props, "alt", "text", "label") ?? `[${type}]`)
     return { type: "text", text: alt, segments: [{ text: alt, dim: true }] }

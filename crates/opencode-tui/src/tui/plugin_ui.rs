@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::draw;
 use super::theme::{Rgba, Theme};
-use super::{highlight, markdown};
+use super::{highlight, image_view, markdown};
 
 const MAX_DEPTH: usize = 32;
 const MAX_LINES: usize = 400;
@@ -118,6 +118,13 @@ enum Kind {
     Diff(String),
     Input(Input),
     Select(Select),
+    Image(Image),
+}
+
+#[derive(Clone)]
+struct Image {
+    src: String,
+    alt: String,
 }
 
 #[derive(Clone)]
@@ -400,6 +407,24 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 hidden: false,
             })
         }
+        Some("image") => {
+            let src = value.get("src").and_then(Value::as_str).unwrap_or_default().to_string();
+            if src.is_empty() {
+                return None;
+            }
+            let alt = value
+                .get("alt")
+                .and_then(Value::as_str)
+                .unwrap_or("[image]")
+                .to_string();
+            let mut node = leaf(
+                Kind::Image(Image { src, alt }),
+                color(value.get("background"), theme),
+            );
+            node.width = dim(value.get("width"));
+            node.height = dim(value.get("height"));
+            Some(node)
+        }
         Some("markdown") => {
             let text = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
             if text.trim().is_empty() {
@@ -598,6 +623,32 @@ fn leaf(kind: Kind, background: Option<Rgba>) -> Node {
     }
 }
 
+fn image_lines(
+    image: &Image,
+    width: usize,
+    height: usize,
+    theme: &Theme,
+    background: Rgba,
+) -> Vec<Line<'static>> {
+    if let Some((mime, data)) = data_url(&image.src) {
+        let lines = image_view::lines(data, mime, width, height.max(1), background);
+        if !lines.is_empty() {
+            return lines;
+        }
+    }
+    vec![draw::line(
+        vec![draw::span(image.alt.clone(), theme.base.muted, background)],
+        background,
+    )]
+}
+
+fn data_url(src: &str) -> Option<(&str, &str)> {
+    let rest = src.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mime = meta.split(';').next()?.trim();
+    mime.starts_with("image/").then_some((mime, data))
+}
+
 impl Node {
     fn gap_x(&self) -> usize {
         if self.column_gap > 0 { self.column_gap } else { self.gap }
@@ -658,6 +709,8 @@ impl Node {
                 .map(|option| draw::width(option) + 2)
                 .max()
                 .unwrap_or(0)
+                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Image(image) => draw::width(&image.alt)
                 .min(parent.saturating_sub(padding + border).max(1)),
             Kind::Box(children) => {
                 let inner = parent
@@ -749,6 +802,10 @@ impl Node {
                     height: lines.len().max(1),
                 }
             }
+            Kind::Image(_) => Size {
+                width: content_width,
+                height: 1,
+            },
             Kind::Markdown(text) => Size {
                 width: content_width,
                 height: wrapped_line_count(text, inner_width),
@@ -986,6 +1043,12 @@ impl Node {
                         spans = padded;
                     }
                     let line = draw::line(spans, background);
+                    draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
+                }
+            }
+            Kind::Image(image) => {
+                let lines = image_lines(image, area.width as usize, area.height as usize, theme, background);
+                for (index, line) in lines.into_iter().enumerate().take(area.height as usize) {
                     draw::draw_line(buffer, area.x, area.y + index as u16, area.width, &line);
                 }
             }
