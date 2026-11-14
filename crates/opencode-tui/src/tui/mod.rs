@@ -3,6 +3,7 @@
 
 mod actions;
 pub mod dialog;
+mod diff_view;
 pub mod draw;
 pub mod forms;
 pub mod highlight;
@@ -1938,15 +1939,43 @@ impl Ui {
     }
 
     fn open_diff(&mut self) {
-        self.show_text("Diff", "Reading the working tree...".into());
+        self.open_diff_source(None);
+    }
+
+    fn open_diff_source(&mut self, source: Option<&str>) {
+        let source = source
+            .map(String::from)
+            .or_else(|| self.settings.str("diffs.source").map(String::from))
+            .unwrap_or_else(|| "branch".into());
+        let source = if source == "working" { diff_view::Source::Working } else { diff_view::Source::Branch };
+        let view = self.settings.str("diffs.view").unwrap_or("auto");
+        let split = view == "split" || (view == "auto" && self.size.0 >= 120);
+        let tree = self.settings.bool("diffs.tree").unwrap_or(true);
+        let single = self.settings.bool("diffs.single").unwrap_or(false);
+        let fullscreen = self.settings.bool("diffs.fullscreen").unwrap_or(false);
+        let wrap = self.settings.str("diffs.wrap") == Some("word");
+        self.dialog = Some(Dialog::Diff(diff_view::DiffView::new(source, tree, single, split, fullscreen, wrap)));
         let app = self.app.clone();
-        let worker = app.clone();
         let directory = self.handle.with(|session| session.directory.clone());
+        let name = source.name().to_string();
         tokio::spawn(async move {
-            let text = tokio::task::spawn_blocking(move || reports::diff(&worker, &directory))
-                .await
-                .unwrap_or_else(|error| format!("Diff failed: {error}"));
-            app.emit(AppEvent::PluginPage { page: String::new(), title: "Diff".into(), text, layout: Value::Null });
+            let mode = if name == "working" { "working" } else { "branch" };
+            let dir = directory.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::vcs::diff(&serde_json::json!({
+                    "directory": dir.to_string_lossy().to_string(),
+                    "mode": mode,
+                }))
+            })
+            .await;
+            match result {
+                Ok(Ok(files)) => app.emit(AppEvent::DiffLoaded { source: name, files }),
+                Ok(Err(error)) => {
+                    app.emit(AppEvent::DiffLoaded { source: name, files: Value::Null });
+                    app.emit(AppEvent::Notice { message: format!("Diff unavailable: {error}") });
+                }
+                Err(error) => app.emit(AppEvent::Notice { message: format!("Diff failed: {error}") }),
+            }
         });
     }
 
@@ -2393,12 +2422,53 @@ impl Ui {
         self.dialog = None;
     }
 
+    fn diff_key(&mut self, k: &Key) {
+        let Some(Dialog::Diff(mut view)) = self.dialog.take() else { return };
+        let mut reload = None;
+        match k.name.as_str() {
+            "escape" | "q" => {
+                self.dialog = None;
+                return;
+            }
+            "j" | "down" => view.scroll = view.scroll.saturating_add(1),
+            "k" | "up" => view.scroll = view.scroll.saturating_sub(1),
+            "pagedown" => view.scroll = view.scroll.saturating_add(12),
+            "pageup" => view.scroll = view.scroll.saturating_sub(12),
+            "g" | "home" => view.scroll = 0,
+            "G" | "end" => view.scroll = usize::MAX,
+            "]" => view.next_hunk(true),
+            "[" => view.next_hunk(false),
+            "n" => view.next_file(1),
+            "p" => view.next_file(-1),
+            "b" => view.tree = !view.tree,
+            "s" => view.single = !view.single,
+            "v" => view.split = !view.split,
+            "f" => view.fullscreen = !view.fullscreen,
+            "m" => view.toggle_reviewed(),
+            "?" => view.help = !view.help,
+            "d" => reload = Some(view.source.next().name().to_string()),
+            _ if k.ctrl && k.name == "d" => view.scroll = view.scroll.saturating_add(6),
+            _ if k.ctrl && k.name == "u" => view.scroll = view.scroll.saturating_sub(6),
+            _ => {}
+        }
+        if let Some(source) = reload {
+            self.open_diff_source(Some(&source));
+        } else {
+            self.dialog = Some(Dialog::Diff(view));
+        }
+    }
+
     fn dialog_key(&mut self, k: &Key, ev: &KeyEvent) {
+        if matches!(self.dialog, Some(Dialog::Diff(_))) {
+            self.diff_key(k);
+            return;
+        }
         let plugin_app = self.app.clone();
         let act = {
             let km = &self.keys;
             match self.dialog.as_mut() {
                 None => Act::None,
+                Some(Dialog::Diff(_)) => Act::None,
                 Some(Dialog::Help) | Some(Dialog::Status) => {
                     if k.name == "return" || k.name == "escape" || (k.ctrl && k.name == "c") {
                         Act::Close
@@ -3556,6 +3626,13 @@ impl Ui {
                     Dialog::Text { title, text, layout, scroll }
                 });
             }
+            AppEvent::DiffLoaded { source, files } => {
+                if let Some(Dialog::Diff(view)) = self.dialog.as_mut() {
+                    if view.source.name() == source {
+                        view.set_files(files);
+                    }
+                }
+            }
             AppEvent::PluginInvalidate => {
                 self.plugin_slots_at = Instant::now() - Duration::from_secs(3);
                 if let Some(Dialog::Plugin { page, .. }) = &self.dialog {
@@ -3677,6 +3754,11 @@ impl Ui {
                     let (placed, c) = dialog::draw_select(buf, area, &t, s);
                     self.hits.dialog = Some(placed);
                     cursor = Some(c);
+                }
+                Dialog::Diff(view) => {
+                    view.draw(buf, area, &t);
+                    self.hits.dialog = Some(dialog::Placed { panel: area, list: Rect::default(), rows: vec![] });
+                    cursor = None;
                 }
                 Dialog::Help => {
                     let text = format!("Press {} to see all available actions and commands in any context.", self.keys.label("command.palette.show").unwrap_or_default());

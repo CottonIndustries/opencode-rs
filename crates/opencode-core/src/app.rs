@@ -45,6 +45,7 @@ pub enum AppEvent {
         handle: Option<Arc<crate::mcp_oauth::SignInHandle>>,
     },
     McpAuthDone { name: String, error: Option<String> },
+    DiffLoaded { source: String, files: serde_json::Value },
 }
 
 impl AppEvent {
@@ -908,6 +909,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "mcp.auth",
             "properties": { "name": name, "url": url }
+        }),
+        AppEvent::DiffLoaded { source, .. } => json!({
+            "id": id(),
+            "type": "diff.loaded",
+            "properties": { "source": source }
         }),
         AppEvent::McpAuthDone { name, error } => json!({
             "id": id(),
