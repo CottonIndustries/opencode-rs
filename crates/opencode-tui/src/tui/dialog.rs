@@ -43,6 +43,9 @@ pub enum Kind {
     Connect,
     Workspaces,
     TabMenu,
+    Stash,
+    Queued,
+    Goal,
 }
 
 #[derive(Clone, Debug, Default)]

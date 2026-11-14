@@ -221,6 +221,13 @@ enum Act {
     Provider,
 }
 
+#[derive(Clone)]
+struct Stashed {
+    text: String,
+    pasted: Vec<(String, String)>,
+    shell: bool,
+}
+
 struct Ui {
     app: Arc<App>,
     handle: Arc<Handle>,
@@ -232,6 +239,7 @@ struct Ui {
     mode: Mode,
     editor: Editor,
     history: History,
+    stash: Vec<Stashed>,
     pasted: Vec<(String, String)>,
     shell: bool,
     placeholder: usize,
@@ -474,6 +482,7 @@ impl Ui {
             mode,
             editor: Editor::default(),
             history: History::load(),
+            stash: Vec::new(),
             pasted: vec![],
             shell: false,
             placeholder: (crate::util::now_ms() as usize) % 3,
@@ -997,6 +1006,16 @@ impl Ui {
                 c("terminal.close", "Close terminal pane", "Session", &[], false),
                 c("session.aside", "Ask a side question", "Session", &["btw"], false),
                 c("session.child.first", "Toggle subagent picker", "Session", &[], false),
+                c("session.queued_prompts", "View queued prompts", "Prompt", &[], false),
+                c("session.goal", "Session goal", "Session", &["goal"], false),
+                c("session.message.user.next", "Next user message", "Session", &[], false),
+                c("session.message.user.previous", "Previous user message", "Session", &[], false),
+                c("session.child.next", "Next subagent", "Session", &[], false),
+                c("session.child.previous", "Previous subagent", "Session", &[], false),
+                c("session.parent", "Go to parent session", "Session", &[], false),
+                c("prompt.stash", "Stash prompt", "Prompt", &[], false),
+                c("prompt.stash.pop", "Pop stashed prompt", "Prompt", &[], false),
+                c("prompt.stash.list", "List stashed prompts", "Prompt", &[], false),
                 c("session.rename", "Rename session", "Session", &["rename"], false),
                 c("session.timeline", "Jump to message", "Session", &["timeline"], false),
                 c("session.fork", "Fork session", "Session", &["fork"], false),
@@ -1131,6 +1150,11 @@ impl Ui {
             }
             "session.last" => self.scroll = 0,
             "session.messages_last_user" => self.jump_last_user(),
+            "session.message.user.next" => self.jump_user(1),
+            "session.message.user.previous" => self.jump_user(-1),
+            "session.child.next" => self.child_step(1),
+            "session.child.previous" => self.child_step(-1),
+            "session.parent" => self.go_parent(),
             "session.rename" => {
                 if args.trim().is_empty() {
                     let title = self.handle.with(|s| s.title.clone());
@@ -1167,6 +1191,21 @@ impl Ui {
             "session.child.first" => {
                 if self.composer_open { self.close_composer() } else { self.open_composer(0) }
             }
+            "session.queued_prompts" => self.open_queued(),
+            "queued_prompt.undo" => {
+                let message = self.handle.queue.lock().unwrap().pop_back().map(|(message, _)| message);
+                if let Some(message) = message {
+                    self.editor.set(&message.text());
+                    self.update_auto();
+                }
+            }
+            "queued_prompt.delete" => {
+                self.handle.queue.lock().unwrap().pop_back();
+            }
+            "session.goal" => self.goal_command(args),
+            "prompt.stash" => self.stash_prompt(),
+            "prompt.stash.pop" => self.pop_stash(),
+            "prompt.stash.list" => self.open_stash(),
             "session.timeline" => self.open_timeline(Kind::Timeline),
             "session.fork" => self.open_timeline(Kind::Fork),
             "session.compact" => self.compact(),
@@ -1359,6 +1398,49 @@ impl Ui {
             if let Some(&start) = c.out.users.last() {
                 self.scroll = c.out.lines.len().saturating_sub(start + self.body_height);
             }
+        }
+    }
+
+    fn jump_user(&mut self, step: isize) {
+        let Some(cache) = &self.cache else { return };
+        let total = cache.out.lines.len();
+        let h = self.body_height;
+        let top = total.saturating_sub(h + self.scroll);
+        let target = if step > 0 {
+            cache.out.users.iter().copied().find(|line| *line > top + 1)
+        } else {
+            cache.out.users.iter().rev().copied().find(|line| *line + 1 < top)
+        };
+        if let Some(line) = target {
+            self.scroll = total.saturating_sub(line + h);
+        }
+    }
+
+    fn child_sessions(&self) -> Vec<crate::session::Summary> {
+        let sid = self.sid();
+        crate::session::list(&self.app.project)
+            .into_iter()
+            .filter(|session| session.parent_id.as_deref() == Some(sid.as_str()))
+            .collect()
+    }
+
+    fn child_step(&mut self, step: isize) {
+        let mut children = self.child_sessions();
+        if children.is_empty() {
+            return;
+        }
+        children.sort_by_key(|session| session.time_created);
+        let current = self.sid();
+        let index = children.iter().position(|session| session.id == current).unwrap_or(0) as isize + step;
+        let index = index.rem_euclid(children.len() as isize) as usize;
+        let id = children[index].id.clone();
+        self.open_session(&id);
+    }
+
+    fn go_parent(&mut self) {
+        let parent = self.handle.with(|session| session.parent_id.clone());
+        if let Some(parent) = parent {
+            self.open_session(&parent);
         }
     }
 
@@ -2165,6 +2247,111 @@ impl Ui {
         }
     }
 
+    fn stash_prompt(&mut self) {
+        if self.editor.text.trim().is_empty() {
+            self.toast(Variant::Info, None, "Nothing to stash");
+            return;
+        }
+        self.stash.push(Stashed { text: self.editor.text.clone(), pasted: self.pasted.clone(), shell: self.shell });
+        self.clear_prompt();
+        self.toast(Variant::Success, None, "Prompt stashed");
+    }
+
+    fn pop_stash(&mut self) {
+        let Some(stashed) = self.stash.pop() else {
+            self.toast(Variant::Info, None, "No stashed prompts");
+            return;
+        };
+        self.editor.set(&stashed.text);
+        self.pasted = stashed.pasted;
+        self.shell = stashed.shell;
+        self.update_auto();
+    }
+
+    fn open_stash(&mut self) {
+        if self.stash.is_empty() {
+            self.toast(Variant::Info, None, "No stashed prompts");
+            return;
+        }
+        let opts: Vec<dialog::Opt> = self
+            .stash
+            .iter()
+            .enumerate()
+            .map(|(index, stashed)| dialog::Opt {
+                title: stashed.text.lines().next().unwrap_or("").chars().take(60).collect(),
+                footer: format!("{} lines", stashed.text.lines().count()),
+                value: index.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        self.dialog = Some(Dialog::Select(dialog::Select::new(dialog::Kind::Stash, "Stashed prompts", opts)));
+    }
+
+    fn open_queued(&mut self) {
+        let queued: Vec<String> = self.handle.queue.lock().unwrap().iter().map(|(message, _)| message.text()).collect();
+        if queued.is_empty() {
+            self.toast(Variant::Info, None, "No queued prompts");
+            return;
+        }
+        let opts: Vec<dialog::Opt> = queued
+            .iter()
+            .enumerate()
+            .map(|(index, text)| dialog::Opt {
+                title: text.lines().next().unwrap_or("").chars().take(60).collect(),
+                footer: format!("{} lines", text.lines().count()),
+                value: index.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        self.dialog = Some(Dialog::Select(dialog::Select::new(dialog::Kind::Queued, "Queued prompts", opts)));
+    }
+
+    fn goal_state(&self) -> Option<(String, String)> {
+        self.handle.with(|session| {
+            let goal = session.metadata.as_ref()?.get("goal")?;
+            Some((
+                goal.get("objective").and_then(Value::as_str).unwrap_or_default().to_string(),
+                goal.get("status").and_then(Value::as_str).unwrap_or("active").to_string(),
+            ))
+        })
+    }
+
+    fn set_goal(&mut self, objective: &str, status: &str) {
+        self.handle.with(|session| {
+            let mut metadata = session.metadata.take().unwrap_or_else(|| json!({}));
+            if !metadata.is_object() {
+                metadata = json!({});
+            }
+            metadata["goal"] = json!({ "objective": objective, "status": status });
+            session.metadata = Some(metadata);
+        });
+        self.handle.save();
+    }
+
+    fn goal_command(&mut self, args: &str) {
+        if args.trim().is_empty() {
+            self.open_goal();
+            return;
+        }
+        self.set_goal(args.trim(), "active");
+        self.toast(Variant::Success, None, "Goal set");
+        self.cache = None;
+    }
+
+    fn open_goal(&mut self) {
+        let Some((objective, status)) = self.goal_state() else {
+            self.show_text("Goal", "No goal is set. Start one with /goal <objective>.".into());
+            return;
+        };
+        let opts = vec![
+            dialog::Opt { title: objective, footer: status.clone(), value: "show".into(), current: true, ..Default::default() },
+            dialog::Opt { title: "Pause goal".into(), value: "pause".into(), ..Default::default() },
+            dialog::Opt { title: "Resume goal".into(), value: "resume".into(), ..Default::default() },
+            dialog::Opt { title: "Clear goal".into(), value: "clear".into(), ..Default::default() },
+        ];
+        self.dialog = Some(Dialog::Select(dialog::Select::new(dialog::Kind::Goal, "Goal", opts)));
+    }
+
     fn pair_device(&mut self) {
         let status = crate::service::status();
         let url = status
@@ -2383,6 +2570,44 @@ impl Ui {
                 if !self.editor.text.split_whitespace().any(|word| word == format!("@{value}")) {
                     self.editor.insert(&mention);
                 }
+            }
+            Kind::Stash => {
+                self.dialog = None;
+                if let Ok(index) = value.parse::<usize>() {
+                    if let Some(stashed) = self.stash.get(index).cloned() {
+                        self.editor.set(&stashed.text);
+                        self.pasted = stashed.pasted;
+                        self.shell = stashed.shell;
+                        self.update_auto();
+                    }
+                }
+            }
+            Kind::Queued => {
+                self.dialog = None;
+                if let Ok(index) = value.parse::<usize>() {
+                    let mut queue = self.handle.queue.lock().unwrap();
+                    if index < queue.len() {
+                        queue.remove(index);
+                    }
+                }
+            }
+            Kind::Goal => {
+                self.dialog = None;
+                let objective = self.goal_state().map(|(objective, _)| objective).unwrap_or_default();
+                match value.as_str() {
+                    "pause" => self.set_goal(&objective, "paused"),
+                    "resume" => self.set_goal(&objective, "active"),
+                    "clear" => {
+                        self.handle.with(|session| {
+                            if let Some(metadata) = session.metadata.as_mut().and_then(Value::as_object_mut) {
+                                metadata.remove("goal");
+                            }
+                        });
+                        self.handle.save();
+                    }
+                    _ => {}
+                }
+                self.cache = None;
             }
             Kind::TabMenu => {
                 self.dialog = None;
@@ -2893,6 +3118,28 @@ impl Ui {
             self.composer_key(&k);
             return;
         }
+        if in_session && !self.handle.queue.lock().unwrap().is_empty() && self.keys.matches("queued_prompt.undo", &k, false) {
+            self.exec("queued_prompt.undo", "");
+            return;
+        }
+        if in_session && !self.handle.queue.lock().unwrap().is_empty() && self.keys.matches("queued_prompt.delete", &k, false) {
+            self.exec("queued_prompt.delete", "");
+            return;
+        }
+        if in_session && self.editor.text.is_empty() && !self.composer_open {
+            if self.keys.matches("session.child.next", &k, false) {
+                self.exec("session.child.next", "");
+                return;
+            }
+            if self.keys.matches("session.child.previous", &k, false) {
+                self.exec("session.child.previous", "");
+                return;
+            }
+            if self.keys.matches("session.parent", &k, false) {
+                self.exec("session.parent", "");
+                return;
+            }
+        }
         if in_session && self.keys.matches("session.child.first", &k, false) && self.editor.text.is_empty() {
             if self.composer_open { self.close_composer() } else { self.open_composer(0) }
             return;
@@ -2925,7 +3172,7 @@ impl Ui {
                 return;
             }
             let ids = [
-                "app.exit", "prompt.editor", "session.sidebar.toggle", "opencode.status", "session.export", "session.new", "session.list", "session.timeline", "session.compact", "model.list",
+                "app.exit", "prompt.editor", "session.sidebar.toggle", "opencode.status", "session.export", "session.new", "session.list", "session.timeline", "session.compact", "session.queued_prompts", "model.list",
                 "agent.list", "messages.copy", "session.undo", "session.redo", "terminal.toggle", "terminal.select", "terminal.close",
             ];
             let session_only = ["session.timeline", "session.compact", "messages.copy", "session.undo", "session.redo", "session.export", "terminal.toggle", "terminal.select", "terminal.close"];
@@ -4435,6 +4682,9 @@ impl Ui {
             }
         } else {
             let mut label = self.location_label();
+            if let Some((_, status)) = self.goal_state() {
+                label = format!("{label}  goal {status}");
+            }
             if !self.plugin_status.is_empty() {
                 label = format!("{label}  ·  {}", self.plugin_status);
             }
