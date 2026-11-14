@@ -170,6 +170,12 @@ struct Hits {
     jump: Option<Rect>,
     auto: Vec<(u16, usize)>,
     perm_options: Vec<(Rect, usize)>,
+    terminal_pane: Rect,
+    terminal_tabs: Vec<(Rect, usize)>,
+    terminal_close: Vec<(Rect, usize)>,
+    composer_panel: Rect,
+    composer_tabs: Vec<(Rect, usize)>,
+    composer_rows: Vec<(Rect, usize)>,
 }
 
 struct Cache {
@@ -262,6 +268,11 @@ struct Ui {
     chrome: (String, String),
     redo: Vec<(String, Vec<Message>)>,
     shells: Vec<String>,
+    terminal_pane: terminal::TerminalPane,
+    terminal_resizing: bool,
+    composer_open: bool,
+    composer_tab: usize,
+    composer_selected: usize,
     hits: Hits,
     cache: Option<Cache>,
     body_height: usize,
@@ -489,6 +500,11 @@ impl Ui {
             chrome: Default::default(),
             redo: vec![],
             shells: vec![],
+            terminal_pane: terminal::TerminalPane::default(),
+            terminal_resizing: false,
+            composer_open: false,
+            composer_tab: 0,
+            composer_selected: 0,
             hits: Hits::default(),
             cache: None,
             body_height: 20,
@@ -959,7 +975,11 @@ impl Ui {
                 c("session.cd", "Change working directory", "Session", &["cd"], false),
                 c("session.worktrees", "Manage workspaces", "Session", &["worktrees"], false),
                 c("session.terminal", "New terminal", "Session", &["terminal"], false),
+                c("terminal.toggle", "Toggle terminal pane", "Session", &[], false),
+                c("terminal.select", "Select terminal", "Session", &[], false),
+                c("terminal.close", "Close terminal pane", "Session", &[], false),
                 c("session.aside", "Ask a side question", "Session", &["btw"], false),
+                c("session.child.first", "Toggle subagent picker", "Session", &[], false),
                 c("session.rename", "Rename session", "Session", &["rename"], false),
                 c("session.timeline", "Jump to message", "Session", &["timeline"], false),
                 c("session.fork", "Fork session", "Session", &["fork"], false),
@@ -1109,7 +1129,27 @@ impl Ui {
             "session.cd" => self.open_cd(args),
             "session.worktrees" => self.open_worktrees(),
             "session.terminal" => self.open_terminal(),
+            "terminal.toggle" => {
+                if self.terminal_pane.visible {
+                    self.terminal_pane.visible = false;
+                    self.terminal_pane.focus = false;
+                } else if self.terminal_pane.tabs.is_empty() {
+                    self.open_terminal();
+                } else {
+                    self.terminal_pane.visible = true;
+                    self.terminal_pane.focus = true;
+                }
+                self.cache = None;
+            }
+            "terminal.select" => self.open_composer(2),
+            "terminal.close" => {
+                self.terminal_pane.close_active();
+                self.cache = None;
+            }
             "session.aside" => self.open_btw(args),
+            "session.child.first" => {
+                if self.composer_open { self.close_composer() } else { self.open_composer(0) }
+            }
             "session.timeline" => self.open_timeline(Kind::Timeline),
             "session.fork" => self.open_timeline(Kind::Fork),
             "session.compact" => self.compact(),
@@ -1183,6 +1223,9 @@ impl Ui {
         match loaded {
             Ok(h) => {
                 let id = h.id();
+                if id != self.sid() {
+                    self.terminal_pane.clear();
+                }
                 self.handle = h;
                 self.route = Route::Session;
                 self.cache = None;
@@ -1964,13 +2007,116 @@ impl Ui {
         self.dialog = Some(Dialog::Select(s));
     }
 
+    fn terminal_width(&self) -> u16 {
+        if self.terminal_pane.width > 0 {
+            self.terminal_pane.width
+        } else {
+            (self.size.0 / 2).max(24)
+        }
+    }
+
     fn open_terminal(&mut self) {
-        let cols = self.size.0.saturating_sub(8).max(40);
-        let rows = self.size.1.saturating_sub(8).max(10);
+        let cols = self.terminal_width().saturating_sub(2).max(20);
+        let rows = self.size.1.saturating_sub(4).max(6);
         let directory = self.handle.with(|s| s.directory.clone());
-        match terminal::TerminalDialog::open(&self.sid(), &directory, cols, rows) {
-            Ok(term) => self.dialog = Some(Dialog::Terminal(term)),
+        match self.terminal_pane.open_new(&self.sid(), &directory, cols, rows) {
+            Ok(_) => self.cache = None,
             Err(error) => self.toast(Variant::Error, None, format!("Terminal failed: {error}")),
+        }
+    }
+
+    fn open_composer(&mut self, tab: usize) {
+        self.composer_open = true;
+        self.composer_tab = tab.min(2);
+        self.composer_selected = 0;
+        self.cache = None;
+    }
+
+    fn close_composer(&mut self) {
+        self.composer_open = false;
+        self.composer_selected = 0;
+        self.cache = None;
+    }
+
+    fn composer_items(&self) -> Vec<(String, String)> {
+        let mut items = Vec::new();
+        match self.composer_tab {
+            0 => {
+                let sid = self.sid();
+                let mut children: Vec<_> = crate::session::list(&self.app.project)
+                    .into_iter()
+                    .filter(|session| session.parent_id.as_deref() == Some(sid.as_str()))
+                    .collect();
+                children.sort_by_key(|session| session.time_updated);
+                children.reverse();
+                for child in children {
+                    items.push((format!("session:{}", child.id), child.title));
+                }
+                if items.is_empty() {
+                    items.push(("none".into(), "No subagents".into()));
+                }
+            }
+            1 => {
+                for (index, command) in self.shells.iter().enumerate() {
+                    items.push((format!("shell:{index}"), command.clone()));
+                }
+                if items.is_empty() {
+                    items.push(("none".into(), "No background shells".into()));
+                }
+            }
+            _ => {
+                for (index, title) in self.terminal_pane.tab_titles().into_iter().enumerate() {
+                    items.push((format!("terminal:{index}"), title));
+                }
+                items.push(("terminal:new".into(), "+ New terminal".into()));
+            }
+        }
+        items
+    }
+
+    fn composer_key(&mut self, k: &keymap::Key) {
+        match k.name.as_str() {
+            "escape" => self.close_composer(),
+            "left" => {
+                self.composer_tab = (self.composer_tab + 2) % 3;
+                self.composer_selected = 0;
+            }
+            "right" => {
+                self.composer_tab = (self.composer_tab + 1) % 3;
+                self.composer_selected = 0;
+            }
+            "up" => {
+                let n = self.composer_items().len().max(1);
+                self.composer_selected = (self.composer_selected + n - 1) % n;
+            }
+            "down" => {
+                let n = self.composer_items().len().max(1);
+                self.composer_selected = (self.composer_selected + 1) % n;
+            }
+            "return" => {
+                let items = self.composer_items();
+                let Some((value, _)) = items.get(self.composer_selected.min(items.len().saturating_sub(1))) else { return };
+                if let Some(id) = value.strip_prefix("session:") {
+                    let id = id.to_string();
+                    self.close_composer();
+                    self.open_session(&id);
+                } else if let Some(index) = value.strip_prefix("terminal:").and_then(|v| v.parse::<usize>().ok()) {
+                    self.terminal_pane.active = index.min(self.terminal_pane.tabs.len().saturating_sub(1));
+                    self.terminal_pane.visible = true;
+                    self.terminal_pane.focus = true;
+                    self.close_composer();
+                } else if value == "terminal:new" {
+                    self.close_composer();
+                    self.open_terminal();
+                } else if let Some(index) = value.strip_prefix("shell:").and_then(|v| v.parse::<usize>().ok()) {
+                    if let Some(command) = self.shells.get(index).cloned() {
+                        self.close_composer();
+                        self.show_text("Shell", command);
+                    }
+                }
+            }
+            _ if k.ctrl && k.name == "c" => self.close_composer(),
+            _ => {}
         }
     }
 
@@ -2640,10 +2786,28 @@ impl Ui {
 
     fn on_key(&mut self, ev: KeyEvent) {
         let Some(k) = keymap::from_event(&ev) else { return };
+        let in_session = self.route == Route::Session;
         let leader = self.leader.take().is_some_and(|t| t.elapsed() < LEADER_TIMEOUT);
         if !leader && self.keys.is_leader(&k) && self.dialog.is_none() && self.perm.rejecting.is_none() {
             self.leader = Some(Instant::now());
             return;
+        }
+        if self.composer_open && !leader && self.dialog.is_none() {
+            self.composer_key(&k);
+            return;
+        }
+        if in_session && self.keys.matches("session.child.first", &k, false) && self.editor.text.is_empty() {
+            if self.composer_open { self.close_composer() } else { self.open_composer(0) }
+            return;
+        }
+        if self.terminal_pane.visible && self.terminal_pane.focus && self.dialog.is_none() {
+            if k.name == "escape" {
+                self.terminal_pane.focus = false;
+                return;
+            }
+            if self.terminal_pane.key(&ev) {
+                return;
+            }
         }
         if self.dialog.is_some() {
             if leader {
@@ -2665,9 +2829,9 @@ impl Ui {
             }
             let ids = [
                 "app.exit", "prompt.editor", "session.sidebar.toggle", "opencode.status", "session.export", "session.new", "session.list", "session.timeline", "session.compact", "model.list",
-                "agent.list", "messages.copy", "session.undo", "session.redo",
+                "agent.list", "messages.copy", "session.undo", "session.redo", "terminal.toggle", "terminal.select", "terminal.close",
             ];
-            let session_only = ["session.timeline", "session.compact", "messages.copy", "session.undo", "session.redo", "session.export"];
+            let session_only = ["session.timeline", "session.compact", "messages.copy", "session.undo", "session.redo", "session.export", "terminal.toggle", "terminal.select", "terminal.close"];
             if let Some(id) = TAB_COMMANDS.into_iter().find(|id| self.keys.matches(id, &k, true)) {
                 self.exec(id, "");
                 return;
@@ -3141,6 +3305,38 @@ impl Ui {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.dialog.is_none() {
+                    if self.terminal_pane.visible && self.hits.terminal_pane.width > 0 && x + 1 == self.hits.terminal_pane.x {
+                        self.terminal_resizing = true;
+                        return;
+                    }
+                    if self.composer_open && inside(self.hits.composer_panel) {
+                        if let Some((_, index)) = self.hits.composer_tabs.iter().find(|(rect, _)| inside(*rect)).copied() {
+                            self.composer_tab = index;
+                            self.composer_selected = 0;
+                            return;
+                        }
+                        if let Some((_, index)) = self.hits.composer_rows.iter().find(|(rect, _)| inside(*rect)).copied() {
+                            self.composer_selected = index;
+                            let key = keymap::Key { ctrl: false, alt: false, shift: false, name: "return".into() };
+                            self.composer_key(&key);
+                            return;
+                        }
+                        return;
+                    }
+                    if self.terminal_pane.visible && inside(self.hits.terminal_pane) {
+                        if let Some((_, index)) = self.hits.terminal_tabs.iter().find(|(rect, _)| inside(*rect)).copied() {
+                            self.terminal_pane.active = index;
+                            self.terminal_pane.focus = true;
+                            return;
+                        }
+                        if self.hits.terminal_close.iter().any(|(rect, _)| inside(*rect)) {
+                            self.terminal_pane.close_active();
+                            self.cache = None;
+                            return;
+                        }
+                        self.terminal_pane.focus = true;
+                        return;
+                    }
                     if let Some(id) = self.tab_at(x, y).filter(|id| id != "+") {
                         let index = self.tabs.iter().position(|t| *t == id).unwrap_or(0);
                         self.tab_drag = Some((id, index));
@@ -3149,6 +3345,11 @@ impl Ui {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                if self.terminal_resizing {
+                    let max = self.size.0.saturating_sub(24).max(20);
+                    self.terminal_pane.width = self.size.0.saturating_sub(x).clamp(20, max);
+                    return;
+                }
                 if let Some((source, _)) = self.tab_drag.clone() {
                     if let Some(target) = self.tab_at(x, y).filter(|id| id != "+") {
                         if let Some(index) = self.tabs.iter().position(|t| *t == target) {
@@ -3176,9 +3377,16 @@ impl Ui {
                 let moved = self.tab_drag_moved;
                 self.tab_drag = None;
                 self.tab_drag_moved = false;
+                self.terminal_resizing = false;
                 if moved {
                     self.persist_tabs();
                     return;
+                }
+                if self.terminal_pane.focus && !inside(self.hits.terminal_pane) {
+                    self.terminal_pane.focus = false;
+                }
+                if self.composer_open && !inside(self.hits.composer_panel) {
+                    self.close_composer();
                 }
                 if self.dialog.is_some() {
                     let Some(p) = self.hits.dialog.as_ref() else { return };
@@ -4171,9 +4379,15 @@ impl Ui {
 
     fn draw_session(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) -> Option<(u16, u16)> {
         let w = area.width as usize;
-        let sidebar = self.sidebar_visible();
+        let terminal_visible = self.terminal_pane.visible && !self.terminal_pane.tabs.is_empty();
+        let terminal_w = if terminal_visible {
+            self.terminal_width().min(area.width.saturating_sub(24))
+        } else {
+            0
+        };
+        let sidebar = !terminal_visible && self.sidebar_visible();
         let docked = sidebar && w > 120;
-        let pane_w = if docked { area.width - 42 } else { area.width };
+        let pane_w = area.width.saturating_sub(if terminal_visible { terminal_w } else if docked { 42 } else { 0 });
         let pad = if w < 44 { 1u16 } else { 2 };
         let pane = Rect { x: area.x + pad, y: area.y, width: pane_w.saturating_sub(pad * 2), height: area.height.saturating_sub(1) };
         let perm = self.permissions.front().cloned();
@@ -4181,8 +4395,10 @@ impl Ui {
             Some(req) => self.permission_lines(req, t, pane.width as usize).len() as u16,
             None => self.prompt_height(pane.width as usize) as u16,
         };
+        let composer_panel_h = if self.composer_open { 7 } else { 0 };
         let composer_y = pane.y + pane.height.saturating_sub(composer_h);
-        let jump_y = composer_y.saturating_sub(1);
+        let composer_panel_y = composer_y.saturating_sub(composer_panel_h);
+        let jump_y = composer_panel_y.saturating_sub(1);
         let tr = Rect { x: pane.x, y: pane.y, width: pane.width, height: jump_y.saturating_sub(pane.y) };
         self.body_height = tr.height as usize;
         self.render_transcript(tr.width as usize);
@@ -4203,12 +4419,20 @@ impl Ui {
             self.hits.jump = Some(r);
         }
         let composer = Rect { x: pane.x, y: composer_y, width: pane.width, height: composer_h };
-        let cursor = match perm {
+        if self.composer_open {
+            self.draw_composer(buf, Rect { x: pane.x, y: composer_panel_y, width: pane.width, height: composer_panel_h }, t);
+        }
+        let cursor = match perm.as_ref() {
             Some(req) => {
-                self.draw_permission(buf, composer, t, &req);
+                self.draw_permission(buf, composer, t, req);
                 None
             }
             None => self.draw_prompt(buf, composer, t, false),
+        };
+        let terminal_cursor = if terminal_visible {
+            self.draw_terminal_pane(buf, Rect { x: area.x + area.width - terminal_w, y: area.y, width: terminal_w, height: area.height }, t)
+        } else {
+            None
         };
         if sidebar {
             let sw = 42u16.min(area.width);
@@ -4217,7 +4441,91 @@ impl Ui {
             }
             self.draw_sidebar(buf, Rect { x: area.x + area.width - sw, y: area.y, width: sw, height: area.height }, t);
         }
-        cursor
+        if self.composer_open {
+            None
+        } else if terminal_visible && self.terminal_pane.focus && perm.is_none() && self.dialog.is_none() {
+            terminal_cursor
+        } else {
+            cursor
+        }
+    }
+
+    fn draw_composer(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) {
+        let bg = t.raised;
+        draw::fill(buf, area, bg);
+        self.hits.composer_panel = area;
+        let labels = ["Subagents", "Shell", "Terminals"];
+        let mut x = area.x + 1;
+        for (index, label) in labels.iter().enumerate() {
+            let active = index == self.composer_tab;
+            let width = draw::width(label) as u16 + 2;
+            let row_bg = if active { t.raised_high } else { bg };
+            let fg = if active { t.text } else { t.muted };
+            draw::draw_line(buf, x, area.y, width, &line(vec![span(" ", fg, row_bg), Span::styled(*label, draw::st(fg, row_bg))], row_bg));
+            self.hits.composer_tabs.push((Rect { x, y: area.y, width, height: 1 }, index));
+            x += width + 2;
+        }
+        draw::draw_line(buf, area.x + area.width.saturating_sub(4), area.y, 4, &line(vec![span("esc ", t.muted, bg)], bg));
+        let items = self.composer_items();
+        let rows = area.height.saturating_sub(2) as usize;
+        for (index, (_, label)) in items.iter().take(rows).enumerate() {
+            let y = area.y + 2 + index as u16;
+            let selected = index == self.composer_selected;
+            let row_bg = if selected { t.raised_high } else { bg };
+            let fg = if selected { t.text } else { t.muted };
+            let label = draw::take_width(label, area.width.saturating_sub(4) as usize);
+            draw::draw_line(buf, area.x + 1, y, area.width.saturating_sub(2), &line(vec![span(" ", fg, row_bg), Span::styled(label, draw::st(fg, row_bg))], row_bg));
+            self.hits.composer_rows.push((Rect { x: area.x + 1, y, width: area.width.saturating_sub(2), height: 1 }, index));
+        }
+        if items.is_empty() {
+            draw::draw_line(buf, area.x + 1, area.y + 2, area.width.saturating_sub(2), &line(vec![span("No entries", t.muted, bg)], bg));
+        }
+    }
+
+    fn draw_terminal_pane(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) -> Option<(u16, u16)> {
+        if area.width < 8 || area.height < 3 {
+            return None;
+        }
+        let bg = t.raised;
+        draw::fill(buf, area, bg);
+        let inner_w = area.width.saturating_sub(2);
+        let inner_h = area.height.saturating_sub(2);
+        if let Some(terminal) = self.terminal_pane.active_mut() {
+            let (cols, rows) = terminal.size();
+            if cols != inner_w || rows != inner_h {
+                let _ = terminal.resize(inner_w.max(1), inner_h.max(1));
+            }
+        }
+        self.terminal_pane.refresh();
+        self.hits.terminal_pane = area;
+        let titles = self.terminal_pane.tab_titles();
+        let mut x = area.x + 1;
+        for (index, title) in titles.iter().enumerate() {
+            if x >= area.x + area.width.saturating_sub(2) {
+                break;
+            }
+            let active = index == self.terminal_pane.active;
+            let label = draw::take_width(title, 20);
+            let width = draw::width(&label) as u16 + 2;
+            let row_bg = if active { t.raised_high } else { bg };
+            let fg = if active { t.text } else { t.muted };
+            draw::draw_line(buf, x, area.y, width.min(area.x + area.width - x), &line(vec![span(" ", fg, row_bg), Span::styled(label, draw::st(fg, row_bg))], row_bg));
+            self.hits.terminal_tabs.push((Rect { x, y: area.y, width, height: 1 }, index));
+            x += width + 1;
+        }
+        let close = Rect { x: area.x + area.width.saturating_sub(3), y: area.y, width: 2, height: 1 };
+        draw::draw_line(buf, close.x, close.y, close.width, &line(vec![span("\u{2715} ", t.muted, bg)], bg));
+        self.hits.terminal_close.push((close, self.terminal_pane.active));
+        let lines = self.terminal_pane.lines();
+        for (row, text) in lines.iter().take(inner_h as usize).enumerate() {
+            let text_line = draw::take_width(text, inner_w as usize);
+            draw::draw_line(buf, area.x + 1, area.y + 1 + row as u16, inner_w, &line(vec![span(text_line, t.text, bg)], bg));
+        }
+        if self.terminal_pane.focus {
+            self.terminal_pane.cursor().map(|(cx, cy)| (area.x + 1 + cx.min(inner_w.saturating_sub(1)), area.y + 1 + cy.min(inner_h.saturating_sub(1))))
+        } else {
+            None
+        }
     }
 
     fn render_transcript(&mut self, width: usize) {

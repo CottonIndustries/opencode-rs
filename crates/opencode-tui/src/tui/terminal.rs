@@ -54,7 +54,7 @@ fn sequence(event: &crossterm::event::KeyEvent) -> Option<String> {
 }
 
 impl TerminalDialog {
-    pub fn open(session_id: &str, cwd: &Path, cols: u16, rows: u16) -> Result<Self> {
+    pub fn open(_session_id: &str, cwd: &Path, cols: u16, rows: u16) -> Result<Self> {
         // `Terminal::spawn` launches the detected shell (see
         // `crate::tools::shell::detect`) interactively; its `command` is only
         // typed into that shell, so an empty one opens a prompt without
@@ -62,9 +62,10 @@ impl TerminalDialog {
         let command = String::new();
         let args: Vec<String> = Vec::new();
         let environment = BTreeMap::new();
-        crate::plugin::pty::manager().create(session_id, &command, &args, cwd, &environment, cols.max(1), rows.max(1))?;
+        let id = crate::util::id("term");
+        crate::plugin::pty::manager().create(&id, &command, &args, cwd, &environment, cols.max(1), rows.max(1))?;
         let mut dialog = Self {
-            id: session_id.to_string(),
+            id,
             title: String::new(),
             lines: Vec::new(),
             cursor: None,
@@ -112,6 +113,10 @@ impl TerminalDialog {
         &self.lines
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
+    }
+
     pub fn cursor(&self) -> Option<(u16, u16)> {
         self.cursor
     }
@@ -144,6 +149,106 @@ impl TerminalDialog {
 impl Drop for TerminalDialog {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[derive(Default)]
+pub struct TerminalPane {
+    pub visible: bool,
+    pub tabs: Vec<TerminalDialog>,
+    pub active: usize,
+    /// Right pane width in cells; zero means half the body.
+    pub width: u16,
+    pub focus: bool,
+}
+
+impl TerminalPane {
+    pub fn open_new(&mut self, session_id: &str, cwd: &Path, cols: u16, rows: u16) -> Result<usize> {
+        let terminal = TerminalDialog::open(session_id, cwd, cols, rows)?;
+        self.tabs.push(terminal);
+        self.active = self.tabs.len() - 1;
+        self.visible = true;
+        self.focus = true;
+        Ok(self.active)
+    }
+
+    pub fn refresh(&mut self) {
+        for terminal in &mut self.tabs {
+            terminal.refresh();
+        }
+    }
+
+    pub fn active(&self) -> Option<&TerminalDialog> {
+        self.tabs.get(self.active)
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut TerminalDialog> {
+        self.tabs.get_mut(self.active)
+    }
+
+    pub fn next(&mut self, step: isize) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let n = self.tabs.len() as isize;
+        self.active = (self.active as isize + step).rem_euclid(n) as usize;
+    }
+
+    pub fn close_active(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let terminal = self.tabs.remove(self.active);
+        terminal.close();
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.visible = false;
+            self.focus = false;
+        } else if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for terminal in self.tabs.drain(..) {
+            terminal.close();
+        }
+        self.active = 0;
+        self.visible = false;
+        self.focus = false;
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if let Some(terminal) = self.active_mut() {
+            let _ = terminal.resize(cols, rows);
+        }
+    }
+
+    pub fn key(&self, event: &crossterm::event::KeyEvent) -> bool {
+        self.active().map(|terminal| terminal.key(event).unwrap_or(false)).unwrap_or(false)
+    }
+
+    pub fn title(&self) -> String {
+        self.active().map(|terminal| terminal.title().to_string()).unwrap_or_default()
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.active().map(|terminal| terminal.lines().to_vec()).unwrap_or_default()
+    }
+
+    pub fn cursor(&self) -> Option<(u16, u16)> {
+        self.active().and_then(|terminal| terminal.cursor())
+    }
+
+    pub fn tab_titles(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, terminal)| {
+                let title = terminal.title();
+                if title.is_empty() { format!("Terminal {}", index + 1) } else { title.to_string() }
+            })
+            .collect()
     }
 }
 

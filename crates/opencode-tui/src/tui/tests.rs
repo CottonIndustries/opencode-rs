@@ -169,12 +169,13 @@ async fn terminal_command_opens_persistent_terminal() {
     let mut ui = ui().await;
     ui.route = Route::Session;
     ui.exec("session.terminal", "");
-    let Some(Dialog::Terminal(term)) = ui.dialog.as_ref() else {
-        panic!("terminal dialog did not open");
-    };
-    let _ = term.write("exit
-");
-    term.close();
+    assert!(ui.terminal_pane.visible, "terminal pane did not open");
+    assert_eq!(ui.terminal_pane.tabs.len(), 1, "terminal tab was not created");
+    if let Some(term) = ui.terminal_pane.active_mut() {
+        let _ = term.write("exit\r\n");
+        term.close();
+    }
+    ui.terminal_pane.tabs.clear();
 }
 
 #[tokio::test]
