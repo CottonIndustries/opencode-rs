@@ -40,6 +40,7 @@ use ratatui::{DefaultTerminal, Frame};
 use serde_json::{json, Value};
 use settings::Settings;
 use std::collections::{HashSet, VecDeque};
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use theme::{Mode, Rgba, Theme};
@@ -1312,7 +1313,7 @@ impl Ui {
     }
 
     fn set_window_title(&self) {
-        if !self.settings.bool("terminal.title").unwrap_or(true) {
+        if !self.settings.bool("terminal.title").unwrap_or(true) || !std::io::stdout().is_terminal() {
             return;
         }
         let title = self.handle.with(|session| session.title.clone());
