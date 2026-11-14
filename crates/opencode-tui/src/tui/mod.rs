@@ -1141,6 +1141,7 @@ impl Ui {
             "prompt.clear" => self.clear_prompt(),
             "prompt.editor" => self.pending_editor = true,
             "session.interrupt" => self.interrupt_press(),
+            "session.toggle.scrollbar" => self.cycle_setting("session.scrollbar"),
             "session.toggle.thinking" => {
                 let next = if self.settings.thinking_shown() { "hide" } else { "show" };
                 self.settings.set("session.thinking", json!(next));
@@ -2036,7 +2037,7 @@ impl Ui {
             Opt { title: "Markdown".into(), footer: self.settings.str("session.markdown").unwrap_or("rendered").into(), category: "Session".into(), value: "session.markdown".into(), ..Default::default() },
             Opt { title: "Group related tool calls".into(), footer: on(self.settings.grouping()), category: "Session".into(), value: "grouping".into(), ..Default::default() },
             Opt { title: "Verbosity".into(), footer: self.settings.str("session.verbosity").unwrap_or("default").into(), category: "Session".into(), value: "session.verbosity".into(), ..Default::default() },
-            Opt { title: "Image previews".into(), footer: on(self.settings.bool("session.image_preview").unwrap_or(false)), category: "Session".into(), value: "session.image_preview".into(), ..Default::default() },
+            Opt { title: "Image previews".into(), footer: on(self.settings.bool("session.image_preview").unwrap_or(true)), category: "Session".into(), value: "session.image_preview".into(), ..Default::default() },
             Opt { title: "Tokens per second".into(), footer: on(self.settings.tps()), category: "Session".into(), value: "tps".into(), ..Default::default() },
             Opt { title: "New session location".into(), footer: self.settings.str("session.new_location").unwrap_or("project").into(), category: "Session".into(), value: "session.new_location".into(), ..Default::default() },
             Opt { title: "Permissions".into(), footer: self.settings.str("session.permissions").unwrap_or("ask").into(), category: "Session".into(), value: "session.permissions".into(), ..Default::default() },
@@ -4206,7 +4207,11 @@ impl Ui {
                         }
                     }
                 } else if self.tabs.contains(&session) {
-                    let fresh = self.tab_unread.insert(session);
+                    let fresh = self.tab_unread.insert(session.clone());
+                    if fresh && self.settings.bool("attention.notifications").unwrap_or(true) {
+                        let title = self.app.session(&session).map(|handle| handle.with(|session| session.title.clone())).unwrap_or_default();
+                        self.toast(Variant::Info, Some(title), "Session finished");
+                    }
                     if fresh && self.settings.bool("attention.sounds").unwrap_or(true) {
                         use std::io::Write;
                         print!("\x07");
@@ -5245,7 +5250,7 @@ impl Ui {
             thinking: self.thinking_shown(),
             markdown_source: self.settings.str("session.markdown") == Some("source"),
             verbosity: self.settings.str("session.verbosity").unwrap_or("default"),
-            image_preview: self.settings.bool("session.image_preview").unwrap_or(false),
+            image_preview: self.settings.bool("session.image_preview").unwrap_or(true),
             grouping: self.settings.grouping(),
             tps: self.settings.tps(),
             spinner,
