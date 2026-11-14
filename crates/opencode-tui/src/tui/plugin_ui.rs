@@ -237,7 +237,7 @@ fn color(value: Option<&Value>, theme: &Theme) -> Option<Rgba> {
 }
 
 fn color_name(value: &str, theme: &Theme) -> Option<Rgba> {
-    if let Some(color) = value.strip_prefix('#').and_then(Rgba::from_hex) {
+    if let Some(color) = Rgba::from_hex(value) {
         return Some(color);
     }
     match value.to_ascii_lowercase().as_str() {
@@ -1776,6 +1776,23 @@ mod tests {
             10,
         );
         assert!(lines.iter().any(|line| line.contains('a') && line.contains('b')), "{lines:?}");
+    }
+
+    #[test]
+    fn background_applies_to_text_cells() {
+        let theme = theme::fallback(theme::Mode::Dark);
+        let lines = render(
+            &serde_json::json!({
+                "type": "box",
+                "background": "#ff966c",
+                "children": [{ "type": "text", "text": "X" }]
+            }),
+            6,
+            &theme,
+            theme.base.raised,
+        );
+        let colors: Vec<_> = lines[0].spans.iter().map(|span| span.style.bg).collect();
+        assert!(colors.contains(&Some(ratatui::style::Color::Rgb(255, 150, 108))), "{colors:?}");
     }
 
     #[test]
