@@ -2215,7 +2215,11 @@ async function renderTuiSlots(input: Json): Promise<Json[]> {
       // next extraction instead of being reset to the initial empty snapshot.
       let rendered: Json
       const persistent = String(slot.plugin ?? "").includes("magic-context")
-      const cached = persistent ? tuiSlotRoots.get(slot) : undefined
+      let cached = persistent ? tuiSlotRoots.get(slot) : undefined
+      if (cached && cached.input.sessionID !== slotInput.sessionID) {
+        tuiSlotRoots.delete(slot)
+        cached = undefined
+      }
       if (cached) {
         Object.assign(cached.input, slotInput)
         rendered = cached.root
