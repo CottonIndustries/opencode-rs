@@ -1013,6 +1013,10 @@ impl Ui {
                 c("session.child.first", "Toggle subagent picker", "Session", &[], false),
                 c("session.queued_prompts", "View queued prompts", "Prompt", &[], false),
                 c("session.goal", "Session goal", "Session", &["goal"], false),
+                c("session.move", "Move session", "Session", &[], false),
+                c("session.pin.toggle", "Pin session", "Session", &[], false),
+                c("session.share", "Share session", "Session", &[], false),
+                c("session.unshare", "Unshare session", "Session", &[], false),
                 c("session.message.user.next", "Next user message", "Session", &[], false),
                 c("session.message.user.previous", "Previous user message", "Session", &[], false),
                 c("session.child.next", "Next subagent", "Session", &[], false),
@@ -1107,6 +1111,7 @@ impl Ui {
             "session.message.previous" => self.scroll_by(1),
             "prompt.queue" => self.queue_prompt(),
             "prompt.images.view" => self.open_prompt_images(),
+            "session.pin.toggle" => self.toggle_pin(),
             "session.share" => self.share_session(),
             "session.unshare" => self.unshare_session(),
             "session.move" => self.exec("session.worktrees", ""),
@@ -1548,6 +1553,20 @@ impl Ui {
             Some(v) => v,
             None => self.settings.sidebar_auto() && self.size.0 > 120,
         }
+    }
+
+    fn toggle_pin(&mut self) {
+        self.handle.with(|session| {
+            let mut metadata = session.metadata.take().unwrap_or_else(|| json!({}));
+            if !metadata.is_object() {
+                metadata = json!({});
+            }
+            let pinned = metadata.get("pinned").and_then(Value::as_bool).unwrap_or(false);
+            metadata["pinned"] = json!(!pinned);
+            session.metadata = Some(metadata);
+        });
+        self.handle.save();
+        self.cache = None;
     }
 
     fn toggle_sidebar(&mut self) {
@@ -3406,7 +3425,7 @@ impl Ui {
             }
             let ids = [
                 "app.exit", "prompt.editor", "session.sidebar.toggle", "opencode.status", "session.export", "session.new", "session.list", "session.timeline", "session.compact", "session.queued_prompts", "model.list",
-                "agent.list", "messages.copy", "session.undo", "session.redo", "terminal.toggle", "terminal.select", "terminal.close",
+                "agent.list", "messages.copy", "session.undo", "session.redo", "terminal.toggle", "terminal.select", "terminal.close", "prompt.queue", "prompt.images.view",
             ];
             let session_only = ["session.timeline", "session.compact", "messages.copy", "session.undo", "session.redo", "session.export", "terminal.toggle", "terminal.select", "terminal.close"];
             if let Some(id) = TAB_COMMANDS.into_iter().find(|id| self.keys.matches(id, &k, true)) {
@@ -3466,6 +3485,7 @@ impl Ui {
         let global = [
             "command.palette.show", "agent.cycle", "agent.cycle.reverse", "variant.cycle", "model.cycle_recent", "model.cycle_recent_reverse", "session.page.up", "session.page.down",
             "session.line.up", "session.line.down", "session.half.page.up", "session.half.page.down", "session.first", "session.last", "session.messages_last_user",
+            "open.menu", "app.clear", "theme.switch_mode", "usage.show", "provider.connect", "session.message.next", "session.message.previous",
         ];
         if let Some(id) = global.into_iter().find(|id| self.keys.matches(id, &k, false)) {
             if !id.starts_with("session.") || in_session {
@@ -4467,10 +4487,13 @@ impl Ui {
             spans.push(span(" ", t.text, bg));
         } else {
             spans.push(span(" ", t.text, bg));
+            let pinned = h.with(|session| session.metadata.as_ref().and_then(|metadata| metadata.get("pinned")).and_then(Value::as_bool).unwrap_or(false));
             let (mark, color) = if busy {
                 (SPINNER[(self.frame / 2) % SPINNER.len()], t.hue("interactive", 200))
             } else if unread {
                 ("\u{2022}", t.hue("accent", 200))
+            } else if pinned {
+                ("*", t.hue("accent", 200))
             } else {
                 (" ", t.muted)
             };
@@ -4551,12 +4574,15 @@ impl Ui {
             let numbers = self.settings.tabs_indicators() == "numbers";
             let unread = self.tab_unread.contains(&id);
             let busy = h.is_busy();
+            let pinned = h.with(|session| session.metadata.as_ref().and_then(|metadata| metadata.get("pinned")).and_then(Value::as_bool).unwrap_or(false));
             let mark = if numbers {
                 format!("{:>2}", index + 1)
             } else if busy {
                 SPINNER[(self.frame / 2) % SPINNER.len()].to_string()
             } else if unread {
                 "\u{2022}".to_string()
+            } else if pinned {
+                "*".to_string()
             } else {
                 " ".to_string()
             };
