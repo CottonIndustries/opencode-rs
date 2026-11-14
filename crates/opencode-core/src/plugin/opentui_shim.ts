@@ -66,18 +66,76 @@ export function useKeyHandler(callback: Function, options?: Json) {
 }
 
 export function useTimeline(options?: Json) {
-  const duration = Number(options?.duration ?? 0)
+  const duration = Math.max(0, Number(options?.duration ?? 0))
+  let playing = false
+  let elapsed = 0
+  let started = 0
+  let timer: Json = undefined
+  let update: Function | undefined
+  let complete: Function | undefined
+  const render = () => (globalThis as Json).__opencodeRequestRender?.()
+  const now = () => elapsed + (playing ? Date.now() - started : 0)
+  const stopTimer = () => {
+    if (timer !== undefined) clearInterval(timer)
+    timer = undefined
+  }
+  const tick = () => {
+    const time = now()
+    if (time >= duration) {
+      elapsed = duration
+      playing = false
+      stopTimer()
+      complete?.(time)
+      render()
+      return
+    }
+    update?.(time)
+    render()
+  }
+  const play = () => {
+    if (playing || duration <= 0) return
+    playing = true
+    started = Date.now()
+    stopTimer()
+    timer = setInterval(tick, 16)
+    render()
+  }
+  const pause = () => {
+    if (!playing) return
+    elapsed = now()
+    playing = false
+    stopTimer()
+    render()
+  }
+  const seek = (value: number) => {
+    elapsed = Math.max(0, Math.min(duration, Number(value ?? 0)))
+    started = Date.now()
+    render()
+  }
   return {
     duration,
-    play: () => {},
-    pause: () => {},
-    restart: () => {},
-    seek: () => {},
-    stop: () => {},
-    isPlaying: () => false,
-    currentTime: () => 0,
-    onComplete: (_callback: Function) => {},
-    onUpdate: (_callback: Function) => {},
+    play,
+    pause,
+    restart: () => {
+      elapsed = 0
+      started = Date.now()
+      play()
+    },
+    seek,
+    stop: () => {
+      elapsed = 0
+      playing = false
+      stopTimer()
+      render()
+    },
+    isPlaying: () => playing,
+    currentTime: now,
+    onComplete: (callback: Function) => {
+      complete = callback
+    },
+    onUpdate: (callback: Function) => {
+      update = callback
+    },
   }
 }
 

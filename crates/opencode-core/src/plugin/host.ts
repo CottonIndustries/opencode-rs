@@ -2083,7 +2083,8 @@ function jsxLayout(
       jsxProp(props, "color", "fg") !== undefined ||
       jsxProp(props, "width") !== undefined ||
       jsxProp(props, "height") !== undefined ||
-      jsxProp(props, "flexGrow") !== undefined
+      jsxProp(props, "flexGrow") !== undefined ||
+      jsxProp(props, "flexBasis", "basis") !== undefined
     if (!visual) return null
   }
   budget.nodes += 1
