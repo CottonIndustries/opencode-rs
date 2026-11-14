@@ -31,6 +31,10 @@ enum Dim {
 }
 
 impl Dim {
+    fn is_auto(self) -> bool {
+        matches!(self, Dim::Auto)
+    }
+
     fn resolve(self, parent: usize) -> usize {
         match self {
             Dim::Auto => parent,
@@ -146,6 +150,7 @@ struct Node {
     padding: Edges,
     margin: Edges,
     gap: usize,
+    aspect_ratio: Option<f32>,
     grow: f32,
     shrink: f32,
     align_self: Option<Align>,
@@ -356,6 +361,7 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 padding: Edges::default(),
                 margin: Edges::default(),
                 gap: 0,
+                aspect_ratio: None,
                 grow: 0.0,
                 shrink: 1.0,
                 align_self: None,
@@ -367,7 +373,11 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 border_color: None,
                 title: None,
                 background,
-                align: Align::Start,
+                align: match value.get("align").and_then(Value::as_str) {
+                    Some("center") => Align::Center,
+                    Some("end") | Some("right") => Align::End,
+                    _ => Align::Start,
+                },
                 justify: Justify::Start,
                 position: Position::Relative,
                 left: None,
@@ -460,7 +470,7 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 Some("center") => Align::Center,
                 Some("end") => Align::End,
                 Some("stretch") => Align::Stretch,
-                _ => Align::Start,
+                _ => Align::Stretch,
             };
             let justify = match value.get("justify").and_then(Value::as_str) {
                 Some("center") => Justify::Center,
@@ -493,6 +503,7 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 padding,
                 margin,
                 gap: number(value.get("gap")).unwrap_or(0).min(16),
+                aspect_ratio: value.get("aspectRatio").and_then(Value::as_f64).map(|ratio| ratio as f32).filter(|ratio| *ratio > 0.0),
                 grow: value.get("grow").and_then(Value::as_f64).unwrap_or(0.0) as f32,
                 shrink: value.get("shrink").and_then(Value::as_f64).unwrap_or(1.0) as f32,
                 align_self: match value.get("alignSelf").and_then(Value::as_str) {
@@ -547,6 +558,7 @@ fn leaf(kind: Kind, background: Option<Rgba>) -> Node {
         padding: Edges::default(),
         margin: Edges::default(),
         gap: 0,
+        aspect_ratio: None,
         grow: 0.0,
         shrink: 1.0,
         align_self: None,
@@ -634,6 +646,7 @@ impl Node {
                 for child in &flow {
                     let child_width = child
                         .width
+                        .filter(|value| !value.is_auto())
                         .map(|value| value.resolve(inner))
                         .unwrap_or_else(|| child.intrinsic_width(inner));
                     if self.direction.is_row() {
@@ -661,6 +674,7 @@ impl Node {
         let grow_row = matches!(&self.kind, Kind::Box(children) if self.direction.is_row() && children.iter().any(|child| child.grow > 0.0));
         let natural = self
             .width
+            .filter(|width| !width.is_auto())
             .map(|width| width.resolve(inner))
             .unwrap_or_else(|| {
                 if fill || grow_row {
@@ -671,10 +685,12 @@ impl Node {
             });
         let min = self
             .min_width
+            .filter(|width| !width.is_auto())
             .map(|width| width.resolve(inner))
             .unwrap_or(0);
         let max = self
             .max_width
+            .filter(|width| !width.is_auto())
             .map(|width| width.resolve(inner))
             .unwrap_or(usize::MAX);
         natural.max(min).min(max).min(inner.max(1))
@@ -759,7 +775,7 @@ impl Node {
                     flow += 1;
                     let mut child_size =
                         child.measure(inner_width, self.direction.is_column());
-                    if let Some(basis) = child.basis {
+                    if let Some(basis) = child.basis.filter(|basis| !basis.is_auto()) {
                         if self.direction.is_row() {
                             child_size.width = basis.resolve(inner_width) + child.outer_width();
                         } else {
@@ -790,19 +806,27 @@ impl Node {
         };
         size.width = size.width.saturating_add(self.outer_width());
         size.height = size.height.saturating_add(self.outer_height());
-        if let Some(height) = self.height {
+        if let Some(ratio) = self.aspect_ratio {
+            if self.height.is_none_or(Dim::is_auto) {
+                let width = size.width.saturating_sub(self.outer_width()).max(1);
+                size.height = (width as f32 / ratio).round().max(1.0) as usize + self.outer_height();
+            }
+        }
+        if let Some(height) = self.height.filter(|height| !height.is_auto()) {
             size.height = height.resolve(size.height.max(1)).max(1) + self.outer_height();
         }
         let min_height = self
             .min_height
+            .filter(|dim| !dim.is_auto())
             .map(|dim| dim.resolve(size.height))
             .unwrap_or(0);
         let max_height = self
             .max_height
+            .filter(|dim| !dim.is_auto())
             .map(|dim| dim.resolve(size.height))
             .unwrap_or(usize::MAX);
         size.height = size.height.max(min_height).min(max_height);
-        if let Some(width) = self.width {
+        if let Some(width) = self.width.filter(|width| !width.is_auto()) {
             size.width = width.resolve(parent_width).max(1) + self.outer_width();
         }
         size
@@ -842,18 +866,30 @@ impl Node {
         }
         if self.overflow {
             if let Kind::Box(children) = &self.kind {
-                let content_height = children
+                let flow: Vec<&Node> = children.iter().filter(|child| child.position == Position::Relative).collect();
+                let content_height = flow
                     .iter()
-                    .filter(|child| child.position == Position::Relative)
                     .map(|child| child.measure(area.width as usize, true).height)
                     .sum::<usize>()
-                    + self.gap.saturating_mul(children.len().saturating_sub(1));
+                    + self.gap.saturating_mul(flow.len().saturating_sub(1));
+                let content_width = if self.direction.is_row() {
+                    flow.iter()
+                        .map(|child| child.measure(area.width as usize, false).width + child.outer_width())
+                        .sum::<usize>()
+                        + self.gap.saturating_mul(flow.len().saturating_sub(1))
+                } else {
+                    flow.iter()
+                        .map(|child| child.measure(area.width as usize, false).width + child.outer_width())
+                        .max()
+                        .unwrap_or(0)
+                };
                 let content_height = content_height.max(area.height as usize) as u16;
-                let mut temp = Buffer::empty(Rect::new(0, 0, area.width, content_height));
-                draw::fill(&mut temp, Rect::new(0, 0, area.width, content_height), background);
+                let content_width = content_width.max(area.width as usize) as u16;
+                let mut temp = Buffer::empty(Rect::new(0, 0, content_width, content_height));
+                draw::fill(&mut temp, Rect::new(0, 0, content_width, content_height), background);
                 self.render_children(
                     &mut temp,
-                    Rect::new(0, 0, area.width, content_height),
+                    Rect::new(0, 0, content_width, content_height),
                     theme,
                     background,
                     children,
@@ -882,6 +918,18 @@ impl Node {
                     for row in 0..track {
                         let glyph = if row >= offset && row < offset + thumb { "█" } else { "│" };
                         set(buffer, area.x + area.width - 1, area.y + row as u16, glyph, style);
+                    }
+                }
+                if content_width > area.width && area.height > 1 {
+                    let track = area.width as usize;
+                    let thumb = ((track * track) / content_width as usize).clamp(1, track);
+                    let max_scroll = (content_width as usize).saturating_sub(track);
+                    let offset = if max_scroll == 0 { 0 } else { (self.scroll_left * (track - thumb)) / max_scroll };
+                    let color = theme.base.muted.over(background);
+                    let style = Style::default().fg(color.color()).bg(background.color());
+                    for column in 0..track {
+                        let glyph = if column >= offset && column < offset + thumb { "█" } else { "─" };
+                        set(buffer, area.x + column as u16, area.y + area.height - 1, glyph, style);
                     }
                 }
             }
@@ -923,8 +971,9 @@ impl Node {
                 }
             }
             Kind::Code { text, lang } => {
-                for (index, source) in text.lines().enumerate().take(area.height as usize) {
-                    let spans = highlight::line(source, lang, &theme.syntax, theme.base.text)
+                let lines = highlight::text(text, lang, &theme.syntax, theme.base.text);
+                for (index, runs) in lines.into_iter().take(area.height as usize).enumerate() {
+                    let spans = runs
                         .into_iter()
                         .map(|(text, color)| draw::span(text, color, background))
                         .collect::<Vec<_>>();
@@ -1095,7 +1144,7 @@ impl Node {
             .iter()
             .map(|child| {
                 let mut size = child.measure(area.width as usize, true);
-                if let Some(basis) = child.basis {
+                if let Some(basis) = child.basis.filter(|basis| !basis.is_auto()) {
                     size.height = basis.resolve(area.height as usize) + child.outer_height();
                 }
                 size
@@ -1203,7 +1252,8 @@ impl Node {
             for child in children {
                 let width = child
                     .width
-                    .or(child.basis)
+                    .filter(|width| !width.is_auto())
+                    .or(child.basis.filter(|basis| !basis.is_auto()))
                     .map(|width| width.resolve(available) + child.outer_width())
                     .unwrap_or_else(|| child.measure(available, false).width)
                     .min(available);
@@ -1239,7 +1289,8 @@ impl Node {
             .map(|child| {
                 let explicit = child
                     .width
-                    .or(child.basis)
+                    .filter(|width| !width.is_auto())
+                    .or(child.basis.filter(|basis| !basis.is_auto()))
                     .map(|width| width.resolve(available) + child.outer_width());
                 explicit.unwrap_or_else(|| child.measure(available, false).width)
             })
@@ -1292,7 +1343,9 @@ impl Node {
             let content_width = width
                 .saturating_sub(child.margin.left + child.margin.right)
                 .max(1);
-            let height = measured.height.min(row_height).max(1);
+            let stretch = matches!(child.align_self.unwrap_or(self.align), Align::Stretch)
+                && child.height.is_none_or(Dim::is_auto);
+            let height = if stretch { row_height } else { measured.height.min(row_height).max(1) };
             let content_height = height
                 .saturating_sub(child.margin.top + child.margin.bottom)
                 .max(1);

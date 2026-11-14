@@ -47,8 +47,20 @@ fn comment_prefix(lang: &str) -> &'static [&'static str] {
     }
 }
 
+/// Highlight a full source block. Tree-sitter handles multi-line strings,
+/// comments and nested constructs; the lexical scanner is the fallback.
+pub fn text(src: &str, lang: &str, s: &Syntax, plain: Rgba) -> Vec<Vec<(String, Rgba)>> {
+    if let Some(lines) = super::ts_highlight::highlight(src, lang, s, plain) {
+        return lines;
+    }
+    src.lines().map(|source| self::line(source, lang, s, plain)).collect()
+}
+
 /// Highlight one line of `lang` source into (text, color) runs.
 pub fn line(src: &str, lang: &str, s: &Syntax, plain: Rgba) -> Vec<(String, Rgba)> {
+    if let Some(runs) = super::ts_highlight::line(src, lang, s, plain) {
+        return runs;
+    }
     let lang = lang.to_ascii_lowercase();
     if matches!(lang.as_str(), "text" | "txt" | "plain" | "markdown" | "md" | "diff") {
         return vec![(src.to_string(), plain)];

@@ -1077,8 +1077,7 @@ fn tool(m: &Message, p: &Part, ctx: &Ctx) -> Vec<Row> {
                 let all: Vec<&str> = content.lines().collect();
                 let digits = all.len().to_string().len().max(3);
                 let bg = t.raised;
-                for (i, src) in all.iter().enumerate() {
-                    let runs = highlight::line(&src.replace('\t', "    "), &lang, &t.syntax, t.text);
+                for (i, runs) in highlight::text(content, &lang, &t.syntax, t.text).into_iter().enumerate() {
                     let mut code: Vec<Span<'static>> = runs.into_iter().map(|(x, c)| span(x, c, bg)).collect();
                     let avail = ctx.block_width().saturating_sub(digits + 1).max(1);
                     let wrapped = draw::wrap(&std::mem::take(&mut code), avail, Wrap::Char);

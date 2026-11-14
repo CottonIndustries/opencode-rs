@@ -221,9 +221,8 @@ pub fn render_with(text: &str, width: usize, t: &Tokens, bg: Rgba, base: Rgba) -
                     let (lang, body) = c.code.take().unwrap_or_default();
                     let prefix = c.prefix();
                     let pw = draw::line_width(&Line::from(prefix.clone()));
-                    for src in body.trim_end_matches('\n').split('\n') {
-                        let src = src.replace('\t', "    ");
-                        let runs = highlight::line(&src, &lang, &t.syntax, pick(t.markdown.code_block));
+                    let source = body.trim_end_matches('\n').replace('\t', "    ");
+                    for runs in highlight::text(&source, &lang, &t.syntax, pick(t.markdown.code_block)) {
                         let spans: Vec<Span<'static>> = runs.into_iter().map(|(s, col)| draw::span(s, if mono { base } else { col }, bg)).collect();
                         for l in draw::wrap(&spans, c.width.saturating_sub(pw).max(1), Wrap::Char) {
                             let mut s = prefix.clone();

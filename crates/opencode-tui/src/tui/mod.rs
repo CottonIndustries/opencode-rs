@@ -20,6 +20,7 @@ pub mod settings;
 mod tabs;
 pub mod theme;
 pub mod transcript;
+pub mod ts_highlight;
 
 use crate::app::{App, AppEvent, Handle, PromptOptions};
 use crate::permission::{self, Reply};
@@ -254,6 +255,9 @@ struct Ui {
     form: forms::FormUi,
     toasts: VecDeque<Toast>,
     scroll: usize,
+    select_anchor: Option<(usize, usize)>,
+    select_focus: Option<(usize, usize)>,
+    select_dragging: bool,
     expanded: HashSet<String>,
     sidebar: Option<bool>,
     frame: usize,
@@ -497,6 +501,9 @@ impl Ui {
             form: forms::FormUi::default(),
             toasts: VecDeque::new(),
             scroll: 0,
+            select_anchor: None,
+            select_focus: None,
+            select_dragging: false,
             expanded: HashSet::new(),
             sidebar: None,
             frame: 0,
@@ -1304,6 +1311,9 @@ impl Ui {
             }
             _ => {}
         }
+        self.select_anchor = None;
+        self.select_focus = None;
+        self.select_dragging = false;
         self.set_window_title();
         self.route = Route::Home;
         self.cache = None;
@@ -1332,6 +1342,9 @@ impl Ui {
                     self.terminal_pane.clear();
                 }
                 self.handle = h;
+                self.select_anchor = None;
+                self.select_focus = None;
+                self.select_dragging = false;
                 self.set_window_title();
                 self.route = Route::Session;
                 self.cache = None;
@@ -1448,6 +1461,64 @@ impl Ui {
         if let Some(c) = &self.cache {
             if let Some(&start) = c.out.users.last() {
                 self.scroll = c.out.lines.len().saturating_sub(start + self.body_height);
+            }
+        }
+    }
+
+    fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (anchor, focus) = (self.select_anchor?, self.select_focus?);
+        if anchor <= focus {
+            Some((anchor, focus))
+        } else {
+            Some((focus, anchor))
+        }
+    }
+
+    fn selection_text(&self) -> String {
+        let Some((start, end)) = self.selection_range() else { return String::new() };
+        let Some(cache) = &self.cache else { return String::new() };
+        let mut out = String::new();
+        for line in start.0..=end.0.min(cache.out.lines.len().saturating_sub(1)) {
+            let text: String = cache.out.lines[line].spans.iter().map(|span| span.content.as_ref()).collect();
+            let from = if line == start.0 { start.1 } else { 0 };
+            let to = if line == end.0 { end.1 } else { draw::width(&text) };
+            let selected: String = text.chars().skip(from).take(to.saturating_sub(from)).collect();
+            if line > start.0 {
+                out.push('\n');
+            }
+            out.push_str(&selected);
+        }
+        out
+    }
+
+    fn copy_selection(&mut self) -> bool {
+        let text = self.selection_text();
+        if text.trim().is_empty() {
+            return false;
+        }
+        copy_to_clipboard(&text);
+        self.toast(Variant::Info, None, "Copied selection");
+        true
+    }
+
+    fn draw_selection(&self, buf: &mut Buffer, tr: Rect, skip: usize) {
+        let Some((start, end)) = self.selection_range() else { return };
+        let Some(cache) = &self.cache else { return };
+        for screen in 0..tr.height as usize {
+            let line = skip + screen;
+            if line < start.0 || line > end.0 || line >= cache.out.lines.len() {
+                continue;
+            }
+            let text: String = cache.out.lines[line].spans.iter().map(|span| span.content.as_ref()).collect();
+            let width = draw::width(&text).min(tr.width as usize);
+            let from = if line == start.0 { start.1.min(width) } else { 0 };
+            let to = if line == end.0 { end.1.min(width) } else { width };
+            if from >= to {
+                continue;
+            }
+            for column in from..to {
+                let cell = &mut buf[(tr.x + column as u16, tr.y + screen as u16)];
+                cell.modifier.insert(Modifier::REVERSED);
             }
         }
     }
@@ -3960,6 +4031,13 @@ impl Ui {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                if self.select_anchor.is_some() && inside(self.hits.transcript) {
+                    let line = self.hits.transcript_skip + (y.saturating_sub(self.hits.transcript.y)) as usize;
+                    let column = x.saturating_sub(self.hits.transcript.x) as usize;
+                    self.select_focus = Some((line, column));
+                    self.select_dragging = true;
+                    return;
+                }
                 if self.terminal_resizing {
                     let max = self.size.0.saturating_sub(24).max(20);
                     self.terminal_pane.width = self.size.0.saturating_sub(x).clamp(20, max);
@@ -4002,6 +4080,28 @@ impl Ui {
                 }
                 if self.composer_open && !inside(self.hits.composer_panel) {
                     self.close_composer();
+                }
+                if self.select_dragging {
+                    self.select_dragging = false;
+                    self.copy_selection();
+                    return;
+                }
+                if let Some((line, _)) = self.select_anchor.take() {
+                    self.select_focus = None;
+                    if let Some((_, _, data, mime)) = self.hits.images.iter().find(|(s, e, _, _)| line >= *s && line < *e).cloned() {
+                        self.dialog = Some(Dialog::Image { data, mime, scroll: 0 });
+                        return;
+                    }
+                    if let Some((_, _, id)) = self.hits.clicks.iter().find(|(s, e, _)| line >= *s && line < *e).cloned() {
+                        if let Some(sid) = id.strip_prefix("session:") {
+                            let sid = sid.to_string();
+                            self.open_session(&sid);
+                        } else if !self.expanded.remove(&id) {
+                            self.expanded.insert(id);
+                        }
+                        self.cache = None;
+                    }
+                    return;
                 }
                 if self.dialog.is_some() {
                     let Some(p) = self.hits.dialog.as_ref() else { return };
@@ -4066,19 +4166,10 @@ impl Ui {
                 }
                 if inside(self.hits.transcript) {
                     let line = self.hits.transcript_skip + (y - self.hits.transcript.y) as usize;
-                    if let Some((_, _, data, mime)) = self.hits.images.iter().find(|(s, e, _, _)| line >= *s && line < *e).cloned() {
-                        self.dialog = Some(Dialog::Image { data, mime, scroll: 0 });
-                        return;
-                    }
-                    if let Some((_, _, id)) = self.hits.clicks.iter().find(|(s, e, _)| line >= *s && line < *e).cloned() {
-                        if let Some(sid) = id.strip_prefix("session:") {
-                            let sid = sid.to_string();
-                            self.open_session(&sid);
-                        } else if !self.expanded.remove(&id) {
-                            self.expanded.insert(id);
-                        }
-                        self.cache = None;
-                    }
+                    let column = x.saturating_sub(self.hits.transcript.x) as usize;
+                    self.select_anchor = Some((line, column));
+                    self.select_focus = Some((line, column));
+                    self.select_dragging = false;
                 }
             }
             _ => {}
@@ -5068,6 +5159,7 @@ impl Ui {
         self.scroll = self.scroll.min(total.saturating_sub(h));
         let skip = if total <= h { 0 } else { total - h - self.scroll };
         draw::draw_lines(buf, tr, &out.lines, skip);
+        self.draw_selection(buf, tr, skip);
         if self.settings.str("session.scrollbar").unwrap_or("auto") != "hide" && total > h && tr.width > 1 {
             let track = tr.height as usize;
             let thumb = ((track * track) / total.max(1)).max(1).min(track);

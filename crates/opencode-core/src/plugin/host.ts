@@ -2001,6 +2001,7 @@ function jsxLayout(
       text,
       ...(segments.length ? { segments } : {}),
       ...(["none", "word", "char"].includes(wrap) ? { wrap } : {}),
+      ...(jsxProp(props, "textAlign") ? { align: String(jsxProp(props, "textAlign")).toLowerCase() } : {}),
     }
   }
   if (type.includes("input") || type === "textarea") {
@@ -2141,6 +2142,7 @@ function jsxLayout(
     ...(jsxNumber(jsxProp(props, "marginLeft")) !== undefined ? { marginLeft: jsxNumber(jsxProp(props, "marginLeft")) } : {}),
     ...(jsxNumber(jsxProp(props, "marginRight")) !== undefined ? { marginRight: jsxNumber(jsxProp(props, "marginRight")) } : {}),
     ...(gap !== undefined ? { gap } : {}),
+    ...(jsxNumber(jsxProp(props, "aspectRatio")) !== undefined ? { aspectRatio: jsxNumber(jsxProp(props, "aspectRatio")) } : {}),
     ...(grow !== undefined ? { grow } : {}),
     ...(shrink !== undefined ? { shrink } : {}),
     ...(jsxDim(jsxProp(props, "flexBasis", "basis")) !== undefined ? { basis: jsxDim(jsxProp(props, "flexBasis", "basis")) } : {}),
