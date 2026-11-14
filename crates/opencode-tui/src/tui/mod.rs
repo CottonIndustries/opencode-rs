@@ -4314,6 +4314,7 @@ impl Ui {
                     }
                 }
             }
+            AppEvent::Clipboard { text } => copy_to_clipboard(&text),
             AppEvent::Toast { title, message, variant } => {
                 let variant = match variant.as_str() {
                     "success" => Variant::Success,

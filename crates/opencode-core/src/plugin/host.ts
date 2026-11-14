@@ -115,6 +115,8 @@ function invalidateTui() {
 }
 
 ;(globalThis as Json).__opencodeRequestRender = invalidateTui
+;(globalThis as Json).__opencodeCopy = (text: string) => request("tui.copy", { text }).catch(() => undefined)
+;(globalThis as Json).__opencodeTitle = (title: string) => request("tui.title", { title }).catch(() => undefined)
 
 // ---------------------------------------------------------------- transport
 

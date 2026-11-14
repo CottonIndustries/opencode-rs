@@ -21,8 +21,8 @@ export function useRenderer() {
     get terminalHeight() {
       return Number(dimensions().height ?? 24)
     },
-    setTerminalTitle: () => {},
-    copyToClipboard: async () => {},
+    setTerminalTitle: (title: string) => (globalThis as Json).__opencodeTitle?.(String(title ?? "")),
+    copyToClipboard: async (text: string) => (globalThis as Json).__opencodeCopy?.(String(text ?? "")),
     getSelection: () => undefined,
     requestAnimationFrame: (callback: Function) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),

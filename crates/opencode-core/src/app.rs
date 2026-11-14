@@ -36,6 +36,7 @@ pub enum AppEvent {
     Title { session: String, title: String },
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
+    Clipboard { text: String },
     PluginPage { page: String, title: String, text: String, layout: serde_json::Value },
     PluginInvalidate,
     McpAuth {

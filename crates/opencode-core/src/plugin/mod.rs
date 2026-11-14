@@ -2238,6 +2238,14 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
                 crate::forms::Outcome::Cancelled => Value::Null,
             })
         }
+        "tui.title" => Ok(Value::Null),
+        "tui.copy" => {
+            let text = first.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            if !text.is_empty() {
+                app.emit(crate::app::AppEvent::Clipboard { text });
+            }
+            Ok(Value::Null)
+        }
         "tui.toast" => {
             let message = first
                 .get("message")
