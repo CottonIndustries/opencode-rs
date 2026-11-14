@@ -1019,6 +1019,16 @@ pub fn sync_local() -> usize {
             if file.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
+            let Some(id) = file.path().file_stem().and_then(|name| name.to_str()).map(str::to_string) else {
+                continue;
+            };
+            // The index knows the local timestamp, so an already-synced large
+            // transcript is skipped without reading or parsing its JSON.
+            if let Some(local_updated) = crate::db::updated(&id) {
+                if updated_connection(&connection, &id).is_some_and(|updated| updated >= local_updated) {
+                    continue;
+                }
+            }
             let Ok(text) = std::fs::read_to_string(file.path()) else {
                 continue;
             };

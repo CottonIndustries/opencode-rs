@@ -110,6 +110,12 @@ pub fn load(id: &str) -> Option<String> {
     db.query_row("SELECT data FROM sessions WHERE id = ?1", params![id], |row| row.get(0)).ok()
 }
 
+pub fn updated(id: &str) -> Option<i64> {
+    let db = connection()?;
+    let db = db.lock().ok()?;
+    db.query_row("SELECT updated FROM sessions WHERE id = ?1", params![id], |row| row.get(0)).ok()
+}
+
 pub fn list(project: &str) -> Vec<String> {
     let Some(db) = connection() else { return Vec::new() };
     let Ok(db) = db.lock() else { return Vec::new() };

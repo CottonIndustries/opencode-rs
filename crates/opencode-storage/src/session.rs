@@ -516,6 +516,18 @@ fn load_local(project: &str, id: &str) -> Result<Session> {
 }
 
 pub fn load(project: &str, id: &str) -> Result<Session> {
+    // Upstream is the shared source of truth. Avoid parsing a large local JSON
+    // copy just to merge metadata when upstream is at least as new.
+    if let Some(upstream_updated) = crate::upstream::updated(id) {
+        let indexed = crate::db::updated(id);
+        let local_is_newer = indexed.is_some_and(|local| local > upstream_updated);
+        let unindexed_local = indexed.is_none() && file(project, id).is_file();
+        if !local_is_newer && !unindexed_local {
+            if let Some(session) = crate::upstream::load(id) {
+                return Ok(session);
+            }
+        }
+    }
     let local = load_local(project, id).ok();
     if let Some(mut session) = crate::upstream::load(id) {
         if let Some(local) = local {
