@@ -1179,7 +1179,8 @@ impl Node {
                 for (index, child) in children.iter().enumerate() {
                     if child.shrink > 0.0 {
                         let take = (overflow as f32 * child.shrink / shrink_total).round() as usize;
-                        sizes[index].height = sizes[index].height.saturating_sub(take).max(1);
+                        let min = child.min_height.filter(|dim| !dim.is_auto()).map(|dim| dim.resolve(available)).unwrap_or(1);
+                        sizes[index].height = sizes[index].height.saturating_sub(take).max(min);
                     }
                 }
                 total = sizes.iter().map(|size| size.height).sum::<usize>()
@@ -1191,8 +1192,10 @@ impl Node {
         if extra > 0 && grow_total > 0.0 {
             for (index, child) in children.iter().enumerate() {
                 if child.grow > 0.0 {
-                    sizes[index].height +=
-                        (extra as f32 * child.grow / grow_total).round() as usize;
+                    let max = child.max_height.filter(|dim| !dim.is_auto()).map(|dim| dim.resolve(available)).unwrap_or(usize::MAX);
+                    sizes[index].height = (sizes[index].height
+                        + (extra as f32 * child.grow / grow_total).round() as usize)
+                        .min(max);
                 }
             }
             total = sizes.iter().map(|size| size.height).sum::<usize>()
@@ -1324,7 +1327,9 @@ impl Node {
                 for (index, child) in children.iter().enumerate() {
                     if child.shrink > 0.0 {
                         let take = (overflow as f32 * child.shrink / shrink_total).round() as usize;
-                        widths[index] = widths[index].saturating_sub(take).max(1);
+                        let min = child.min_width.filter(|dim| !dim.is_auto()).map(|dim| dim.resolve(available)).unwrap_or(1);
+                        let max = child.max_width.filter(|dim| !dim.is_auto()).map(|dim| dim.resolve(available)).unwrap_or(usize::MAX);
+                        widths[index] = widths[index].saturating_sub(take).max(min).min(max);
                     }
                 }
                 total = widths.iter().sum::<usize>()
@@ -1336,7 +1341,8 @@ impl Node {
         if extra > 0 && grow_total > 0.0 {
             for (index, child) in children.iter().enumerate() {
                 if child.grow > 0.0 {
-                    widths[index] += (extra as f32 * child.grow / grow_total).round() as usize;
+                    let max = child.max_width.filter(|dim| !dim.is_auto()).map(|dim| dim.resolve(available)).unwrap_or(usize::MAX);
+                    widths[index] = (widths[index] + (extra as f32 * child.grow / grow_total).round() as usize).min(max);
                 }
             }
             total = widths.iter().sum::<usize>()
