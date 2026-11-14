@@ -220,7 +220,6 @@ async fn report_slash_commands_open_dialogs() {
     let mut ui = ui().await;
     ui.route = Route::Session;
     for (command, title) in [
-        ("plugins.list", "Plugins"),
         ("opencode.debug", "Debug"),
         ("opencode.highlights", "Release highlights"),
         ("opencode.update", "Update"),
@@ -231,6 +230,8 @@ async fn report_slash_commands_open_dialogs() {
             _ => panic!("{command} did not open a text dialog"),
         }
     }
+    ui.exec("plugins.list", "");
+    assert!(matches!(ui.dialog, Some(Dialog::Select(_))) || matches!(ui.dialog, Some(Dialog::Text { .. })));
     ui.open_connect();
     assert!(matches!(ui.dialog, Some(Dialog::Select(_))));
     ui.exec("session.cd", "");

@@ -46,6 +46,8 @@ pub enum Kind {
     Stash,
     Queued,
     Goal,
+    Plugins,
+    Devtools,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -968,6 +968,7 @@ impl Ui {
             c("location.reload", "Reload configuration", "System", &["reload"], false),
             c("opencode.debug", "View debug info", "System", &["debug"], false),
             c("plugins.list", "Plugins", "System", &["plugins"], false),
+            c("developer.devtools", "Developer tools", "System", &["devtools"], false),
             c("diff.open", "Open diff viewer", "VCS", &["diff"], false),
             c("stats.open", "Usage statistics", "System", &["stats"], false),
             c("variant.cycle", "Variant cycle", "Agent", &[], false),
@@ -1097,7 +1098,8 @@ impl Ui {
             "service.restart" => self.restart_service(),
             "location.reload" => self.reload_config(),
             "opencode.debug" => self.show_text("Debug", reports::debug(&self.app)),
-            "plugins.list" => self.show_text("Plugins", reports::plugins(&self.app)),
+            "developer.devtools" => self.show_text("Developer tools", reports::debug(&self.app)),
+            "plugins.list" => self.open_plugins(),
             "diff.open" => self.open_diff(),
             "app.clear" => self.clear_prompt(),
             "theme.switch_mode" => self.cycle_setting("theme.mode"),
@@ -2130,6 +2132,29 @@ impl Ui {
         self.dialog = Some(Dialog::Text { title: title.into(), text, scroll: 0, layout: Value::Null });
     }
 
+    fn open_plugins(&mut self) {
+        let loaded = self.app.plugins.list();
+        if loaded.is_empty() {
+            self.show_text("Plugins", reports::plugins(&self.app));
+            return;
+        }
+        let opts: Vec<dialog::Opt> = loaded
+            .iter()
+            .enumerate()
+            .map(|(index, plugin)| {
+                let id = plugin.get("id").and_then(Value::as_str).unwrap_or("plugin").to_string();
+                let state = plugin
+                    .get("state")
+                    .and_then(|state| state.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                dialog::Opt { title: id, footer: state, value: index.to_string(), ..Default::default() }
+            })
+            .collect();
+        self.dialog = Some(Dialog::Select(dialog::Select::new(dialog::Kind::Plugins, "Plugins", opts)));
+    }
+
     fn open_open(&mut self) {
         let current = (self.route == Route::Session).then(|| self.sid());
         let opts = navigation::open_options(&self.app, current.as_deref());
@@ -2765,6 +2790,18 @@ impl Ui {
                 if !self.editor.text.split_whitespace().any(|word| word == format!("@{value}")) {
                     self.editor.insert(&mention);
                 }
+            }
+            Kind::Plugins => {
+                self.dialog = None;
+                if let Ok(index) = value.parse::<usize>() {
+                    if let Some(plugin) = self.app.plugins.list().get(index) {
+                        let text = serde_json::to_string_pretty(plugin).unwrap_or_default();
+                        self.show_text("Plugin", text);
+                    }
+                }
+            }
+            Kind::Devtools => {
+                self.dialog = None;
             }
             Kind::Stash => {
                 self.dialog = None;
