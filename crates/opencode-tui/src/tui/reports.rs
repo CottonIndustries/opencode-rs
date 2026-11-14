@@ -5,7 +5,6 @@
 
 use serde_json::Value;
 use std::fmt::Write as _;
-use std::path::Path;
 
 fn field(value: &Value, key: &str) -> String {
     match value.get(key) {
@@ -288,39 +287,6 @@ pub fn stats() -> String {
 }
 
 /// Working-tree diff for `directory`.
-pub fn diff(app: &crate::app::App, directory: &Path) -> String {
-    let _ = app;
-    let input = serde_json::json!({
-        "directory": directory.to_string_lossy().to_string(),
-        "mode": "working",
-    });
-    match crate::vcs::diff(&input) {
-        Ok(Value::Array(items)) if items.is_empty() => "No changes in the working tree.\n".to_string(),
-        Ok(Value::Array(items)) => {
-            let mut out = String::new();
-            for item in items {
-                let file = field(&item, "file");
-                let status = field(&item, "status");
-                let additions = item.get("additions").and_then(Value::as_u64).unwrap_or(0);
-                let deletions = item.get("deletions").and_then(Value::as_u64).unwrap_or(0);
-                let _ = writeln!(out, "{file}  [{status}] +{additions} -{deletions}");
-                let patch = field(&item, "patch");
-                if patch.is_empty() {
-                    let _ = writeln!(out, "  (no patch available)");
-                } else {
-                    for line in patch.lines() {
-                        let _ = writeln!(out, "{line}");
-                    }
-                }
-                let _ = writeln!(out);
-            }
-            out
-        }
-        Ok(other) => format!("Unexpected diff response: {other}\n"),
-        Err(error) => format!("Diff unavailable: {error}\n"),
-    }
-}
-
 /// This build has no bundled release-highlights feed.
 pub fn highlights() -> String {
     let mut out = String::new();
