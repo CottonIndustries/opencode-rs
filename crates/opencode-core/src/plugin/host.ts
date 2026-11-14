@@ -2004,6 +2004,12 @@ function jsxLayout(
       ...(segments.length ? { segments } : {}),
       ...(["none", "word", "char"].includes(wrap) ? { wrap } : {}),
       ...(jsxProp(props, "textAlign") ? { align: String(jsxProp(props, "textAlign")).toLowerCase() } : {}),
+      ...(jsxDim(jsxProp(props, "width")) !== undefined ? { width: jsxDim(jsxProp(props, "width")) } : {}),
+      ...(jsxDim(jsxProp(props, "height")) !== undefined ? { height: jsxDim(jsxProp(props, "height")) } : {}),
+      ...(jsxNumber(jsxProp(props, "flexGrow")) !== undefined ? { grow: jsxNumber(jsxProp(props, "flexGrow")) } : {}),
+      ...(jsxNumber(jsxProp(props, "flexShrink")) !== undefined ? { shrink: jsxNumber(jsxProp(props, "flexShrink")) } : {}),
+      ...(jsxDim(jsxProp(props, "flexBasis", "basis")) !== undefined ? { basis: jsxDim(jsxProp(props, "flexBasis", "basis")) } : {}),
+      ...(jsxProp(props, "alignSelf") ? { alignSelf: String(jsxProp(props, "alignSelf")).toLowerCase().replace("flex-start", "start").replace("flex-end", "end") } : {}),
     }
   }
   if (type.includes("input") || type === "textarea") {
