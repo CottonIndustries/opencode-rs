@@ -4,9 +4,11 @@ version = "2.2.7"
 edition = "2021"
 description = "Terminal user interface for OpenCode"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 opencode-core = { path = "../opencode-core" }
+libloading = "0.8"
 anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
