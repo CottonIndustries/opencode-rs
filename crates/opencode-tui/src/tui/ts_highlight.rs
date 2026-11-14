@@ -114,6 +114,32 @@ fn languages() -> &'static HashMap<&'static str, Language> {
             "go",
             tree_sitter_go::HIGHLIGHTS_QUERY,
         );
+        add("c", tree_sitter_c::LANGUAGE.into(), "c", tree_sitter_c::HIGHLIGHT_QUERY);
+        add("cpp", tree_sitter_cpp::LANGUAGE.into(), "cpp", tree_sitter_cpp::HIGHLIGHT_QUERY);
+        add(
+            "java",
+            tree_sitter_java::LANGUAGE.into(),
+            "java",
+            tree_sitter_java::HIGHLIGHTS_QUERY,
+        );
+        add(
+            "ruby",
+            tree_sitter_ruby::LANGUAGE.into(),
+            "ruby",
+            tree_sitter_ruby::HIGHLIGHTS_QUERY,
+        );
+        add(
+            "php",
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            "php",
+            tree_sitter_php::HIGHLIGHTS_QUERY,
+        );
+        add(
+            "yaml",
+            tree_sitter_yaml::LANGUAGE.into(),
+            "yaml",
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        );
         add(
             "html",
             tree_sitter_html::LANGUAGE.into(),
@@ -140,6 +166,12 @@ fn language_id(lang: &str) -> &'static str {
         "json" | "jsonc" => "json",
         "sh" | "bash" | "zsh" | "shell" => "bash",
         "go" | "golang" => "go",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" => "cpp",
+        "java" => "java",
+        "rb" | "ruby" => "ruby",
+        "php" => "php",
+        "yaml" | "yml" => "yaml",
         "html" | "htm" => "html",
         "css" | "scss" => "css",
         _ => "",

@@ -41,7 +41,6 @@ use ratatui::{DefaultTerminal, Frame};
 use serde_json::{json, Value};
 use settings::Settings;
 use std::collections::{HashSet, VecDeque};
-use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use theme::{Mode, Rgba, Theme};
@@ -1314,20 +1313,11 @@ impl Ui {
         self.select_anchor = None;
         self.select_focus = None;
         self.select_dragging = false;
-        self.set_window_title();
         self.route = Route::Home;
         self.cache = None;
         self.scroll = 0;
         self.redo.clear();
         self.dialog = None;
-    }
-
-    fn set_window_title(&self) {
-        if !self.settings.bool("terminal.title").unwrap_or(true) || !std::io::stdout().is_terminal() {
-            return;
-        }
-        let title = self.handle.with(|session| session.title.clone());
-        let _ = execute!(std::io::stdout(), ratatui::crossterm::terminal::SetTitle(format!("{title} - opencode")));
     }
 
     fn open_session(&mut self, value: &str) {
@@ -1345,7 +1335,6 @@ impl Ui {
                 self.select_anchor = None;
                 self.select_focus = None;
                 self.select_dragging = false;
-                self.set_window_title();
                 self.route = Route::Session;
                 self.cache = None;
                 self.scroll = 0;
@@ -1365,8 +1354,7 @@ impl Ui {
         if let Ok(h) = self.app.session(id) {
             h.with(|s| s.title = title.to_string());
             h.save();
-            self.set_window_title();
-            self.cache = None;
+                self.cache = None;
         }
     }
 
