@@ -901,7 +901,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "type": "server.notice",
             "properties": { "message": text, "title": title }
         }),
-        AppEvent::Clipboard { .. } => serde_json::Value::Null,
+        AppEvent::Clipboard { text } => json!({
+            "id": id(),
+            "type": "tui.clipboard",
+            "properties": { "text": text }
+        }),
         AppEvent::PluginInvalidate => json!({
             "id": id(),
             "type": "plugin.invalidate",
