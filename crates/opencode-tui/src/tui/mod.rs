@@ -1319,6 +1319,7 @@ impl Ui {
         self.select_anchor = None;
         self.select_focus = None;
         self.select_dragging = false;
+        self.window_title = None;
         self.route = Route::Home;
         self.cache = None;
         self.scroll = 0;
@@ -1341,6 +1342,7 @@ impl Ui {
                 self.select_anchor = None;
                 self.select_focus = None;
                 self.select_dragging = false;
+                self.window_title = None;
                 self.route = Route::Session;
                 self.cache = None;
                 self.scroll = 0;
