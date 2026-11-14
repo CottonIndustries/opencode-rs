@@ -1715,6 +1715,34 @@ pub fn render(layout: &Value, width: usize, theme: &Theme, background: Rgba) -> 
     buffer_lines(&buffer, width, height as u16)
 }
 
+/// Render through the native Zig scene when the layout uses only nodes the
+/// native bridge supports, falling back to the Rust layout renderer otherwise.
+pub fn render_native(
+    layout: &Value,
+    width: usize,
+    theme: &Theme,
+    background: Rgba,
+) -> Vec<Line<'static>> {
+    if let Some(lines) = native::render(layout, width, theme, background) {
+        return lines;
+    }
+    render(layout, width, theme, background)
+}
+
+pub fn render_focused_native(
+    layout: &Value,
+    width: usize,
+    theme: &Theme,
+    background: Rgba,
+    focus: usize,
+) -> Vec<Line<'static>> {
+    let mut copy = layout.clone();
+    set_focus(&mut copy, focus);
+    render_native(&copy, width, theme, background)
+}
+
+mod native;
+
 
 #[cfg(test)]
 mod tests {

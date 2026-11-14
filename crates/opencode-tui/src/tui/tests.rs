@@ -46,6 +46,26 @@ async fn home_matches_upstream_layout() {
     assert!(r[25].iter().collect::<String>().contains("ctrl+p commands"));
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn plugin_sidebar_renders_through_native_renderer() {
+    let mut ui = ui().await;
+    let session = ui.app.new_session(None);
+    session.save();
+    let id = session.id();
+    ui.open_session(&id);
+    ui.sidebar = Some(true);
+    let layout: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/magic-context-sidebar.json"))
+            .unwrap();
+    ui.plugin_sidebar = vec![layout];
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("Magic Context"), "{screen}");
+    assert!(screen.contains("Historian"), "{screen}");
+}
+
 #[tokio::test]
 async fn tabs_close_to_previous_and_reopen_in_place() {
     let mut ui = ui().await;

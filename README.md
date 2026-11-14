@@ -179,20 +179,28 @@ if yours live elsewhere.
   - Package `./tui` entries load in TUI mode with `ctx.keymap`, command palette
     and slash commands, key bindings, toasts, dialogs, persistent storage,
     router pages, session panels and footer/sidebar slots. Slot and page JSX is
-    reduced to a layout tree and rendered by ratatui. Compiled Solid JSX
-    plugins run through a Solid-compatible runtime and a flexbox-style Rust
-    layout engine with row/column placement, basis, grow/shrink, min/max
-    constraints, wrap, align/justify, separate row/column gaps, padding,
-    borders, percentage absolute offsets, aspect ratios, overflow clipping,
-    scrolling and scrollbars. Markdown and code blocks use the native markdown
-    renderer and tree-sitter syntax highlighting (Rust, TypeScript/TSX,
-    JavaScript, Python, Go, C, C++, Java, Ruby, PHP, Bash, JSON, YAML, HTML and
-    CSS); inputs, textareas and selects are editable and focused from the
-    keyboard; pages route keys and paste events back to plugin handlers, honor
-    renderer clipboard and terminal-title calls, and animate `requestRender`
-    and `useTimeline` ticks. This remains a renderer subset
-    rather than a port of the native OpenTUI engine, so custom OpenTUI
-    renderables and native image/video widgets still fall back to text.
+    reduced to a layout tree. On Windows x64 the tree is rendered by OpenTUI's
+    native Zig renderer through `opentui.dll` (loaded with `libloading`, no Bun
+    runtime); layouts that use markdown, code, diff or custom nodes fall back to
+    the Rust renderer. The native bridge covers boxes, text, padding, borders,
+    gaps, flex direction, grow/shrink, alignment, wrapping, backgrounds, spans,
+    colors and input/select text, and keeps a per-thread native context so
+    redraws reuse the renderer. Compiled Solid JSX plugins run through a
+    Solid-compatible runtime. The Rust fallback keeps row/column placement,
+    basis, grow/shrink, min/max constraints, wrap, align/justify, separate
+    row/column gaps, padding, borders, percentage absolute offsets, aspect
+    ratios, overflow clipping, scrolling and scrollbars. Markdown and code
+    blocks use the native markdown renderer and tree-sitter syntax highlighting
+    (Rust, TypeScript/TSX, JavaScript, Python, Go, C, C++, Java, Ruby, PHP,
+    Bash, JSON, YAML, HTML and CSS); inputs, textareas and selects are editable
+    and focused from the keyboard; pages route keys and paste events back to
+    plugin handlers, honor renderer clipboard and terminal-title calls, and
+    animate `requestRender` and `useTimeline` ticks. Custom OpenTUI renderables
+    and native image/video widgets still fall back to text. The Windows x64
+    native library is checked in at
+    `crates/opencode-tui/native/x86_64-windows/opentui.dll` and copied beside
+    the built binary; set `OPENCODE_OPENTUI_DLL` to use another copy. On other
+    platforms the plugin surface uses the Rust renderer.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants
@@ -243,8 +251,10 @@ GitHub Copilot, and OpenCode Console device logins are available through
 `baseURL`. Shell permission parsing uses a quote-aware splitter instead of
 tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
-authorization are not part of it. Remote workspace/environment drivers and the
-full native OpenTUI/Solid layout engine is replaced by a renderer subset with flexbox-style layout, scrolling and styled text.
+authorization are not part of it. Remote workspace/environment drivers are not
+implemented, and the native OpenTUI renderer is used only for the plugin
+surface; custom OpenTUI renderables and native image/video widgets fall back to
+text.
 
 Artifacts, snapshots/undo, post-edit formatters, VCS/worktree strategies and
 RPC endpoints are available through the API and plugin host. `opencode serve`

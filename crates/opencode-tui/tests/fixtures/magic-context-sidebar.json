@@ -1,0 +1,194 @@
+{
+    "type":  "box",
+    "direction":  "column",
+    "children":  [
+                     {
+                         "type":  "box",
+                         "direction":  "row",
+                         "children":  [
+                                          {
+                                              "type":  "box",
+                                              "direction":  "column",
+                                              "children":  [
+                                                               {
+                                                                   "type":  "text",
+                                                                   "text":  "Ôû+ Magic Context",
+                                                                   "segments":  [
+                                                                                    {
+                                                                                        "text":  "Ôû+ ",
+                                                                                        "color":  "#000000",
+                                                                                        "bold":  true
+                                                                                    },
+                                                                                    {
+                                                                                        "text":  "Magic Context",
+                                                                                        "color":  "#000000",
+                                                                                        "bold":  true
+                                                                                    }
+                                                                                ]
+                                                               }
+                                                           ],
+                                              "paddingLeft":  1,
+                                              "paddingRight":  1,
+                                              "background":  "#5f87ff"
+                                          },
+                                          {
+                                              "type":  "text",
+                                              "text":  "v0.49.52",
+                                              "segments":  [
+                                                               {
+                                                                   "text":  "v",
+                                                                   "color":  "#9a9a9a"
+                                                               },
+                                                               {
+                                                                   "text":  "0.49.52",
+                                                                   "color":  "#9a9a9a"
+                                                               }
+                                                           ]
+                                          }
+                                      ],
+                         "align":  "center",
+                         "justify":  "space-between"
+                     },
+                     {
+                         "type":  "box",
+                         "direction":  "column",
+                         "children":  [
+                                          {
+                                              "type":  "box",
+                                              "direction":  "column",
+                                              "children":  [
+                                                               {
+                                                                   "type":  "box",
+                                                                   "direction":  "row",
+                                                                   "children":  [
+                                                                                    {
+                                                                                        "type":  "text",
+                                                                                        "text":  "Historian",
+                                                                                        "segments":  [
+                                                                                                         {
+                                                                                                             "text":  "Historian",
+                                                                                                             "color":  "#ffffff",
+                                                                                                             "bold":  true
+                                                                                                         }
+                                                                                                     ]
+                                                                                    },
+                                                                                    {
+                                                                                        "type":  "text",
+                                                                                        "text":  "idle",
+                                                                                        "segments":  [
+                                                                                                         {
+                                                                                                             "text":  "idle",
+                                                                                                             "color":  "#9a9a9a"
+                                                                                                         }
+                                                                                                     ]
+                                                                                    }
+                                                                                ],
+                                                                   "marginTop":  1,
+                                                                   "width":  "100%",
+                                                                   "justify":  "space-between"
+                                                               },
+                                                               {
+                                                                   "type":  "box",
+                                                                   "direction":  "row",
+                                                                   "children":  [
+                                                                                    {
+                                                                                        "type":  "text",
+                                                                                        "text":  "Compartments",
+                                                                                        "segments":  [
+                                                                                                         {
+                                                                                                             "text":  "Compartments",
+                                                                                                             "color":  "#9a9a9a"
+                                                                                                         }
+                                                                                                     ]
+                                                                                    },
+                                                                                    {
+                                                                                        "type":  "text",
+                                                                                        "text":  "0",
+                                                                                        "segments":  [
+                                                                                                         {
+                                                                                                             "text":  "0",
+                                                                                                             "color":  "#ffffff",
+                                                                                                             "bold":  true
+                                                                                                         }
+                                                                                                     ]
+                                                                                    }
+                                                                                ],
+                                                                   "width":  "100%",
+                                                                   "justify":  "space-between"
+                                                               }
+                                                           ],
+                                              "synthetic":  true
+                                          },
+                                          {
+                                              "type":  "box",
+                                              "direction":  "column",
+                                              "children":  [
+                                                               {
+                                                                   "type":  "box",
+                                                                   "direction":  "column",
+                                                                   "children":  [
+                                                                                    {
+                                                                                        "type":  "text",
+                                                                                        "text":  "Memory",
+                                                                                        "segments":  [
+                                                                                                         {
+                                                                                                             "text":  "Memory",
+                                                                                                             "color":  "#ffffff",
+                                                                                                             "bold":  true
+                                                                                                         }
+                                                                                                     ]
+                                                                                    }
+                                                                                ],
+                                                                   "marginTop":  1,
+                                                                   "width":  "100%"
+                                                               },
+                                                               {
+                                                                   "type":  "box",
+                                                                   "direction":  "column",
+                                                                   "children":  [
+                                                                                    {
+                                                                                        "type":  "box",
+                                                                                        "direction":  "row",
+                                                                                        "children":  [
+                                                                                                         {
+                                                                                                             "type":  "text",
+                                                                                                             "text":  "Memories",
+                                                                                                             "segments":  [
+                                                                                                                              {
+                                                                                                                                  "text":  "Memories",
+                                                                                                                                  "color":  "#9a9a9a"
+                                                                                                                              }
+                                                                                                                          ]
+                                                                                                         },
+                                                                                                         {
+                                                                                                             "type":  "text",
+                                                                                                             "text":  "0",
+                                                                                                             "segments":  [
+                                                                                                                              {
+                                                                                                                                  "text":  "0",
+                                                                                                                                  "color":  "#5f87ff",
+                                                                                                                                  "bold":  true
+                                                                                                                              }
+                                                                                                                          ]
+                                                                                                         }
+                                                                                                     ],
+                                                                                        "width":  "100%",
+                                                                                        "justify":  "space-between"
+                                                                                    }
+                                                                                ],
+                                                                   "synthetic":  true
+                                                               }
+                                                           ],
+                                              "synthetic":  true
+                                          }
+                                      ],
+                         "synthetic":  true
+                     }
+                 ],
+    "paddingTop":  1,
+    "paddingBottom":  1,
+    "paddingLeft":  1,
+    "paddingRight":  1,
+    "borderColor":  "#9a9a9a",
+    "width":  "100%"
+}

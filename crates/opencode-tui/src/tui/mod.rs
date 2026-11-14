@@ -11,6 +11,7 @@ pub mod image_view;
 pub mod keymap;
 pub mod markdown;
 mod navigation;
+mod plugin_native;
 pub mod plugin_ui;
 pub mod prompt;
 mod reports;
@@ -4477,7 +4478,7 @@ impl Ui {
                     cursor = Some(position);
                 }
                 Dialog::Text { title, text, scroll, layout } => {
-                    let mut lines = plugin_ui::render(layout, area.width.saturating_sub(6).max(20) as usize, &t, d_t.bg);
+                    let mut lines = plugin_ui::render_native(layout, area.width.saturating_sub(6).max(20) as usize, &t, d_t.bg);
                     if lines.is_empty() {
                         for paragraph in text.split('\n') {
                             if paragraph.is_empty() {
@@ -4498,7 +4499,7 @@ impl Ui {
                     cursor = None;
                 }
                 Dialog::Plugin { title, text, scroll, layout, focus, .. } => {
-                    let mut lines = plugin_ui::render_focused(
+                    let mut lines = plugin_ui::render_focused_native(
                         layout,
                         area.width.saturating_sub(6).max(20) as usize,
                         &t,
@@ -5637,7 +5638,7 @@ impl Ui {
                 lines.push(line(vec![], bg));
             }
             for layout in &self.plugin_sidebar {
-                lines.extend(plugin_ui::render(layout, inner_w.max(1), &t, bg));
+                lines.extend(plugin_ui::render_native(layout, inner_w.max(1), &t, bg));
             }
         }
         let body = Rect { x: area.x + 2, y: area.y + 1, width: area.width.saturating_sub(4), height: area.height.saturating_sub(4) };
