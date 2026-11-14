@@ -383,11 +383,14 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                     _ => Align::Start,
                 },
                 justify: Justify::Start,
-                position: Position::Relative,
-                left: None,
-                top: None,
-                right: None,
-                bottom: None,
+                position: match value.get("position").and_then(Value::as_str) {
+                    Some("absolute") => Position::Absolute,
+                    _ => Position::Relative,
+                },
+                left: dim(value.get("left")),
+                top: dim(value.get("top")),
+                right: dim(value.get("right")),
+                bottom: dim(value.get("bottom")),
                 hidden: false,
             })
         }
@@ -1705,6 +1708,7 @@ pub fn render(layout: &Value, width: usize, theme: &Theme, background: Rgba) -> 
     buffer_lines(&buffer, width, height as u16)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1928,5 +1932,83 @@ mod tests {
         );
         assert!(lines[0].starts_with('╭'), "{lines:?}");
         assert!(lines.iter().any(|line| line.contains("hi")), "{lines:?}");
+    }
+
+    #[test]
+    fn aspect_ratio_sets_box_height() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "width": 10,
+                "aspectRatio": 2,
+                "background": "#123456",
+                "children": []
+            }),
+            20,
+        );
+        assert_eq!(lines.len(), 5, "{lines:?}");
+    }
+
+    #[test]
+    fn row_and_column_gaps_are_separate() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "direction": "column",
+                "rowGap": 1,
+                "children": [
+                    { "type": "text", "text": "one" },
+                    { "type": "text", "text": "two" }
+                ]
+            }),
+            12,
+        );
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[1].trim_end(), "", "{lines:?}");
+        let row = render_json(
+            serde_json::json!({
+                "type": "box",
+                "direction": "row",
+                "columnGap": 3,
+                "children": [
+                    { "type": "text", "text": "a" },
+                    { "type": "text", "text": "b" }
+                ]
+            }),
+            12,
+        );
+        assert!(row[0].contains("a   b"), "{row:?}");
+    }
+
+    #[test]
+    fn auto_width_uses_content() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "direction": "row",
+                "children": [
+                    { "type": "text", "text": "x", "width": "auto" },
+                    { "type": "text", "text": "y" }
+                ]
+            }),
+            20,
+        );
+        assert_eq!(lines[0].trim_end(), "xy", "{lines:?}");
+    }
+
+    #[test]
+    fn absolute_offsets_accept_percentages() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "width": 20,
+                "height": 3,
+                "children": [
+                    { "type": "text", "text": "x", "position": "absolute", "left": "50%", "top": 1 }
+                ]
+            }),
+            20,
+        );
+        assert!(lines[1].contains('x') && lines[1].find('x') == Some(10), "{lines:?}");
     }
 }
