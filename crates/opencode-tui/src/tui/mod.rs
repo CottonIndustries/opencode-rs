@@ -3015,6 +3015,7 @@ impl Ui {
             "v" => view.split = !view.split,
             "f" => view.fullscreen = !view.fullscreen,
             "m" => view.toggle_reviewed(),
+            "z" | "return" => view.toggle_fold(),
             "?" => view.help = !view.help,
             "d" => reload = Some(view.source.next().name().to_string()),
             _ if k.ctrl && k.name == "d" => view.scroll = view.scroll.saturating_add(6),

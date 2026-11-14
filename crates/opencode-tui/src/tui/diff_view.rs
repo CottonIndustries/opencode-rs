@@ -67,6 +67,7 @@ pub struct DiffView {
     pub help: bool,
     pub loading: bool,
     reviewed: HashSet<String>,
+    folded: HashSet<String>,
 }
 
 impl DiffView {
@@ -84,6 +85,7 @@ impl DiffView {
             help: false,
             loading: true,
             reviewed: HashSet::new(),
+            folded: HashSet::new(),
         }
     }
 
@@ -119,6 +121,13 @@ impl DiffView {
         }
     }
 
+    pub fn toggle_fold(&mut self) {
+        let Some(file) = self.files.get(self.selected) else { return };
+        if !self.folded.remove(&file.path) {
+            self.folded.insert(file.path.clone());
+        }
+    }
+
     pub fn toggle_reviewed(&mut self) {
         let Some(file) = self.files.get(self.selected) else { return };
         if !self.reviewed.remove(&file.path) {
@@ -147,7 +156,7 @@ impl DiffView {
             if self.loading { "loading…" } else { "esc close" }
         );
         draw::draw_line(buf, area.x, area.y, area.width, &line(vec![Span::styled(title, draw::bold(draw::st(t.text, bg)))], bg));
-        let footer = "j/k scroll  n/p file  ]/[ hunk  b tree  s single  v split  d source  f full  m reviewed  ? help";
+        let footer = "j/k scroll  n/p file  ]/[ hunk  b tree  s single  v split  d source  f full  m reviewed  z fold  ? help";
         draw::draw_line(buf, area.x, area.y + area.height.saturating_sub(1), area.width, &line(vec![span(draw::take_width(footer, area.width as usize), t.muted, bg)], bg));
         let body = Rect { x: area.x, y: area.y + 1, width: area.width, height: area.height.saturating_sub(2) };
         if self.help {
@@ -208,28 +217,45 @@ impl DiffView {
         };
         let mut y = patch.y;
         let bottom = patch.y + patch.height;
+        let mut skip = self.scroll;
         for (index, file) in files.iter().enumerate() {
             if y >= bottom {
                 break;
             }
             if !self.single {
-                if index > 0 {
-                    y += 1;
-                    if y >= bottom {
-                        break;
+                let header_rows = 1 + usize::from(index > 0);
+                if skip >= header_rows {
+                    skip -= header_rows;
+                } else {
+                    if index > 0 {
+                        y += 1;
+                        if y >= bottom {
+                            break;
+                        }
                     }
+                    let header = format!("{}  {} +{} -{}", file.path, file.status, file.additions, file.deletions);
+                    draw::draw_line(buf, patch.x, y, patch.width, &line(vec![Span::styled(draw::take_width(&header, patch.width as usize), draw::bold(draw::st(t.text, t.raised)))], t.raised));
+                    y += 1;
+                    skip = 0;
                 }
-                let header = format!("{}  {} +{} -{}", file.path, file.status, file.additions, file.deletions);
-                draw::draw_line(buf, patch.x, y, patch.width, &line(vec![Span::styled(draw::take_width(&header, patch.width as usize), draw::bold(draw::st(t.text, t.raised)))], t.raised));
-                y += 1;
             }
-            for row in &file.rows {
+            if self.folded.contains(&file.path) {
+                if y < bottom {
+                    let label = format!("  … {} lines folded (z to expand)", file.rows.len());
+                    draw::draw_line(buf, patch.x, y, patch.width, &line(vec![span(label, t.muted, t.bg)], t.bg));
+                    y += 1;
+                }
+                skip = 0;
+                continue;
+            }
+            for row in file.rows.iter().skip(skip) {
                 if y >= bottom {
                     break;
                 }
                 self.draw_row(buf, patch, y, row, t);
                 y += 1;
             }
+            skip = 0;
         }
         if self.scroll > 0 {
             let label = format!("↕ {}", self.scroll);
