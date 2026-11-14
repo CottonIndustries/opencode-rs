@@ -199,6 +199,7 @@ pub enum Dialog {
     Terminal(super::terminal::TerminalDialog),
     McpAuth(McpAuth),
     Diff(super::diff_view::DiffView),
+    Image { data: String, mime: String, scroll: usize },
     Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
     Plugin { page: String, title: String, text: String, scroll: usize, layout: serde_json::Value, focus: usize },
 }

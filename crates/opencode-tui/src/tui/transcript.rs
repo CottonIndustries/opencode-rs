@@ -20,6 +20,7 @@ pub struct Ctx<'a> {
     pub width: usize,
     pub term_width: usize,
     pub thinking: bool,
+    pub image_preview: bool,
     pub grouping: bool,
     pub tps: bool,
     pub spinner: &'a str,
@@ -41,19 +42,23 @@ pub struct Out {
     pub clicks: Vec<(usize, usize, String)>,
     /// First line of each user message, for message navigation.
     pub users: Vec<usize>,
+    /// Clickable image blocks: line range, base64 data, mime type.
+    pub images: Vec<(usize, usize, String, String)>,
 }
 
 struct Row {
     lines: Vec<Line<'static>>,
     click: Option<String>,
     user: bool,
+    /// Image blocks inside this row: line offset, base64 data, mime type.
+    images: Vec<(usize, String, String)>,
     /// Rows rendered inside a group follow their header without a blank line.
     tight: bool,
 }
 
 impl Row {
     fn new(lines: Vec<Line<'static>>) -> Row {
-        Row { lines, click: None, user: false, tight: false }
+        Row { lines, click: None, user: false, images: Vec::new(), tight: false }
     }
     fn click(mut self, id: impl Into<String>) -> Row {
         self.click = Some(id.into());
@@ -263,7 +268,7 @@ pub fn render_range(session: &Session, start: usize, end: usize, queued: &[Strin
         i += 1;
     }
     for q in queued {
-        rows.push(user_box(q, &[], ctx.t.border, ctx));
+        rows.push(user_box(q, &[], &[], ctx.t.border, ctx));
     }
     let mut out = Out::default();
     for r in rows {
@@ -273,6 +278,10 @@ pub fn render_range(session: &Session, start: usize, end: usize, queued: &[Strin
         let start = out.lines.len();
         if r.user {
             out.users.push(start);
+        }
+        let row_end = start + r.lines.len();
+        for (offset, data, mime) in r.images {
+            out.images.push((start + offset, row_end, data, mime));
         }
         out.lines.extend(r.lines);
         if let Some(id) = r.click {
@@ -288,6 +297,7 @@ pub fn append(base: &mut Out, part: Out) {
     base.lines.extend(part.lines);
     base.clicks.extend(part.clicks.into_iter().map(|(a, b, id)| (a + offset, b + offset, id)));
     base.users.extend(part.users.into_iter().map(|line| line + offset));
+    base.images.extend(part.images.into_iter().map(|(a, b, data, mime)| (a + offset, b + offset, data, mime)));
 }
 
 /// Cheap content fingerprint for a message range. Deep ranges (the live last
@@ -512,8 +522,9 @@ fn entry(e: &Entry, session: &Session, ctx: &Ctx) -> Vec<Row> {
         Entry::User(m) => {
             let text = m.parts.iter().filter_map(|p| if let Part::Text { text, synthetic: false } = p { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n");
             let files = attachments(m, ctx);
+            let images = message_images(m);
             let color = (ctx.agent_color)(m.agent.as_deref().unwrap_or(ctx.session_agent));
-            let mut r = user_box(&text, &files, color, ctx);
+            let mut r = user_box(&text, &files, &images, color, ctx);
             r.user = true;
             vec![r]
         }
@@ -569,7 +580,19 @@ fn attachments(m: &Message, ctx: &Ctx) -> Vec<(String, String)> {
 }
 
 /// `UserMessage`: raised box with an agent-colored stripe.
-fn user_box(text: &str, files: &[(String, String)], color: Rgba, ctx: &Ctx) -> Row {
+fn message_images(m: &Message) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for part in &m.parts {
+        if let Part::File(file) = part {
+            if file.mime.starts_with("image/") && !file.data.is_empty() && !out.iter().any(|(data, _)| *data == file.data) {
+                out.push((file.data.clone(), file.mime.clone()));
+            }
+        }
+    }
+    out
+}
+
+fn user_box(text: &str, files: &[(String, String)], images: &[(String, String)], color: Rgba, ctx: &Ctx) -> Row {
     let t = ctx.t;
     let bg = t.raised;
     let stripe = span("┃", color, bg);
@@ -603,6 +626,21 @@ fn user_box(text: &str, files: &[(String, String)], color: Rgba, ctx: &Ctx) -> R
             body.push(line(row, bg));
         }
     }
+    let mut image_blocks = Vec::new();
+    if ctx.image_preview && !images.is_empty() {
+        if !body.is_empty() {
+            body.push(line(vec![], bg));
+        }
+        for (data, mime) in images {
+            let offset = body.len() + 1;
+            let rendered = super::image_view::lines(data, mime, inner, 10, bg);
+            if rendered.is_empty() {
+                continue;
+            }
+            body.extend(rendered);
+            image_blocks.push((offset, data.clone(), mime.clone()));
+        }
+    }
     let mut lines = vec![line(vec![stripe.clone()], bg)];
     for mut l in body {
         let mut spans = vec![stripe.clone(), span("  ", t.text, bg)];
@@ -610,7 +648,9 @@ fn user_box(text: &str, files: &[(String, String)], color: Rgba, ctx: &Ctx) -> R
         lines.push(line(spans, bg));
     }
     lines.push(line(vec![stripe], bg));
-    Row::new(lines)
+    let mut row = Row::new(lines);
+    row.images = image_blocks;
+    row
 }
 
 fn compaction(m: &Message, ctx: &Ctx) -> Vec<Line<'static>> {

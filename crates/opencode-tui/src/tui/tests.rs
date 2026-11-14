@@ -23,7 +23,7 @@ async fn ui() -> Ui {
     let dir = std::env::temp_dir().join("opencode-tui-test");
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::init(dir).await.unwrap();
-    let opts = StartOptions { model: Some("anthropic/claude-sonnet-5-5".into()), agent: None, continue_last: false, session: None, fork: false, prompt: None };
+    let opts = StartOptions { model: Some("anthropic/claude-sonnet-5-5".into()), agent: None, continue_last: false, session: None, fork: false, prompt: None, mini: false };
     let mut ui = Ui::new(app, &opts).unwrap();
     ui.theme = theme::fallback(Mode::Dark);
     ui

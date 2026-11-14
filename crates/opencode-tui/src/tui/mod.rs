@@ -7,6 +7,7 @@ mod diff_view;
 pub mod draw;
 pub mod forms;
 pub mod highlight;
+pub mod image_view;
 pub mod keymap;
 pub mod markdown;
 mod navigation;
@@ -165,6 +166,7 @@ struct Hits {
     transcript: Rect,
     transcript_skip: usize,
     clicks: Vec<(usize, usize, String)>,
+    images: Vec<(usize, usize, String, String)>,
     dialog: Option<dialog::Placed>,
     tabs: Vec<(u16, u16, String)>,
     tabs_vertical: Vec<(Rect, String)>,
@@ -2473,6 +2475,17 @@ impl Ui {
     }
 
     fn dialog_key(&mut self, k: &Key, ev: &KeyEvent) {
+        if let Some(Dialog::Image { scroll, .. }) = self.dialog.as_mut() {
+            match k.name.as_str() {
+                "escape" | "q" | "return" => self.dialog = None,
+                "up" | "k" => *scroll = scroll.saturating_sub(1),
+                "down" | "j" => *scroll = scroll.saturating_add(1),
+                "pageup" => *scroll = scroll.saturating_sub(12),
+                "pagedown" => *scroll = scroll.saturating_add(12),
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.dialog, Some(Dialog::Diff(_))) {
             self.diff_key(k);
             return;
@@ -2482,7 +2495,7 @@ impl Ui {
             let km = &self.keys;
             match self.dialog.as_mut() {
                 None => Act::None,
-                Some(Dialog::Diff(_)) => Act::None,
+                Some(Dialog::Diff(_)) | Some(Dialog::Image { .. }) => Act::None,
                 Some(Dialog::Help) | Some(Dialog::Status) => {
                     if k.name == "return" || k.name == "escape" || (k.ctrl && k.name == "c") {
                         Act::Close
@@ -3535,6 +3548,10 @@ impl Ui {
                 }
                 if inside(self.hits.transcript) {
                     let line = self.hits.transcript_skip + (y - self.hits.transcript.y) as usize;
+                    if let Some((_, _, data, mime)) = self.hits.images.iter().find(|(s, e, _, _)| line >= *s && line < *e).cloned() {
+                        self.dialog = Some(Dialog::Image { data, mime, scroll: 0 });
+                        return;
+                    }
                     if let Some((_, _, id)) = self.hits.clicks.iter().find(|(s, e, _)| line >= *s && line < *e).cloned() {
                         if let Some(sid) = id.strip_prefix("session:") {
                             let sid = sid.to_string();
@@ -3771,6 +3788,15 @@ impl Ui {
                 }
                 Dialog::Diff(view) => {
                     view.draw(buf, area, &t);
+                    self.hits.dialog = Some(dialog::Placed { panel: area, list: Rect::default(), rows: vec![] });
+                    cursor = None;
+                }
+                Dialog::Image { data, mime, scroll } => {
+                    let area = Rect { x: area.x + 2, y: area.y + 1, width: area.width.saturating_sub(4), height: area.height.saturating_sub(3) };
+                    draw::fill(buf, area, t.bg);
+                    let lines = image_view::lines(data, mime, area.width as usize, area.height as usize, t.bg);
+                    let skip = (*scroll).min(lines.len().saturating_sub(area.height as usize));
+                    draw::draw_lines(buf, area, &lines, skip);
                     self.hits.dialog = Some(dialog::Placed { panel: area, list: Rect::default(), rows: vec![] });
                     cursor = None;
                 }
@@ -4509,6 +4535,7 @@ impl Ui {
         self.hits.transcript = tr;
         self.hits.transcript_skip = skip;
         self.hits.clicks = out.clicks.clone();
+        self.hits.images = out.images.clone();
         if self.scroll > 0 {
             let label = "Jump to latest ↓";
             let lw = draw::width(label) as u16;
@@ -4713,6 +4740,7 @@ impl Ui {
             width,
             term_width: self.size.0 as usize,
             thinking: self.thinking_shown(),
+            image_preview: self.settings.bool("session.image_preview").unwrap_or(false),
             grouping: self.settings.grouping(),
             tps: self.settings.tps(),
             spinner,
