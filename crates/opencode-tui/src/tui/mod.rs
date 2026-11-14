@@ -3962,7 +3962,15 @@ impl Ui {
                     a.selected = if up { (a.selected + n - 1) % n } else { (a.selected + 1) % n };
                     return;
                 }
-                self.scroll_by(if up { 3 } else { -3 });
+                let step = if up { 3 } else { -3 };
+                match self.dialog.as_mut() {
+                    Some(Dialog::Plugin { scroll, .. }) | Some(Dialog::Text { scroll, .. }) | Some(Dialog::Image { scroll, .. }) => {
+                        *scroll = (*scroll as isize + step).max(0) as usize;
+                        return;
+                    }
+                    _ => {}
+                }
+                self.scroll_by(step);
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 if self.dialog.is_none() {

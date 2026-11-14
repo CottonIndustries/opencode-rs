@@ -3,6 +3,7 @@
 //! switching, reviewed marks and hunk/file navigation.
 
 use super::draw::{self, line, span};
+use super::highlight;
 use super::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -48,6 +49,7 @@ struct Row {
 
 struct File {
     path: String,
+    lang: String,
     status: String,
     additions: usize,
     deletions: usize,
@@ -252,7 +254,7 @@ impl DiffView {
                 if y >= bottom {
                     break;
                 }
-                self.draw_row(buf, patch, y, row, t);
+                self.draw_row(buf, patch, y, row, &file.lang, t);
                 y += 1;
             }
             skip = 0;
@@ -283,12 +285,16 @@ impl DiffView {
             };
             let old_color = if row.kind == Kind::Del { t.diff.removed } else { t.muted };
             let new_color = if row.kind == Kind::Add { t.diff.added } else { t.muted };
-            draw::draw_line(buf, left.x, y, left.width, &line(vec![span(format!("{:>4} ", old.map(|n| n.to_string()).unwrap_or_default()), old_color, old_bg), Span::styled(draw::take_width(&old_text, left.width.saturating_sub(5) as usize), draw::st(old_color, old_bg))], old_bg));
-            draw::draw_line(buf, right.x, y, right.width, &line(vec![span(format!("{:>4} ", new.map(|n| n.to_string()).unwrap_or_default()), new_color, new_bg), Span::styled(draw::take_width(&new_text, right.width.saturating_sub(5) as usize), draw::st(new_color, new_bg))], new_bg));
+            let mut old_spans = vec![span(format!("{:>4} ", old.map(|n| n.to_string()).unwrap_or_default()), old_color, old_bg)];
+            old_spans.extend(highlight::line(&old_text, &file.lang, &t.syntax, old_color).into_iter().map(|(text, color)| span(text, color, old_bg)));
+            draw::draw_line(buf, left.x, y, left.width, &line(old_spans, old_bg));
+            let mut new_spans = vec![span(format!("{:>4} ", new.map(|n| n.to_string()).unwrap_or_default()), new_color, new_bg)];
+            new_spans.extend(highlight::line(&new_text, &file.lang, &t.syntax, new_color).into_iter().map(|(text, color)| span(text, color, new_bg)));
+            draw::draw_line(buf, right.x, y, right.width, &line(new_spans, new_bg));
         }
     }
 
-    fn draw_row(&self, buf: &mut Buffer, patch: Rect, y: u16, row: &Row, t: &Theme) {
+    fn draw_row(&self, buf: &mut Buffer, patch: Rect, y: u16, row: &Row, lang: &str, t: &Theme) {
         let (bg, fg) = match row.kind {
             Kind::Add => (t.diff.bg_added, t.diff.added),
             Kind::Del => (t.diff.bg_removed, t.diff.removed),
@@ -313,9 +319,15 @@ impl DiffView {
         } else {
             draw::take_width(&row.text, patch.width.saturating_sub(number.len() as u16 + 1) as usize)
         };
-        let mut spans = vec![span(number, t.muted, bg), span(prefix, fg, bg), Span::styled(text, draw::st(fg, bg))];
+        let mut spans = vec![span(number, t.muted, bg), span(prefix, fg, bg)];
         if row.kind == Kind::Hunk {
             spans = vec![Span::styled(draw::take_width(&row.text, patch.width as usize), draw::bold(draw::st(fg, bg)))];
+        } else {
+            spans.extend(
+                highlight::line(&text, lang, &t.syntax, fg)
+                    .into_iter()
+                    .map(|(text, color)| span(text, color, bg)),
+            );
         }
         draw::draw_line(buf, patch.x, y, patch.width, &line(spans, bg));
     }
@@ -373,6 +385,7 @@ fn file(value: &Value) -> Option<File> {
     let path = value.get("file")?.as_str()?.to_string();
     let patch = value.get("patch").and_then(Value::as_str).unwrap_or_default();
     Some(File {
+        lang: highlight::lang_for_path(&path),
         path,
         status: value.get("status").and_then(Value::as_str).unwrap_or("modified").to_string(),
         additions: value.get("additions").and_then(Value::as_u64).unwrap_or(0) as usize,
