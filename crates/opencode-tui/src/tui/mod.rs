@@ -165,6 +165,7 @@ struct Hits {
     clicks: Vec<(usize, usize, String)>,
     dialog: Option<dialog::Placed>,
     tabs: Vec<(u16, u16, String)>,
+    tabs_vertical: Vec<(Rect, String)>,
     tab_close: Vec<(u16, u16, String)>,
     jump: Option<Rect>,
     auto: Vec<(u16, usize)>,
@@ -248,6 +249,13 @@ struct Ui {
     tab_hover: Option<String>,
     /// when the current tab hover began, for the delayed title marquee
     tab_hover_at: Option<Instant>,
+    /// sessions with activity since they were last viewed
+    tab_unread: HashSet<String>,
+    /// tab being dragged and the slot it was picked up from
+    tab_drag: Option<(String, usize)>,
+    tab_drag_moved: bool,
+    /// session targeted by the tab context menu
+    tab_menu_target: Option<String>,
     /// sessions in visit order, most recent last
     tab_history: Vec<String>,
     /// terminal title and default background as last sent (OSC 0 / OSC 11)
@@ -473,6 +481,10 @@ impl Ui {
             closed_tabs: vec![],
             tab_hover: None,
             tab_hover_at: None,
+            tab_unread: HashSet::new(),
+            tab_drag: None,
+            tab_drag_moved: false,
+            tab_menu_target: None,
             tab_history: vec![],
             chrome: Default::default(),
             redo: vec![],
@@ -492,7 +504,8 @@ impl Ui {
         ui.set_theme(&name);
         ui.publish_theme();
         ui.pick_model(opts.model.clone());
-        ui.tabs = tabs::load(&ui.app.directory).into_iter().filter(|id| crate::session::load(&ui.app.project, id).is_ok()).collect();
+        let scope = ui.settings.tabs_scope().to_string();
+        ui.tabs = tabs::load(&ui.app.directory, &scope).into_iter().filter(|id| crate::session::load(&ui.app.project, id).is_ok()).collect();
         ui.saved_tabs = ui.tabs.clone();
         if ui.route == Route::Session {
             let id = ui.sid();
@@ -524,7 +537,8 @@ impl Ui {
                 (id.clone(), title)
             })
             .collect();
-        tabs::save(&self.app.directory, &list);
+        let scope = if self.settings.str("tabs.scope") == Some("global") { "global" } else { "cwd" };
+        tabs::save(&self.app.directory, scope, &list);
         self.saved_tabs = self.tabs.clone();
     }
 
@@ -629,6 +643,123 @@ impl Ui {
         let start = current.map(|i| i as isize).unwrap_or(if step > 0 { -1 } else { 0 });
         let id = self.tabs[(start + step).rem_euclid(n) as usize].clone();
         self.open_session(&id);
+    }
+
+    fn cycle_unread(&mut self, step: isize) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let n = self.tabs.len() as isize;
+        let current = if self.route == Route::Session { self.tabs.iter().position(|t| *t == self.sid()) } else { None };
+        let start = current.map(|i| i as isize).unwrap_or(if step > 0 { -1 } else { 0 });
+        for offset in 1..=n {
+            let index = (start + step * offset).rem_euclid(n) as usize;
+            let id = &self.tabs[index];
+            if self.tab_unread.contains(id) {
+                let id = id.clone();
+                self.open_session(&id);
+                return;
+            }
+        }
+        self.cycle_tab(step);
+    }
+
+    fn tab_history_step(&mut self, forward: bool) {
+        let Some(current) = (self.route == Route::Session).then(|| self.sid()) else { return };
+        let Some(index) = self.tab_history.iter().position(|id| *id == current) else { return };
+        let next = if forward {
+            self.tab_history.get(index + 1)
+        } else {
+            index.checked_sub(1).and_then(|i| self.tab_history.get(i))
+        }
+        .cloned();
+        if let Some(id) = next.filter(|id| self.tabs.contains(id)) {
+            self.open_session(&id);
+        }
+    }
+
+    fn tabs_visible(&self) -> bool {
+        match self.settings.tabs_mode() {
+            "off" => false,
+            "on" => true,
+            _ => self.size.0 >= 64,
+        }
+    }
+
+    fn tabs_vertical(&self) -> bool {
+        self.tabs_visible() && self.settings.tabs_layout() == "vertical"
+    }
+
+    fn tab_at(&self, x: u16, y: u16) -> Option<String> {
+        if y == 0 {
+            if let Some((_, _, id)) = self.hits.tabs.iter().find(|(a, b, _)| x >= *a && x < *b) {
+                return Some(id.clone());
+            }
+        }
+        self.hits
+            .tabs_vertical
+            .iter()
+            .find(|(r, _)| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            .map(|(_, id)| id.clone())
+    }
+
+    fn move_tab(&mut self, source: &str, target: usize) {
+        let Some(from) = self.tabs.iter().position(|id| id == source) else { return };
+        let target = target.min(self.tabs.len().saturating_sub(1));
+        if from == target {
+            return;
+        }
+        let id = self.tabs.remove(from);
+        self.tabs.insert(target, id);
+        self.tab_drag_moved = true;
+    }
+
+    fn open_tab_menu(&mut self, id: String) {
+        let title = self.app.session(&id).map(|h| h.with(|s| s.title.clone())).unwrap_or_default();
+        let opts = vec![
+            dialog::Opt { title: "Close tab".into(), value: "close".into(), ..Default::default() },
+            dialog::Opt { title: "Close other tabs".into(), value: "close_others".into(), ..Default::default() },
+            dialog::Opt { title: "Close tabs to the right".into(), value: "close_right".into(), ..Default::default() },
+            dialog::Opt { title: "Reopen closed tab".into(), value: "reopen".into(), ..Default::default() },
+            dialog::Opt { title: "Rename session".into(), value: "rename".into(), ..Default::default() },
+        ];
+        self.dialog = Some(Dialog::Select(dialog::Select::new(
+            dialog::Kind::TabMenu,
+            &format!("Tab: {title}"),
+            opts,
+        )));
+        self.tab_menu_target = Some(id);
+    }
+
+    fn close_tabs_to(&mut self, target: &str, right_only: bool) {
+        let Some(index) = self.tabs.iter().position(|id| id == target) else { return };
+        let keep = if right_only { index + 1 } else { index + 1 };
+        let mut removed = Vec::new();
+        if right_only {
+            removed.extend(self.tabs.drain(keep..));
+        } else {
+            let mut i = 0;
+            while i < self.tabs.len() {
+                if i != index {
+                    removed.push(self.tabs.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        for id in removed {
+            self.closed_tabs.push((id.clone(), 0));
+            self.tab_unread.remove(&id);
+        }
+        if self.closed_tabs.len() > tabs::CLOSED_LIMIT {
+            let excess = self.closed_tabs.len() - tabs::CLOSED_LIMIT;
+            self.closed_tabs.drain(0..excess);
+        }
+        if self.route == Route::Session && !self.tabs.contains(&self.sid()) {
+            if let Some(id) = self.tabs.get(index.min(self.tabs.len().saturating_sub(1))).cloned() {
+                self.open_session(&id);
+            }
+        }
     }
 
     fn sid(&self) -> String {
@@ -1056,6 +1187,7 @@ impl Ui {
                 self.route = Route::Session;
                 self.cache = None;
                 self.scroll = 0;
+                self.tab_unread.remove(&id);
                 self.redo.clear();
                 self.visit(&id);
                 if let Some(a) = self.handle.with(|s| s.agent.clone()).filter(|a| self.app.agent(a).is_ok()) {
@@ -1723,6 +1855,10 @@ impl Ui {
             Opt { title: "Sidebar".into(), footer: if self.settings.sidebar_auto() { "auto".into() } else { "hide".into() }, category: "Session".into(), value: "sidebar".into(), ..Default::default() },
             Opt { title: "Group related tool calls".into(), footer: on(self.settings.grouping()), category: "Session".into(), value: "grouping".into(), ..Default::default() },
             Opt { title: "Tokens per second".into(), footer: on(self.settings.tps()), category: "Session".into(), value: "tps".into(), ..Default::default() },
+            Opt { title: "Tab mode".into(), footer: self.settings.tabs_mode().into(), category: "Tabs".into(), value: "tabs.mode".into(), ..Default::default() },
+            Opt { title: "Tab scope".into(), footer: self.settings.tabs_scope().into(), category: "Tabs".into(), value: "tabs.scope".into(), ..Default::default() },
+            Opt { title: "Tab layout".into(), footer: self.settings.tabs_layout().into(), category: "Tabs".into(), value: "tabs.layout".into(), ..Default::default() },
+            Opt { title: "Tab indicators".into(), footer: self.settings.tabs_indicators().into(), category: "Tabs".into(), value: "tabs.indicators".into(), ..Default::default() },
         ];
         self.dialog = Some(Dialog::Select(Select::new(Kind::Settings, "Settings", opts)));
     }
@@ -2000,6 +2136,23 @@ impl Ui {
                         let v = !self.settings.animations();
                         self.settings.set("animations", json!(v));
                     }
+                    "tabs.mode" => {
+                        let next = match self.settings.tabs_mode() { "auto" => "on", "on" => "off", _ => "auto" };
+                        self.settings.set("tabs.mode", json!(next));
+                    }
+                    "tabs.scope" => {
+                        let next = if self.settings.tabs_scope() == "global" { "cwd" } else { "global" };
+                        self.settings.set("tabs.scope", json!(next));
+                        self.saved_tabs.clear();
+                    }
+                    "tabs.layout" => {
+                        let next = if self.settings.tabs_layout() == "vertical" { "horizontal" } else { "vertical" };
+                        self.settings.set("tabs.layout", json!(next));
+                    }
+                    "tabs.indicators" => {
+                        let next = if self.settings.tabs_indicators() == "numbers" { "status" } else { "numbers" };
+                        self.settings.set("tabs.indicators", json!(next));
+                    }
                     _ => {}
                 }
                 self.cache = None;
@@ -2038,6 +2191,26 @@ impl Ui {
                 let mention = format!("@{value} ");
                 if !self.editor.text.split_whitespace().any(|word| word == format!("@{value}")) {
                     self.editor.insert(&mention);
+                }
+            }
+            Kind::TabMenu => {
+                self.dialog = None;
+                let target = self.tab_menu_target.take().unwrap_or_else(|| self.sid());
+                match value.as_str() {
+                    "close" => self.close_tab_id(&target),
+                    "close_others" => self.close_tabs_to(&target, false),
+                    "close_right" => self.close_tabs_to(&target, true),
+                    "reopen" => self.reopen_tab(),
+                    "rename" => {
+                        let mut editor = Editor::default();
+                        editor.set(&self.app.session(&target).map(|h| h.with(|s| s.title.clone())).unwrap_or_default());
+                        self.dialog = Some(Dialog::Rename(dialog::Prompt {
+                            title: "Rename Session".into(),
+                            editor,
+                            target,
+                        }));
+                    }
+                    _ => {}
                 }
             }
             Kind::Mcp => {
@@ -2563,6 +2736,22 @@ impl Ui {
             self.exec("session.rename", "");
             return;
         }
+        if self.keys.matches("session.tab.next_unread", &k, false) {
+            self.cycle_unread(1);
+            return;
+        }
+        if self.keys.matches("session.tab.previous_unread", &k, false) {
+            self.cycle_unread(-1);
+            return;
+        }
+        if self.keys.matches("session.tab.history.back", &k, false) {
+            self.tab_history_step(false);
+            return;
+        }
+        if self.keys.matches("session.tab.history.forward", &k, false) {
+            self.tab_history_step(true);
+            return;
+        }
         if in_session && self.keys.matches("prompt.skills", &k, false) {
             self.exec("prompt.skills", "");
             return;
@@ -2936,12 +3125,40 @@ impl Ui {
                 }
                 self.scroll_by(if up { 3 } else { -3 });
             }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if self.dialog.is_none() {
+                    if let Some(id) = self.tab_at(x, y).filter(|id| id != "+") {
+                        self.open_tab_menu(id);
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Middle) => {
+                if self.dialog.is_none() {
+                    if let Some(id) = self.tab_at(x, y).filter(|id| id != "+") {
+                        self.close_tab_id(&id);
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.dialog.is_none() {
+                    if let Some(id) = self.tab_at(x, y).filter(|id| id != "+") {
+                        let index = self.tabs.iter().position(|t| *t == id).unwrap_or(0);
+                        self.tab_drag = Some((id, index));
+                        self.tab_drag_moved = false;
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some((source, _)) = self.tab_drag.clone() {
+                    if let Some(target) = self.tab_at(x, y).filter(|id| id != "+") {
+                        if let Some(index) = self.tabs.iter().position(|t| *t == target) {
+                            self.move_tab(&source, index);
+                        }
+                    }
+                }
+            }
             MouseEventKind::Moved => {
-                let hover = if y == 0 && self.dialog.is_none() {
-                    self.hits.tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|(_, _, id)| id.clone())
-                } else {
-                    None
-                };
+                let hover = if self.dialog.is_none() { self.tab_at(x, y) } else { None };
                 if self.tab_hover != hover {
                     self.tab_hover = hover;
                     self.tab_hover_at = self.tab_hover.as_ref().map(|_| Instant::now());
@@ -2956,6 +3173,13 @@ impl Ui {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                let moved = self.tab_drag_moved;
+                self.tab_drag = None;
+                self.tab_drag_moved = false;
+                if moved {
+                    self.persist_tabs();
+                    return;
+                }
                 if self.dialog.is_some() {
                     let Some(p) = self.hits.dialog.as_ref() else { return };
                     if !inside(p.panel) {
@@ -2998,6 +3222,14 @@ impl Ui {
                     }
                 }
                 if let Some((_, _, id)) = self.hits.tabs.iter().find(|(a, b, _)| x >= *a && x < *b && y == 0).cloned() {
+                    if id == "+" {
+                        self.new_session();
+                    } else if id != self.sid() || self.route != Route::Session {
+                        self.open_session(&id);
+                    }
+                    return;
+                }
+                if let Some(id) = self.tab_at(x, y) {
                     if id == "+" {
                         self.new_session();
                     } else if id != self.sid() || self.route != Route::Session {
@@ -3169,10 +3401,17 @@ impl Ui {
                 };
                 self.toast(variant, title, message);
             }
-            AppEvent::Updated { session } if session == sid && !self.shells.is_empty() => {
-                let done = self.handle.with(|s| s.messages.last().is_some_and(|m| m.text().starts_with("<shell-run")));
-                if done {
-                    self.shells.remove(0);
+            AppEvent::Updated { session } => {
+                if session == sid {
+                    self.tab_unread.remove(&session);
+                    if !self.shells.is_empty() {
+                        let done = self.handle.with(|s| s.messages.last().is_some_and(|m| m.text().starts_with("<shell-run")));
+                        if done {
+                            self.shells.remove(0);
+                        }
+                    }
+                } else if self.tabs.contains(&session) {
+                    self.tab_unread.insert(session);
                 }
             }
             _ => {}
@@ -3194,7 +3433,11 @@ impl Ui {
         draw::fill(buf, area, t.bg);
         self.hits = Hits::default();
         let mut body = area;
-        if !self.tabs.is_empty() {
+        let vertical = self.tabs_vertical() && self.route == Route::Session && !self.tabs.is_empty();
+        if vertical {
+            self.draw_tabs(buf, area, &t);
+            body = Rect { x: area.x + 42, width: area.width.saturating_sub(42), ..area };
+        } else if self.tabs_visible() && (!self.tabs.is_empty() || self.route == Route::Home) {
             self.draw_tabs(buf, Rect { height: 1, ..area }, &t);
             body = Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area };
         }
@@ -3333,74 +3576,189 @@ impl Ui {
         }
     }
 
+        fn tab_layout(&self, avail: usize, current: Option<&str>) -> (usize, usize, usize, usize, usize) {
+        let n = self.tabs.len();
+        if n == 0 {
+            return (0, 0, 0, 0, 32);
+        }
+        let active = current.and_then(|id| self.tabs.iter().position(|t| t == id)).unwrap_or(0);
+        let min = 12usize;
+        let max = 32usize;
+        if n * max <= avail {
+            return (0, n, 0, 0, max);
+        }
+        if n * min <= avail {
+            return (0, n, 0, 0, (avail / n).min(max));
+        }
+        let mut count = (avail / min).max(1).min(n);
+        let mut start = active.saturating_sub(count / 2);
+        if start + count > n {
+            start = n - count;
+        }
+        let before = start;
+        let after = n - start - count;
+        let reserved = (if before > 0 { 4 } else { 0 }) + (if after > 0 { 4 } else { 0 });
+        let mut width = ((avail.saturating_sub(reserved)) / count).max(8);
+        if width < 8 {
+            count = 1;
+            width = 8;
+        }
+        (start, count, before, after, width)
+    }
+
+    fn draw_tab(&mut self, buf: &mut Buffer, x: u16, y: u16, w: u16, id: &str, index: usize, t: &Theme, cur: Option<&str>) {
+        let Ok(h) = self.app.session(id) else { return };
+        let title = h.with(|s| if s.has_default_title() { "New session".to_string() } else { s.title.clone() });
+        let active = cur == Some(id);
+        let hovered = self.tab_hover.as_deref() == Some(id);
+        let bg = if hovered {
+            if active { t.raised_high } else { t.raised }
+        } else if active {
+            t.raised_high
+        } else {
+            t.bg
+        };
+        let numbers = self.settings.tabs_indicators() == "numbers";
+        let unread = self.tab_unread.contains(id);
+        let busy = h.is_busy();
+        let ts = if active {
+            draw::bold(draw::st(t.text, bg))
+        } else if hovered {
+            draw::st(t.text, bg)
+        } else {
+            draw::st(t.muted, bg)
+        };
+        let xs = draw::st(t.muted, bg);
+        let prefix_w = if numbers { 4 } else { 3 };
+        let title_width = (w as usize).saturating_sub(prefix_w + if hovered { 2 } else { 0 }).max(1);
+        let mut label = if hovered {
+            tab_marquee(&title, title_width, self.tab_hover_at.map(|at| at.elapsed()))
+        } else {
+            draw::take_width(&title, title_width)
+        };
+        let used = draw::width(&label);
+        if used < title_width {
+            label.push_str(&" ".repeat(title_width - used));
+        }
+        let mut spans = Vec::new();
+        if numbers {
+            spans.push(span(" ", t.text, bg));
+            let color = if unread { t.hue("accent", 200) } else if active || hovered { t.text } else { t.muted };
+            spans.push(span(format!("{:>2}", index + 1), color, bg));
+            spans.push(span(" ", t.text, bg));
+        } else {
+            spans.push(span(" ", t.text, bg));
+            let (mark, color) = if busy {
+                (SPINNER[(self.frame / 2) % SPINNER.len()], t.hue("interactive", 200))
+            } else if unread {
+                ("\u{2022}", t.hue("accent", 200))
+            } else {
+                (" ", t.muted)
+            };
+            spans.push(span(mark, color, bg));
+            spans.push(span(" ", t.text, bg));
+        }
+        spans.push(Span::styled(label, ts));
+        if hovered {
+            spans.push(Span::styled("\u{2715}", xs));
+            spans.push(span(" ", t.text, bg));
+        }
+        draw::draw_line(buf, x, y, w, &line(spans, bg));
+        self.hits.tabs.push((x, x + w, id.to_string()));
+        self.hits.tab_close.push((x + w - 2, x + w - 1, id.to_string()));
+    }
+
     fn draw_tabs(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) {
-        let mut x = area.x;
+        if !self.tabs_visible() {
+            return;
+        }
+        if self.tabs_vertical() && self.route == Route::Session {
+            self.draw_tabs_vertical(buf, area, t);
+            return;
+        }
         let cur = if self.route == Route::Session { Some(self.sid()) } else { None };
-        for id in self.tabs.clone() {
-            let Ok(h) = self.app.session(&id) else { continue };
-            let title = h.with(|s| if s.has_default_title() { "New session".to_string() } else { s.title.clone() });
-            let active = cur.as_deref() == Some(id.as_str());
-            let w = 32u16.min((area.x + area.width).saturating_sub(x + 3));
-            if w < 8 {
-                break;
+        let n = self.tabs.len();
+        let mut x = area.x;
+        if n > 0 {
+            let plus_w = if self.route == Route::Home { 0 } else { 3 };
+            let avail = (area.width as usize).saturating_sub(plus_w);
+            let (start, count, before, after, w) = self.tab_layout(avail, cur.as_deref());
+            if before > 0 {
+                let label = draw::take_width(&format!("\u{2039}{before} "), 4);
+                draw::draw_line(buf, x, area.y, 4, &line(vec![span(format!("{label:<4}"), t.muted, t.bg)], t.bg));
+                x += 4;
             }
-            let hovered = self.tab_hover.as_deref() == Some(id.as_str());
-            let bg = if hovered {
-                if active { t.raised_high } else { t.raised }
-            } else if active {
-                t.raised_high
-            } else {
-                t.bg
-            };
-            let dot = if h.is_busy() { SPINNER[(self.frame / 2) % SPINNER.len()] } else { " " };
-            let ts = if active {
-                draw::bold(draw::st(t.text, bg))
-            } else if hovered {
-                draw::st(t.text, bg)
-            } else {
-                draw::st(t.muted, bg)
-            };
-            let xs = draw::st(t.muted, bg);
-            // Upstream pins the close mark to the tab's right edge (absolute right=1) and the
-            // title gives up two cells while hovered. Pad the label so it fills that width instead
-            // of leaving the mark next to a short title.
-            let title_width = w as usize - if hovered { 5 } else { 3 };
-            let mut label = if hovered {
-                tab_marquee(&title, title_width, self.tab_hover_at.map(|at| at.elapsed()))
-            } else {
-                draw::take_width(&title, title_width)
-            };
-            let used = draw::width(&label);
-            if used < title_width {
-                label.push_str(&" ".repeat(title_width - used));
+            for index in start..start + count {
+                let id = self.tabs[index].clone();
+                self.draw_tab(buf, x, area.y, w as u16, &id, index, t, cur.as_deref());
+                x += w as u16;
             }
-            let mut spans = vec![
-                span(" ", t.text, bg),
-                span(dot, t.hue("interactive", 200), bg),
-                span(" ", t.text, bg),
-                Span::styled(label, ts),
-            ];
-            if hovered {
-                spans.push(Span::styled("✕", xs));
-                spans.push(span(" ", t.text, bg));
+            if after > 0 {
+                let label = draw::take_width(&format!(" {after}\u{203a}"), 4);
+                draw::draw_line(buf, x, area.y, 4, &line(vec![span(format!("{label:<4}"), t.muted, t.bg)], t.bg));
+                x += 4;
             }
-            draw::draw_line(buf, x, area.y, w, &line(spans, bg));
-            self.hits.tabs.push((x, x + w, id.clone()));
-            self.hits.tab_close.push((x + w - 2, x + w - 1, id));
-            x += w;
         }
         if self.route == Route::Home {
-            // on home the add button is the selected "New session" tab
             let w = 32u16.min((area.x + area.width).saturating_sub(x));
             if w >= 6 {
                 let bg = t.raised_high;
                 let plus = draw::bold(draw::st(theme::tint(t.text, bg, 0.25), bg));
                 let spans = vec![span(" ", t.text, bg), Span::styled("+", plus), span(" ", t.text, bg), Span::styled(draw::truncate("New session", w as usize - 4), draw::bold(draw::st(t.text, bg)))];
                 draw::draw_line(buf, x, area.y, w, &line(spans, bg));
+                self.hits.tabs.push((x, x + w, "+".into()));
             }
         } else if x + 3 <= area.x + area.width {
             draw::draw_line(buf, x, area.y, 3, &line(vec![span(" + ", t.muted, t.bg)], t.bg));
             self.hits.tabs.push((x, x + 3, "+".into()));
+        }
+    }
+
+    fn draw_tabs_vertical(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) {
+        let rail_w = 42u16.min(area.width);
+        let bg = t.raised;
+        draw::fill(buf, Rect { x: area.x, y: area.y, width: rail_w, height: area.height }, bg);
+        let cur = Some(self.sid());
+        let mut y = area.y;
+        for (index, id) in self.tabs.clone().into_iter().enumerate() {
+            if y >= area.y + area.height {
+                break;
+            }
+            let Ok(h) = self.app.session(&id) else { continue };
+            let title = h.with(|s| if s.has_default_title() { "New session".to_string() } else { s.title.clone() });
+            let active = cur.as_deref() == Some(id.as_str());
+            let hovered = self.tab_hover.as_deref() == Some(id.as_str());
+            let row_bg = if hovered { t.raised_high } else if active { t.raised_high } else { bg };
+            let numbers = self.settings.tabs_indicators() == "numbers";
+            let unread = self.tab_unread.contains(&id);
+            let busy = h.is_busy();
+            let mark = if numbers {
+                format!("{:>2}", index + 1)
+            } else if busy {
+                SPINNER[(self.frame / 2) % SPINNER.len()].to_string()
+            } else if unread {
+                "\u{2022}".to_string()
+            } else {
+                " ".to_string()
+            };
+            let mark_color = if unread { t.hue("accent", 200) } else if active || hovered { t.text } else { t.muted };
+            let title_width = (rail_w as usize).saturating_sub(7);
+            let label = if hovered {
+                tab_marquee(&title, title_width, self.tab_hover_at.map(|at| at.elapsed()))
+            } else {
+                draw::take_width(&title, title_width)
+            };
+            let label = format!("{label:<width$}", width = title_width);
+            let ts = if active || hovered { draw::st(t.text, row_bg) } else { draw::st(t.muted, row_bg) };
+            let spans = vec![
+                span(" ", t.text, row_bg),
+                span(mark, mark_color, row_bg),
+                span(" ", t.text, row_bg),
+                Span::styled(label, ts),
+            ];
+            draw::draw_line(buf, area.x + 1, y, rail_w.saturating_sub(2), &line(spans, row_bg));
+            self.hits.tabs_vertical.push((Rect { x: area.x, y, width: rail_w, height: 1 }, id));
+            y += 1;
         }
     }
 

@@ -22,24 +22,43 @@ fn key(dir: &Path) -> String {
     dir.to_string_lossy().into_owned()
 }
 
-pub fn load(dir: &Path) -> Vec<String> {
-    read()
-        .pointer("/cwd")
-        .and_then(|c| c.get(key(dir)))
+fn list(doc: &Value, dir: &Path, scope: &str) -> Vec<String> {
+    let entry = if scope == "global" {
+        doc.get("global")
+    } else {
+        doc.pointer("/cwd").and_then(|c| c.get(key(dir)))
+    };
+    entry
         .and_then(|s| s.get("tabs"))
         .and_then(Value::as_array)
         .map(|tabs| tabs.iter().filter_map(|t| t.get("sessionID").and_then(Value::as_str).map(String::from)).collect())
         .unwrap_or_default()
 }
 
-/// Write `tabs` as (session id, title) for `dir`, keeping other directories' entries.
-pub fn save(dir: &Path, tabs: &[(String, String)]) {
+pub fn load(dir: &Path, scope: &str) -> Vec<String> {
+    list(&read(), dir, scope)
+}
+
+/// Write `tabs` as (session id, title) for `dir` or the shared global slot, keeping other
+/// directories' entries and the existing unread map.
+pub fn save(dir: &Path, scope: &str, tabs: &[(String, String)]) {
     let mut doc = read();
     let list: Vec<Value> = tabs.iter().map(|(id, title)| json!({ "sessionID": id, "title": title })).collect();
-    if !doc.get("cwd").is_some_and(Value::is_object) {
-        doc["cwd"] = json!({});
+    let entry = if scope == "global" {
+        doc.get_mut("global").cloned().unwrap_or_else(|| json!({}))
+    } else {
+        if !doc.get("cwd").is_some_and(Value::is_object) {
+            doc["cwd"] = json!({});
+        }
+        doc.pointer("/cwd").and_then(|c| c.get(key(dir))).cloned().unwrap_or_else(|| json!({}))
+    };
+    let unread = entry.get("unread").cloned().unwrap_or_else(|| json!({}));
+    let next = json!({ "tabs": list, "unread": unread });
+    if scope == "global" {
+        doc["global"] = next;
+    } else {
+        doc["cwd"][key(dir)] = next;
     }
-    doc["cwd"][key(dir)] = json!({ "tabs": list, "unread": {} });
     let path = file();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

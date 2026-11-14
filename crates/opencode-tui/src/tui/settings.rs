@@ -68,6 +68,22 @@ impl Settings {
         self.get("keybinds").cloned().unwrap_or_else(|| json!({}))
     }
 
+    pub fn tabs_mode(&self) -> &str {
+        self.str("tabs.mode").unwrap_or("auto")
+    }
+
+    pub fn tabs_scope(&self) -> &str {
+        self.str("tabs.scope").unwrap_or("cwd")
+    }
+
+    pub fn tabs_layout(&self) -> &str {
+        self.str("tabs.layout").unwrap_or("horizontal")
+    }
+
+    pub fn tabs_indicators(&self) -> &str {
+        self.str("tabs.indicators").unwrap_or("status")
+    }
+
     /// Set `path` (dotted) and persist.
     pub fn set(&mut self, path: &str, value: Value) {
         let keys: Vec<&str> = path.split('.').collect();

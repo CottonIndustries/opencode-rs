@@ -42,6 +42,7 @@ pub enum Kind {
     Open,
     Connect,
     Workspaces,
+    TabMenu,
 }
 
 #[derive(Clone, Debug, Default)]
