@@ -13,16 +13,27 @@ function resolveValue(value: Json, depth = 0): Json {
   return current
 }
 
-function append(parent: Json, value: Json, depth = 0) {
+function append(parent: Json, value: Json, depth = 0, marker: Json = null) {
   if (depth > 64) return
+  const place = (node: Json) => {
+    if (!parent.children) parent.children = []
+    const index = marker ? parent.children.indexOf(marker) : -1
+    if (index >= 0) parent.children.splice(index, 0, node)
+    else parent.children.push(node)
+  }
+  // Keep accessors lazy so a signal written after the first paint can still
+  // contribute text; the host resolves them when it snapshots the tree.
+  if (typeof value === "function") {
+    place({ type: "#lazy", get: value })
+    return
+  }
   const current = resolveValue(value)
   if (current === null || current === undefined || current === false || current === true) return
   if (Array.isArray(current)) {
-    for (const item of current) append(parent, item, depth + 1)
+    for (const item of current) append(parent, item, depth + 1, marker)
     return
   }
-  if (!parent.children) parent.children = []
-  parent.children.push(current)
+  place(current)
 }
 
 export function createElement(type: Json, props: Json = {}) {
@@ -52,8 +63,8 @@ export function spread(element: Json, props: Json) {
   Object.assign(element.props, props)
 }
 
-export function insert(parent: Json, value: Json, _marker: Json = null) {
-  append(parent, value)
+export function insert(parent: Json, value: Json, marker: Json = null) {
+  append(parent, value, 0, marker)
 }
 
 export function insertNode(parent: Json, value: Json) {
@@ -152,11 +163,7 @@ export function splitProps(props: Json, keys: string[]) {
 }
 
 export function For(props: Json) {
-  const each = resolveValue(props?.each)
-  const items = Array.isArray(each) ? each : []
-  const render = props?.children
-  if (typeof render !== "function") return items
-  return items.map((item, index) => resolveValue(render(item, index)))
+  return { type: "#for", when: props?.each, children: props?.children }
 }
 
 export function Index(props: Json) {
@@ -168,13 +175,7 @@ export function Index(props: Json) {
 }
 
 export function Show(props: Json) {
-  const when = resolveValue(props?.when)
-  if (when) {
-    const render = props?.children
-    return typeof render === "function" ? render(when) : render
-  }
-  const fallback = props?.fallback
-  return typeof fallback === "function" ? fallback() : fallback
+  return { type: "#show", when: props?.when, children: props?.children, fallback: props?.fallback }
 }
 
 export function Switch(props: Json) {

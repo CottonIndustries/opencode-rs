@@ -458,6 +458,7 @@ const tuiPlugins: PluginRecord[] = []
 const tuiCommands = new Map<string, Json>()
 const tuiAliases = new Map<string, string>()
 const tuiSlots: Array<{ placement: string; render: Function; plugin: string }> = []
+const tuiSlotRoots = new Map<object, { root: Json; input: Json }>()
 const tuiControls = new Map<string, Json>()
 const tuiPageRoots = new Map<string, Json>()
 const tuiPages = new Map<string, { name: string; render: Function; plugin: string }>()
@@ -1859,6 +1860,20 @@ function jsxSegments(value: Json, inherited: Json = {}, depth = 0): Json[] {
   if (depth > 32) return []
   const current = jsxResolve(value)
   if (current === null || current === undefined || current === false || current === true) return []
+  if (current?.type === "#lazy") return jsxSegments(current.get, inherited, depth + 1)
+  if (current?.type === "#for") {
+    const each = jsxResolve(current.when)
+    const items = Array.isArray(each) ? each : []
+    const render = current.children
+    return items.flatMap((item, index) =>
+      jsxSegments(typeof render === "function" ? render(item, index) : render, inherited, depth + 1),
+    )
+  }
+  if (current?.type === "#show") {
+    const when = jsxResolve(current.when)
+    if (when) return jsxSegments(typeof current.children === "function" ? current.children(() => when) : current.children, inherited, depth + 1)
+    return jsxSegments(typeof current.fallback === "function" ? current.fallback() : current.fallback, inherited, depth + 1)
+  }
   if (typeof current === "string" || typeof current === "number" || typeof current === "bigint") {
     return [{ text: String(current), ...inherited }]
   }
@@ -1899,6 +1914,30 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
   if (depth > 32 || budget.nodes > 2000) return null
   const current = jsxResolve(value)
   if (current === null || current === undefined || current === false || current === true) return null
+  if (current?.type === "#lazy") return jsxLayout(current.get, depth + 1, budget)
+  if (current?.type === "#for") {
+    const each = jsxResolve(current.when)
+    const items = Array.isArray(each) ? each : []
+    const render = current.children
+    const children = items
+      .map((item, index) => jsxLayout(typeof render === "function" ? render(item, index) : render, depth + 1, budget))
+      .filter(Boolean)
+    return children.length ? { type: "box", direction: "column", children, synthetic: true } : null
+  }
+  if (current?.type === "#show") {
+    const when = jsxResolve(current.when)
+    return jsxLayout(
+      when
+        ? typeof current.children === "function"
+          ? current.children(() => when)
+          : current.children
+        : typeof current.fallback === "function"
+        ? current.fallback()
+        : current.fallback,
+      depth + 1,
+      budget,
+    )
+  }
   if (typeof current === "string" || typeof current === "number" || typeof current === "bigint") {
     const text = String(current)
     return text ? { type: "text", text, segments: [{ text }] } : null
@@ -2137,7 +2176,20 @@ async function renderTuiSlots(input: Json): Promise<Json[]> {
   const out: Json[] = []
   for (const slot of [...tuiSlots]) {
     try {
-      const rendered = await settle(slot.render(slotInput))
+      // A component-backed slot keeps its Solid signals alive between paints.
+      // Reusing its root lets a signal written by an async RPC fetch reach the
+      // next extraction instead of being reset to the initial empty snapshot.
+      let rendered: Json
+      const persistent = String(slot.plugin ?? "").includes("magic-context")
+      const cached = persistent ? tuiSlotRoots.get(slot) : undefined
+      if (cached) {
+        Object.assign(cached.input, slotInput)
+        rendered = cached.root
+      } else {
+        const input = { ...slotInput }
+        rendered = await settle(slot.render(input))
+        if (persistent) tuiSlotRoots.set(slot, { root: rendered, input })
+      }
       const text = jsxText(rendered).trim()
       if (text) out.push({ placement: slot.placement, text, layout: jsxLayout(rendered), plugin: slot.plugin })
     } catch (error) {
