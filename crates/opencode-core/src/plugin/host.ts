@@ -28,6 +28,59 @@ if (!configPath) {
   Deno.exit(2)
 }
 
+// Bun compatibility for plugins that start an HTTP/WebSocket sidecar with
+// `Bun.serve` (Magic Context uses it for its TUI RPC bridge). Deno's server and
+// WebSocket upgrade provide the same surface; plugins only see the Bun shape.
+function installBunShim() {
+  const root = globalThis as Json
+  if (root.Bun) return
+  root.Bun = {
+    version: "1.4.4",
+    generateHeapSnapshot: () => "",
+    serve(options: Json) {
+      const websocket = options.websocket ?? {}
+      const server = (Deno as Json).serve(
+        { port: options.port ?? 0, hostname: options.hostname ?? "127.0.0.1" },
+        async (req: Request) => {
+          let upgradeResponse: Response | undefined
+          const context = {
+            upgrade(request: Request, opts: Json = {}) {
+              try {
+                const upgraded = (Deno as Json).upgradeWebSocket(request)
+                const socket = upgraded.socket as WebSocket & { data?: Json }
+                socket.data = opts.data ?? {}
+                socket.onopen = () => websocket.open?.(socket)
+                socket.onmessage = (event: MessageEvent) => websocket.message?.(socket, event.data)
+                socket.onclose = (event: CloseEvent) => websocket.close?.(socket, event.code, event.reason)
+                socket.onerror = (event: Event) => websocket.error?.(socket, event)
+                upgradeResponse = upgraded.response
+                return true
+              } catch {
+                return false
+              }
+            },
+          }
+          const response = await options.fetch(req, context)
+          return upgradeResponse ?? response ?? new Response(null, { status: 204 })
+        },
+      )
+      return {
+        get port() {
+          return (server as Json).addr?.port ?? 0
+        },
+        get hostname() {
+          return (server as Json).addr?.hostname ?? "127.0.0.1"
+        },
+        stop() {
+          ;(server as Json).shutdown()
+        },
+        reload() {},
+      }
+    },
+  }
+}
+installBunShim()
+
 const config: Json = JSON.parse(Deno.readTextFileSync(configPath))
 const directory: string = config.directory
 const worktree: string = config.worktree

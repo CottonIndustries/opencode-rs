@@ -35,6 +35,7 @@ const HOST_TS: &str = include_str!("host.ts");
 const OPENTUI_SHIM_TS: &str = include_str!("opentui_shim.ts");
 const SOLID_SHIM_TS: &str = include_str!("solid_shim.ts");
 const OPENTUI_CORE_SHIM_TS: &str = include_str!("opentui_core_shim.ts");
+const BUN_SHIM_TS: &str = include_str!("bun_shim.ts");
 const PLUGIN_API_VERSION: &str = "2.2.7";
 const V1_PLUGIN_API_VERSION: &str = "1.19.5";
 
@@ -603,6 +604,10 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
     if std::fs::read_to_string(&core).ok().as_deref() != Some(OPENTUI_CORE_SHIM_TS) {
         std::fs::write(&core, OPENTUI_CORE_SHIM_TS)?;
     }
+    let bun = dir.join("bun_shim.ts");
+    if std::fs::read_to_string(&bun).ok().as_deref() != Some(BUN_SHIM_TS) {
+        std::fs::write(&bun, BUN_SHIM_TS)?;
+    }
     let mut dependencies = Map::new();
     for (name, version) in extra_dependencies {
         let version = if version.trim().is_empty() || version.trim() == "*" { "latest" } else { version };
@@ -629,7 +634,12 @@ fn write_runtime(extra_dependencies: &BTreeMap<String, String>) -> Result<PathBu
             "@opencode-ai/plugin": format!("npm:@opencode-ai/plugin@{V1_PLUGIN_API_VERSION}"),
             "@opencode-ai/plugin/": format!("npm:@opencode-ai/plugin@{V1_PLUGIN_API_VERSION}/"),
             "@opencode-ai/sdk": format!("npm:@opencode-ai/sdk@{V1_PLUGIN_API_VERSION}"),
-            "@opencode-ai/sdk/": format!("npm:@opencode-ai/sdk@{V1_PLUGIN_API_VERSION}/")
+            "@opencode-ai/sdk/": format!("npm:@opencode-ai/sdk@{V1_PLUGIN_API_VERSION}/"),
+            // Bun-only optional imports. node:sqlite is the same SQLite API
+            // family and Deno provides it; the other two are optional probes.
+            "bun:sqlite": "node:sqlite",
+            "bun:ffi": file_url(&bun),
+            "bun:jsc": file_url(&bun)
         }
     });
     if let Some(values) = imports.get_mut("imports").and_then(Value::as_object_mut) {
