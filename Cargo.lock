@@ -1744,6 +1744,7 @@ dependencies = [
  "chrono",
  "ignore",
  "image",
+ "mime_guess",
  "opencode-core",
  "pulldown-cmark",
  "ratatui",

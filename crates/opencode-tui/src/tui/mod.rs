@@ -25,6 +25,7 @@ use crate::app::{App, AppEvent, Handle, PromptOptions};
 use crate::permission::{self, Reply};
 use crate::session::{Message, Part, Role};
 use anyhow::Result;
+use base64::Engine as _;
 use dialog::{Dialog, Hint, Kind, Opt, Select, Size};
 use draw::{line, span};
 use keymap::{Key, Keymap};
@@ -57,7 +58,6 @@ pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 const TICK: Duration = Duration::from_millis(40);
 /// Messages rendered when a long session opens; older chunks load on scroll.
 const TRANSCRIPT_WINDOW: usize = 250;
-const LEADER_TIMEOUT: Duration = Duration::from_millis(2000);
 const LOGO_LEFT: [&str; 4] = ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"];
 const LOGO_RIGHT: [&str; 4] = ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"];
 
@@ -709,6 +709,10 @@ impl Ui {
         }
     }
 
+    fn leader_timeout(&self) -> Duration {
+        Duration::from_millis(self.settings.leader_timeout())
+    }
+
     fn thinking_shown(&self) -> bool {
         if self.mini {
             self.settings.mini_thinking()
@@ -1095,6 +1099,15 @@ impl Ui {
             "opencode.debug" => self.show_text("Debug", reports::debug(&self.app)),
             "plugins.list" => self.show_text("Plugins", reports::plugins(&self.app)),
             "diff.open" => self.open_diff(),
+            "app.clear" => self.clear_prompt(),
+            "theme.switch_mode" => self.cycle_setting("theme.mode"),
+            "session.message.next" => self.scroll_by(-1),
+            "session.message.previous" => self.scroll_by(1),
+            "prompt.queue" => self.queue_prompt(),
+            "prompt.images.view" => self.open_prompt_images(),
+            "session.share" => self.share_session(),
+            "session.unshare" => self.unshare_session(),
+            "session.move" => self.exec("session.worktrees", ""),
             "stats.open" => self.open_stats(),
             "session.new" | "session.clear" => self.new_session(),
             "session.tab.next" => self.cycle_tab(1),
@@ -1246,6 +1259,13 @@ impl Ui {
                     }
                 });
             }
+            id if id.starts_with("session.quick_switch.") => {
+                if let Ok(index) = id["session.quick_switch.".len()..].parse::<usize>() {
+                    if let Some(session) = self.tabs.get(index.saturating_sub(1)).cloned() {
+                        self.open_session(&session);
+                    }
+                }
+            }
             id if id.starts_with("tui:") => {
                 let name = id["tui:".len()..].to_string();
                 let input = args.trim().to_string();
@@ -1263,7 +1283,19 @@ impl Ui {
     // ---------------------------------------------------------------- actions
 
     fn new_session(&mut self) {
+        let location = self.settings.str("session.new_location").unwrap_or("project").to_string();
+        let cwd = self.cwd();
+        let home = crate::paths::get().home.clone();
         self.handle = self.app.new_session(None);
+        match location.as_str() {
+            "current" => {
+                self.handle.with(|session| session.directory = cwd);
+            }
+            "global" => {
+                self.handle.with(|session| session.directory = home);
+            }
+            _ => {}
+        }
         self.route = Route::Home;
         self.cache = None;
         self.scroll = 0;
@@ -1559,6 +1591,7 @@ impl Ui {
             return;
         }
         let text = self.expand_pasted(raw.trim_end());
+        self.scroll = 0;
         self.history.append(&raw, &self.pasted, self.shell);
         if self.shell {
             self.clear_prompt();
@@ -1992,18 +2025,106 @@ impl Ui {
         let on = |b: bool| if b { "on" } else { "off" }.to_string();
         let opts = vec![
             Opt { title: "Theme".into(), footer: self.theme.name.clone(), category: "Appearance".into(), value: "theme".into(), ..Default::default() },
+            Opt { title: "Color mode".into(), footer: self.settings.str("theme.mode").unwrap_or("system").into(), category: "Appearance".into(), value: "theme.mode".into(), ..Default::default() },
             Opt { title: "Animations".into(), footer: on(self.settings.animations()), category: "Appearance".into(), value: "animations".into(), ..Default::default() },
-            Opt { title: "Show thinking".into(), footer: on(self.settings.thinking_shown()), category: "Session".into(), value: "thinking".into(), ..Default::default() },
             Opt { title: "Sidebar".into(), footer: if self.settings.sidebar_auto() { "auto".into() } else { "hide".into() }, category: "Session".into(), value: "sidebar".into(), ..Default::default() },
+            Opt { title: "Scrollbar".into(), footer: self.settings.str("session.scrollbar").unwrap_or("auto").into(), category: "Session".into(), value: "session.scrollbar".into(), ..Default::default() },
+            Opt { title: "Submit scroll".into(), footer: self.settings.str("session.submit_scroll").unwrap_or("auto").into(), category: "Session".into(), value: "session.submit_scroll".into(), ..Default::default() },
+            Opt { title: "Show thinking".into(), footer: on(self.settings.thinking_shown()), category: "Session".into(), value: "thinking".into(), ..Default::default() },
+            Opt { title: "Markdown".into(), footer: self.settings.str("session.markdown").unwrap_or("rendered").into(), category: "Session".into(), value: "session.markdown".into(), ..Default::default() },
             Opt { title: "Group related tool calls".into(), footer: on(self.settings.grouping()), category: "Session".into(), value: "grouping".into(), ..Default::default() },
+            Opt { title: "Verbosity".into(), footer: self.settings.str("session.verbosity").unwrap_or("default").into(), category: "Session".into(), value: "session.verbosity".into(), ..Default::default() },
+            Opt { title: "Image previews".into(), footer: on(self.settings.bool("session.image_preview").unwrap_or(false)), category: "Session".into(), value: "session.image_preview".into(), ..Default::default() },
             Opt { title: "Tokens per second".into(), footer: on(self.settings.tps()), category: "Session".into(), value: "tps".into(), ..Default::default() },
+            Opt { title: "New session location".into(), footer: self.settings.str("session.new_location").unwrap_or("project").into(), category: "Session".into(), value: "session.new_location".into(), ..Default::default() },
+            Opt { title: "Permissions".into(), footer: self.settings.str("session.permissions").unwrap_or("ask").into(), category: "Session".into(), value: "session.permissions".into(), ..Default::default() },
             Opt { title: "Tab mode".into(), footer: self.settings.tabs_mode().into(), category: "Tabs".into(), value: "tabs.mode".into(), ..Default::default() },
             Opt { title: "Tab scope".into(), footer: self.settings.tabs_scope().into(), category: "Tabs".into(), value: "tabs.scope".into(), ..Default::default() },
             Opt { title: "Tab layout".into(), footer: self.settings.tabs_layout().into(), category: "Tabs".into(), value: "tabs.layout".into(), ..Default::default() },
             Opt { title: "Tab indicators".into(), footer: self.settings.tabs_indicators().into(), category: "Tabs".into(), value: "tabs.indicators".into(), ..Default::default() },
+            Opt { title: "Diff source".into(), footer: self.settings.str("diffs.source").unwrap_or("branch").into(), category: "Diffs".into(), value: "diffs.source".into(), ..Default::default() },
+            Opt { title: "Diff wrapping".into(), footer: self.settings.str("diffs.wrap").unwrap_or("word").into(), category: "Diffs".into(), value: "diffs.wrap".into(), ..Default::default() },
+            Opt { title: "Diff file tree".into(), footer: on(self.settings.bool("diffs.tree").unwrap_or(true)), category: "Diffs".into(), value: "diffs.tree".into(), ..Default::default() },
+            Opt { title: "Diff single patch".into(), footer: on(self.settings.bool("diffs.single").unwrap_or(false)), category: "Diffs".into(), value: "diffs.single".into(), ..Default::default() },
+            Opt { title: "Diff view".into(), footer: self.settings.str("diffs.view").unwrap_or("auto").into(), category: "Diffs".into(), value: "diffs.view".into(), ..Default::default() },
+            Opt { title: "Diff fullscreen".into(), footer: on(self.settings.bool("diffs.fullscreen").unwrap_or(false)), category: "Diffs".into(), value: "diffs.fullscreen".into(), ..Default::default() },
+            Opt { title: "Editor context".into(), footer: on(self.settings.bool("prompt.editor_context").unwrap_or(true)), category: "Prompt".into(), value: "prompt.editor_context".into(), ..Default::default() },
+            Opt { title: "Large pastes".into(), footer: on(self.settings.bool("prompt.large_pastes").unwrap_or(true)), category: "Prompt".into(), value: "prompt.large_pastes".into(), ..Default::default() },
+            Opt { title: "Prompt images".into(), footer: on(self.settings.bool("prompt.images").unwrap_or(true)), category: "Prompt".into(), value: "prompt.images".into(), ..Default::default() },
+            Opt { title: "Leader timeout".into(), footer: format!("{} ms", self.settings.leader_timeout()), category: "Leader".into(), value: "leader.timeout".into(), ..Default::default() },
+            Opt { title: "Notifications".into(), footer: on(self.settings.bool("attention.notifications").unwrap_or(true)), category: "Attention".into(), value: "attention.notifications".into(), ..Default::default() },
+            Opt { title: "Sounds".into(), footer: on(self.settings.bool("attention.sounds").unwrap_or(true)), category: "Attention".into(), value: "attention.sounds".into(), ..Default::default() },
+            Opt { title: "Volume".into(), footer: format!("{:.0}%", self.settings.f64("attention.volume").unwrap_or(1.0) * 100.0), category: "Attention".into(), value: "attention.volume".into(), ..Default::default() },
+            Opt { title: "Release highlights".into(), footer: on(self.settings.bool("release.highlights").unwrap_or(true)), category: "Release".into(), value: "release.highlights".into(), ..Default::default() },
+            Opt { title: "Window title".into(), footer: on(self.settings.bool("terminal.title").unwrap_or(true)), category: "Terminal".into(), value: "terminal.title".into(), ..Default::default() },
+            Opt { title: "Copy on select".into(), footer: on(self.settings.bool("terminal.copy").unwrap_or(false)), category: "Terminal".into(), value: "terminal.copy".into(), ..Default::default() },
+            Opt { title: "Developer tools".into(), footer: on(self.settings.bool("developer.devtools").unwrap_or(false)), category: "Developer".into(), value: "developer.devtools".into(), ..Default::default() },
+            Opt { title: "Debug console".into(), footer: on(self.settings.bool("developer.debug_console").unwrap_or(false)), category: "Developer".into(), value: "developer.debug_console".into(), ..Default::default() },
+            Opt { title: "Plugin inventory".into(), footer: on(self.settings.bool("developer.plugin_inventory").unwrap_or(true)), category: "Developer".into(), value: "developer.plugin_inventory".into(), ..Default::default() },
+            Opt { title: "Prompt stash".into(), footer: on(self.settings.bool("prompt.stash").unwrap_or(true)), category: "Prompt".into(), value: "prompt.stash".into(), ..Default::default() },
         ];
         self.dialog = Some(Dialog::Select(Select::new(Kind::Settings, "Settings", opts)));
     }
+
+    fn cycle_setting(&mut self, path: &str) {
+        let enum_values: &[&str] = match path {
+            "theme.mode" => &["system", "dark", "light"],
+            "session.scrollbar" => &["auto", "hide"],
+            "session.submit_scroll" => &["auto", "sticky", "bottom"],
+            "session.markdown" => &["rendered", "source"],
+            "session.verbosity" => &["default", "expanded", "compact"],
+            "session.new_location" => &["project", "current", "global"],
+            "session.permissions" => &["ask", "allow", "deny"],
+            "tabs.mode" => &["auto", "on", "off"],
+            "tabs.scope" => &["cwd", "global"],
+            "tabs.layout" => &["horizontal", "vertical"],
+            "tabs.indicators" => &["status", "numbers"],
+            "diffs.source" => &["branch", "working"],
+            "diffs.wrap" => &["word", "char", "none"],
+            "diffs.view" => &["auto", "unified", "split"],
+            _ => &[],
+        };
+        if !enum_values.is_empty() {
+            let current = self.settings.str(path).unwrap_or(enum_values[0]);
+            let next = enum_values
+                .iter()
+                .position(|value| *value == current)
+                .map(|index| enum_values[(index + 1) % enum_values.len()])
+                .unwrap_or(enum_values[0]);
+            self.settings.set(path, json!(next));
+            if path == "theme.mode" {
+                self.mode = match next {
+                    "light" => Mode::Light,
+                    _ => Mode::Dark,
+                };
+                let name = self.theme.name.clone();
+                self.set_theme(&name);
+            }
+            self.cache = None;
+            return;
+        }
+        if path == "leader.timeout" {
+            let current = self.settings.leader_timeout();
+            let next = match current {
+                0..=1000 => 1500,
+                1001..=1500 => 2000,
+                1501..=2000 => 3000,
+                2001..=3000 => 5000,
+                _ => 1000,
+            };
+            self.settings.set(path, json!(next));
+            return;
+        }
+        if path == "attention.volume" {
+            let current = self.settings.f64("attention.volume").unwrap_or(1.0);
+            let next = ((current * 5.0).round() as i64 + 1) % 6;
+            self.settings.set(path, json!(next as f64 / 5.0));
+            return;
+        }
+        let current = self.settings.bool(path).unwrap_or(true);
+        self.settings.set(path, json!(!current));
+    }
+
 
     fn show_text(&mut self, title: &str, text: String) {
         self.dialog = Some(Dialog::Text { title: title.into(), text, scroll: 0, layout: Value::Null });
@@ -2352,6 +2473,80 @@ impl Ui {
         self.dialog = Some(Dialog::Select(dialog::Select::new(dialog::Kind::Goal, "Goal", opts)));
     }
 
+    fn queue_prompt(&mut self) {
+        let raw = self.editor.text.clone();
+        if raw.trim().is_empty() {
+            return;
+        }
+        if self.model.is_none() {
+            self.toast(Variant::Warning, None, "Connect an integration to queue prompts");
+            return;
+        }
+        let text = self.expand_pasted(raw.trim_end());
+        let mut message = Message::user_text(text.clone());
+        message.parts.extend(crate::mentions::expand_mentions(&self.app, &text));
+        message.skills = crate::mentions::skill_mentions(&self.app, &text);
+        let options = PromptOptions { agent: Some(self.agent.clone()), model: self.model.clone(), variant: self.variant.clone(), delivery: Some("queue".into()) };
+        self.handle.queue.lock().unwrap().push_back((message, options));
+        self.clear_prompt();
+        self.toast(Variant::Success, None, "Prompt queued");
+    }
+
+    fn share_session(&mut self) {
+        let session = self.handle.with(|session| session.clone());
+        match crate::share::share(&session) {
+            Ok(value) => {
+                let id = value.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                let url = value.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
+                self.handle.with(|session| {
+                    let mut metadata = session.metadata.take().unwrap_or_else(|| json!({}));
+                    if !metadata.is_object() {
+                        metadata = json!({});
+                    }
+                    metadata["share"] = json!({ "id": id, "url": url });
+                    session.metadata = Some(metadata);
+                });
+                self.handle.save();
+                self.toast(Variant::Success, None, format!("Session shared at {url}"));
+            }
+            Err(error) => self.toast(Variant::Error, None, format!("Share failed: {error}")),
+        }
+    }
+
+    fn unshare_session(&mut self) {
+        let id = self.handle.with(|session| {
+            session.metadata.as_ref()?.get("share")?.get("id")?.as_str().map(String::from)
+        });
+        if let Some(id) = id {
+            crate::share::revoke(&id);
+            self.handle.with(|session| {
+                if let Some(metadata) = session.metadata.as_mut().and_then(Value::as_object_mut) {
+                    metadata.remove("share");
+                }
+            });
+            self.handle.save();
+            self.toast(Variant::Success, None, "Session unshared");
+        } else {
+            self.toast(Variant::Info, None, "Session is not shared");
+        }
+    }
+
+    fn open_prompt_images(&mut self) {
+        for word in self.editor.text.split_whitespace() {
+            let Some(reference) = word.strip_prefix('@') else { continue };
+            let path = self.cwd().join(reference);
+            let mime = mime_guess::from_path(&path).first_or_octet_stream().essence_str().to_string();
+            if !mime.starts_with("image/") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+            self.dialog = Some(Dialog::Image { data, mime, scroll: 0 });
+            return;
+        }
+        self.toast(Variant::Info, None, "No image references in the prompt");
+    }
+
     fn pair_device(&mut self) {
         let status = crate::service::status();
         let url = status
@@ -2531,7 +2726,7 @@ impl Ui {
                         let next = if self.settings.tabs_indicators() == "numbers" { "status" } else { "numbers" };
                         self.settings.set("tabs.indicators", json!(next));
                     }
-                    _ => {}
+                    _ => self.cycle_setting(&value),
                 }
                 self.cache = None;
                 self.reopen_settings(&value);
@@ -3109,7 +3304,7 @@ impl Ui {
     fn on_key(&mut self, ev: KeyEvent) {
         let Some(k) = keymap::from_event(&ev) else { return };
         let in_session = self.route == Route::Session;
-        let leader = self.leader.take().is_some_and(|t| t.elapsed() < LEADER_TIMEOUT);
+        let leader = self.leader.take().is_some_and(|t| t.elapsed() < self.leader_timeout());
         if !leader && self.keys.is_leader(&k) && self.dialog.is_none() && self.perm.rejecting.is_none() {
             self.leader = Some(Instant::now());
             return;
@@ -4436,7 +4631,7 @@ impl Ui {
 
     fn draw_prompt(&mut self, buf: &mut Buffer, area: Rect, t: &Theme, home: bool) -> Option<(u16, u16)> {
         let pad = if self.size.0 < 44 { 1u16 } else { 2 };
-        let muted = self.leader.is_some_and(|l| l.elapsed() < LEADER_TIMEOUT);
+        let muted = self.leader.is_some_and(|l| l.elapsed() < self.leader_timeout());
         let highlight = if muted {
             t.border
         } else if self.shell {
@@ -4782,6 +4977,18 @@ impl Ui {
         self.scroll = self.scroll.min(total.saturating_sub(h));
         let skip = if total <= h { 0 } else { total - h - self.scroll };
         draw::draw_lines(buf, tr, &out.lines, skip);
+        if self.settings.str("session.scrollbar").unwrap_or("auto") != "hide" && total > h && tr.width > 1 {
+            let track = tr.height as usize;
+            let thumb = ((track * track) / total.max(1)).max(1).min(track);
+            let max_scroll = total.saturating_sub(h).max(1);
+            let pos = ((track - thumb) * (max_scroll.saturating_sub(self.scroll))) / max_scroll;
+            for row in 0..track {
+                let y = tr.y + row as u16;
+                let ch = if row >= pos && row < pos + thumb { "█" } else { "│" };
+                let color = if row >= pos && row < pos + thumb { t.muted } else { t.raised };
+                draw::draw_line(buf, tr.x + tr.width - 1, y, 1, &line(vec![span(ch, color, t.bg)], t.bg));
+            }
+        }
         self.hits.transcript = tr;
         self.hits.transcript_skip = skip;
         self.hits.clicks = out.clicks.clone();
@@ -4990,6 +5197,8 @@ impl Ui {
             width,
             term_width: self.size.0 as usize,
             thinking: self.thinking_shown(),
+            markdown_source: self.settings.str("session.markdown") == Some("source"),
+            verbosity: self.settings.str("session.verbosity").unwrap_or("default"),
             image_preview: self.settings.bool("session.image_preview").unwrap_or(false),
             grouping: self.settings.grouping(),
             tps: self.settings.tps(),
@@ -5525,7 +5734,7 @@ impl Ui {
                     if form != self.form.id {
                         dirty = true;
                     }
-                    if self.leader.is_some_and(|l| l.elapsed() >= LEADER_TIMEOUT) {
+                    if self.leader.is_some_and(|l| l.elapsed() >= self.leader_timeout()) {
                         self.leader = None;
                         dirty = true;
                     }

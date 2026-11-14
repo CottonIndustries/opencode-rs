@@ -20,6 +20,8 @@ pub struct Ctx<'a> {
     pub width: usize,
     pub term_width: usize,
     pub thinking: bool,
+    pub markdown_source: bool,
+    pub verbosity: &'a str,
     pub image_preview: bool,
     pub grouping: bool,
     pub tps: bool,
@@ -531,7 +533,11 @@ fn entry(e: &Entry, session: &Session, ctx: &Ctx) -> Vec<Row> {
         Entry::Compaction(m) => vec![Row::new(compaction(m, ctx))],
         Entry::Text(m, text) => {
             let _ = m;
-            vec![Row::new(indent3(markdown::render(text.trim(), ctx.width.saturating_sub(3), t, bg), bg))]
+            if ctx.markdown_source {
+                vec![Row::new(indent3(ctx.text_lines(text.trim(), t.text, ctx.width.saturating_sub(3), Wrap::Word, bg), bg))]
+            } else {
+                vec![Row::new(indent3(markdown::render(text.trim(), ctx.width.saturating_sub(3), t, bg), bg))]
+            }
         }
         Entry::Reasoning(m, i, text) => vec![Row::new(reasoning(m, *i, text, ctx))],
         Entry::Tool(m, p) => tool(m, p, ctx),
@@ -671,7 +677,11 @@ fn compaction(m: &Message, ctx: &Ctx) -> Vec<Line<'static>> {
     let mut out = vec![line(vec![span("─".repeat(left), t.muted, bg), span(format!(" {label} "), t.muted, bg), span("─".repeat(right), t.muted, bg)], bg)];
     if !summary.trim().is_empty() {
         out.push(draw::blank(bg));
-        out.extend(indent3(markdown::render(summary.trim(), ctx.width.saturating_sub(3), t, bg), bg));
+        if ctx.markdown_source {
+            out.extend(indent3(ctx.text_lines(summary.trim(), t.text, ctx.width.saturating_sub(3), Wrap::Word, bg), bg));
+        } else {
+            out.extend(indent3(markdown::render(summary.trim(), ctx.width.saturating_sub(3), t, bg), bg));
+        }
     }
     out
 }

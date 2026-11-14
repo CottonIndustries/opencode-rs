@@ -137,7 +137,139 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("prompt.autocomplete.complete", "tab"),
     ("permission.prompt.fullscreen", "ctrl+f"),
     ("terminal.suspend", "ctrl+z"),
+    ("app.clear", "ctrl+l"),
+    ("app.debug", "none"),
+    ("app.console", "none"),
+    ("app.scrap", "none"),
+    ("app.toggle.animations", "none"),
+    ("app.toggle.file_context", "none"),
+    ("app.toggle.diffwrap", "none"),
+    ("app.toggle.paste_summary", "none"),
+    ("docs.open", "none"),
+    ("opencode.settings", "none"),
+    ("server.pair", "none"),
+    ("service.restart", "none"),
+    ("location.reload", "none"),
+    ("diff.open", "none"),
+    ("diff.close", "escape,q"),
+    ("diff.down", "j,down"),
+    ("diff.up", "k,up"),
+    ("diff.page.down", "pagedown,ctrl+f"),
+    ("diff.page.up", "pageup,ctrl+b"),
+    ("diff.half_page.down", "ctrl+d"),
+    ("diff.half_page.up", "ctrl+u"),
+    ("diff.first", "gg,home"),
+    ("diff.last", "shift+g,end"),
+    ("diff.toggle", "none"),
+    ("diff.expand", "none"),
+    ("diff.expand_all", "none"),
+    ("diff.collapse", "none"),
+    ("diff.switch_focus", "none"),
+    ("diff.next_hunk", "]"),
+    ("diff.previous_hunk", "["),
+    ("diff.next_file", "n,alt+down"),
+    ("diff.previous_file", "p,alt+up"),
+    ("diff.toggle_file_tree", "b"),
+    ("diff.single_patch", "s"),
+    ("diff.switch_source", "d"),
+    ("diff.toggle_view", "v"),
+    ("diff.toggle_fullscreen", "f"),
+    ("diff.mark_reviewed", "m"),
+    ("diff.help", "?,shift+?,shift+/"),
+    ("theme.switch_mode", "none"),
+    ("theme.mode.lock", "none"),
+    ("pane.focus.left", "<leader>left"),
+    ("pane.focus.right", "<leader>right"),
+    ("opencode.debug", "none"),
+    ("session.copy.id", "none"),
+    ("session.move", "none"),
+    ("open.menu", "ctrl+o"),
+    ("session.share", "none"),
+    ("session.unshare", "none"),
+    ("session.aside", "none"),
+    ("session.cd", "none"),
+    ("session.pin.toggle", "ctrl+f"),
+    ("session.quick_switch.1", "<leader>1"),
+    ("session.quick_switch.2", "<leader>2"),
+    ("session.quick_switch.3", "<leader>3"),
+    ("session.quick_switch.4", "<leader>4"),
+    ("session.quick_switch.5", "<leader>5"),
+    ("session.quick_switch.6", "<leader>6"),
+    ("session.quick_switch.7", "<leader>7"),
+    ("session.quick_switch.8", "<leader>8"),
+    ("session.quick_switch.9", "<leader>9"),
+    ("stash.delete", "ctrl+d"),
+    ("model.dialog.usage", "ctrl+u"),
+    ("usage.show", "none"),
+    ("provider.connect", "none"),
+    ("session.message.next", "none"),
+    ("session.message.previous", "none"),
+    ("prompt.submit", "none"),
+    ("prompt.queue", "<leader>return"),
+    ("prompt.editor_context.clear", "none"),
+    ("prompt.images.view", "<leader>i"),
+    ("prompt.stash", "none"),
+    ("prompt.stash.pop", "none"),
+    ("prompt.stash.list", "none"),
+    ("input.select.left", "shift+left"),
+    ("input.select.right", "shift+right"),
+    ("input.select.up", "shift+up"),
+    ("input.select.down", "shift+down"),
+    ("input.select.line.home", "ctrl+shift+a"),
+    ("input.select.line.end", "ctrl+shift+e"),
+    ("input.select.visual.line.home", "alt+shift+a"),
+    ("input.select.visual.line.end", "alt+shift+e"),
+    ("input.buffer.home", "none"),
+    ("input.buffer.end", "none"),
+    ("input.select.buffer.home", "shift+home"),
+    ("input.select.buffer.end", "shift+end"),
+    ("input.select.word.forward", "alt+shift+f,alt+shift+right"),
+    ("input.select.word.backward", "alt+shift+b,alt+shift+left"),
+    ("input.select.all", "super+a"),
+    ("composer.subagent.up", "up"),
+    ("composer.subagent.down", "down"),
+    ("composer.subagent.select", "return"),
+    ("composer.subagent.interrupt", "ctrl+d"),
+    ("composer.shell.up", "up"),
+    ("composer.shell.down", "down"),
+    ("composer.shell.select", "return"),
+    ("composer.shell.kill", "ctrl+d"),
+    ("composer.terminal.up", "up,k"),
+    ("composer.terminal.down", "down,j"),
+    ("composer.terminal.select", "return"),
+    ("dialog.prompt.submit", "return"),
+    ("dialog.integration.rename", "ctrl+r"),
+    ("dialog.integration.delete", "ctrl+d"),
+    ("dialog.integration.copy", "tab"),
+    ("dialog.worktree.generate", "tab"),
+    ("dialog.move_session.new", "ctrl+a"),
+    ("dialog.move_session.move", "ctrl+m"),
+    ("dialog.move_session.delete", "ctrl+d"),
+    ("dialog.move_session.refresh", "ctrl+r"),
+    ("plugins.toggle", "return"),
+    ("dialog.mcp.toggle", "space"),
+    ("dialog.plugins.error", "space"),
+    ("dialog.plugins.update", "ctrl+u"),
+    ("dialog.plugins.check", "ctrl+r"),
+    ("terminal.title.toggle", "none"),
+    ("plugins.list", "none"),
 ];
+
+fn override_keys(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(items) => {
+            let keys: Vec<String> = items.iter().filter_map(|item| override_keys(item)).collect();
+            if keys.is_empty() { None } else { Some(keys.join(",")) }
+        }
+        serde_json::Value::Object(object) => object
+            .get("key")
+            .or_else(|| object.get("bind"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        _ => None,
+    }
+}
 
 pub struct Keymap {
     binds: HashMap<String, Vec<Binding>>,
@@ -256,8 +388,8 @@ impl Keymap {
     pub fn new(overrides: &serde_json::Value) -> Keymap {
         let mut binds = HashMap::new();
         for (name, def) in DEFAULTS {
-            let v = overrides.get(*name).and_then(|v| v.as_str()).unwrap_or(def);
-            binds.insert(name.to_string(), parse(v));
+            let v = overrides.get(*name).and_then(override_keys).unwrap_or_else(|| (*def).to_string());
+            binds.insert(name.to_string(), parse(&v));
         }
         let leader = binds.get("leader").and_then(|b| b.first()).map(|b| b.key.clone());
         Keymap { binds, leader }
@@ -312,6 +444,10 @@ mod tests {
         let ev = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert!(km.is_leader(&from_event(&ev).unwrap()));
         let km = Keymap::new(&serde_json::json!({ "model.list": "ctrl+o" }));
+        assert_eq!(km.label("model.list").as_deref(), Some("ctrl+o"));
+        let km = Keymap::new(&serde_json::json!({ "model.list": ["ctrl+o", "ctrl+n"] }));
+        assert_eq!(km.label("model.list").as_deref(), Some("ctrl+o"));
+        let km = Keymap::new(&serde_json::json!({ "model.list": { "key": "ctrl+o", "preventDefault": false } }));
         assert_eq!(km.label("model.list").as_deref(), Some("ctrl+o"));
     }
 }

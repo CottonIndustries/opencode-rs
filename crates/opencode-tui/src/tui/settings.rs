@@ -34,6 +34,10 @@ impl Settings {
         self.get(path).and_then(|v| v.as_bool())
     }
 
+    pub fn f64(&self, path: &str) -> Option<f64> {
+        self.get(path).and_then(|v| v.as_f64())
+    }
+
     pub fn theme(&self) -> String {
         self.str("theme.name").unwrap_or("opencode").to_string()
     }
@@ -90,6 +94,10 @@ impl Settings {
 
     pub fn mini_splash(&self) -> bool {
         self.str("mini.splash") != Some("hide")
+    }
+
+    pub fn leader_timeout(&self) -> u64 {
+        self.get("leader.timeout").and_then(Value::as_u64).unwrap_or(2000).clamp(100, 60000)
     }
 
     pub fn mini_thinking(&self) -> bool {
