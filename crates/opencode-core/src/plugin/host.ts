@@ -31,10 +31,18 @@ if (!configPath) {
 // Bun compatibility for plugins that start an HTTP/WebSocket sidecar with
 // `Bun.serve` (Magic Context uses it for its TUI RPC bridge). Deno's server and
 // WebSocket upgrade provide the same surface; plugins only see the Bun shape.
+let bunShim: Json | null = null
+let bunActive = false
+// The shim must be absent while a plugin module is evaluated: Bun-aware
+// libraries (Magic Context) then pick node:sqlite, which Deno provides. It is
+// switched on for setup, where Bun.serve starts their TUI RPC sidecar.
+Object.defineProperty(globalThis, "Bun", {
+  configurable: true,
+  get: () => (bunActive ? bunShim : undefined),
+})
 function installBunShim() {
-  const root = globalThis as Json
-  if (root.Bun) return
-  root.Bun = {
+  if (bunShim) return
+  bunShim = {
     version: "1.4.4",
     generateHeapSnapshot: () => "",
     serve(options: Json) {
@@ -79,7 +87,6 @@ function installBunShim() {
     },
   }
 }
-installBunShim()
 
 const config: Json = JSON.parse(Deno.readTextFileSync(configPath))
 const directory: string = config.directory
@@ -2120,10 +2127,17 @@ async function renderTuiSlots(input: Json): Promise<Json[]> {
     width: Number(tuiInput.width ?? 80),
     height: Number(tuiInput.height ?? 24),
   }
+  // Upstream slot values use snake_case (`session_id`); the Rust bridge sends
+  // camelCase. Plugins read either, so expose both without changing callers.
+  const slotInput = {
+    ...tuiInput,
+    session_id: tuiInput.session_id ?? tuiInput.sessionID,
+    sessionID: tuiInput.sessionID ?? tuiInput.session_id,
+  }
   const out: Json[] = []
   for (const slot of [...tuiSlots]) {
     try {
-      const rendered = await settle(slot.render(input))
+      const rendered = await settle(slot.render(slotInput))
       const text = jsxText(rendered).trim()
       if (text) out.push({ placement: slot.placement, text, layout: jsxLayout(rendered), plugin: slot.plugin })
     } catch (error) {
@@ -3982,11 +3996,19 @@ function domainSnapshot(): Json {
   }
 }
 
-async function importCandidate(candidates: string[]): Promise<Json> {
+async function importCandidate(candidates: string[], isolateBun = false): Promise<Json> {
   const errors: string[] = []
+  // Keep the shim invisible during module evaluation for Bun-aware packages
+  // that choose bun:sqlite from `typeof Bun` (see its getter above). Other
+  // plugins keep it visible so an already-started RPC timer never sees it
+  // disappear mid-flight.
+  if (isolateBun) bunActive = false
   for (const specifier of candidates) {
     try {
-      return await import(specifier)
+      const module = await import(specifier)
+      installBunShim()
+      bunActive = true
+      return module
     } catch (error) {
       errors.push(`${specifier}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -4014,7 +4036,8 @@ async function loadPlugin(entry: Json): Promise<PluginRecord> {
       plugins.push(record)
       return record
     }
-    const module = await importCandidate(candidates)
+    const needsNodeSqlite = String(entry.spec ?? entry.id ?? "").includes("magic-context")
+    const module = await importCandidate(candidates, needsNodeSqlite)
     record.module = module
     const value = module.default
     if (value && typeof value === "object" && typeof value.id === "string" && value.id.trim()) {
