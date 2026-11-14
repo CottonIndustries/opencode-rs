@@ -1166,7 +1166,8 @@ impl Node {
         let mut sizes: Vec<Size> = children
             .iter()
             .map(|child| {
-                let mut size = child.measure(area.width as usize, true);
+                let stretch = matches!(child.align_self.unwrap_or(self.align), Align::Stretch);
+                let mut size = child.measure(area.width as usize, stretch);
                 if let Some(basis) = child.basis.filter(|basis| !basis.is_auto()) {
                     size.height = basis.resolve(area.height as usize) + child.outer_height();
                 }
