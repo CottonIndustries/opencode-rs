@@ -2133,6 +2133,13 @@ impl Ui {
                 let name = self.theme.name.clone();
                 self.set_theme(&name);
             }
+            if path == "session.permissions" {
+                *self.app.ask_mode.lock().unwrap() = match next {
+                    "allow" => crate::app::AskMode::AutoApprove,
+                    "deny" => crate::app::AskMode::AutoReject,
+                    _ => crate::app::AskMode::Interactive,
+                };
+            }
             self.cache = None;
             return;
         }

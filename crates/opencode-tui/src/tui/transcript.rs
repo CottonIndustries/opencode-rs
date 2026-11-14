@@ -542,6 +542,9 @@ fn entry(e: &Entry, session: &Session, ctx: &Ctx) -> Vec<Row> {
         Entry::Reasoning(m, i, text) => vec![Row::new(reasoning(m, *i, text, ctx))],
         Entry::Tool(m, p) => {
             let mut rows = tool(m, p, ctx);
+            if ctx.verbosity == "compact" && matches!(p, Part::Tool { state: ToolState::Completed { .. } | ToolState::Error { .. }, .. }) {
+                rows.truncate(1);
+            }
             if ctx.image_preview {
                 if let Part::Tool { state: ToolState::Completed { attachments, .. }, .. } = p {
                     for file in attachments.iter().filter(|file| file.mime.starts_with("image/")) {
