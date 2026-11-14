@@ -3938,18 +3938,19 @@ impl Ui {
             }
             sections.push(s);
         }
-        if !self.plugin_sidebar.is_empty() {
-            let mut s = vec![line(vec![Span::styled("Plugins", ts)], bg)];
-            for layout in &self.plugin_sidebar {
-                s.extend(plugin_ui::render(layout, inner_w.max(1), &t, bg));
-            }
-            sections.push(s);
-        }
         let n = sections.len();
         for (i, s) in sections.into_iter().enumerate() {
             lines.extend(s);
             if i + 1 < n {
                 lines.push(line(vec![], bg));
+            }
+        }
+        if !self.plugin_sidebar.is_empty() {
+            if !lines.is_empty() {
+                lines.push(line(vec![], bg));
+            }
+            for layout in &self.plugin_sidebar {
+                lines.extend(plugin_ui::render(layout, inner_w.max(1), &t, bg));
             }
         }
         let body = Rect { x: area.x + 2, y: area.y + 1, width: area.width.saturating_sub(4), height: area.height.saturating_sub(4) };

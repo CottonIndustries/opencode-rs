@@ -1836,7 +1836,7 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
   }
   if (Array.isArray(current)) {
     const children = current.map((item) => jsxLayout(item, depth + 1, budget)).filter(Boolean)
-    return children.length ? { type: "box", direction: "column", children } : null
+    return children.length ? { type: "box", direction: "column", children, synthetic: true } : null
   }
   if (typeof current !== "object") return null
   const props = current.props ?? {}
@@ -1946,7 +1946,7 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     ? flexDirection
     : "column"
   const nested = jsxLayout(children, depth + 1, budget)
-  const items = nested ? (nested.type === "box" && nested.direction === direction && Object.keys(nested).length === 3 ? nested.children : [nested]) : []
+  const items = nested ? (nested.synthetic === true && Array.isArray(nested.children) ? nested.children : [nested]) : []
   const rawBorder = jsxProp(props, "borderStyle")
   const borderValue = jsxProp(props, "border")
   const border = typeof rawBorder === "string"
@@ -1955,6 +1955,8 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     ? "single"
     : typeof borderValue === "string"
     ? borderValue
+    : borderValue && typeof borderValue === "object"
+    ? String(borderValue.type ?? borderValue.style ?? borderValue.borderStyle ?? "single")
     : undefined
   const padding = jsxNumber(jsxProp(props, "padding"))
   const margin = jsxNumber(jsxProp(props, "margin"))

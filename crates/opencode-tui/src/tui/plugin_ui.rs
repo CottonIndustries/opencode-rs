@@ -582,14 +582,24 @@ impl Node {
         let padding = self.padding.left + self.padding.right;
         let border = if self.border.is_some() { 2 } else { 0 };
         match &self.kind {
-            Kind::Text(text) => text
-                .segments
-                .iter()
-                .flat_map(|segment| segment.text.split('\n'))
-                .map(draw::width)
-                .max()
-                .unwrap_or(0)
-                .min(parent.saturating_sub(padding + border).max(1)),
+            Kind::Text(text) => {
+                let mut widths = vec![0usize];
+                for segment in &text.segments {
+                    for (index, part) in segment.text.split('\n').enumerate() {
+                        if index > 0 {
+                            widths.push(0);
+                        }
+                        if let Some(width) = widths.last_mut() {
+                            *width += draw::width(part);
+                        }
+                    }
+                }
+                widths
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+                    .min(parent.saturating_sub(padding + border).max(1))
+            }
             Kind::Markdown(text) => text
                 .lines()
                 .map(draw::width)
@@ -673,8 +683,9 @@ impl Node {
         }
         let content_width = self.content_width(parent_width, fill);
         let padding = self.padding.left + self.padding.right;
+        let padding_v = self.padding.top + self.padding.bottom;
         let border = if self.border.is_some() { 2 } else { 0 };
-        let inner_width = content_width.saturating_sub(padding + border).max(1);
+        let inner_width = content_width.max(1);
         let mut size = match &self.kind {
             Kind::Text(text) => {
                 let spans = text_spans(text, self.background.unwrap_or(Rgba::TRANSPARENT));
@@ -732,7 +743,7 @@ impl Node {
                     total_height += line_height;
                     return Size {
                         width: content_width.max(width + padding + border) + self.outer_width(),
-                        height: total_height + padding + border + self.outer_height(),
+                        height: total_height + padding_v + border + self.outer_height(),
                     };
                 }
                 let mut width = 0usize;
@@ -770,7 +781,7 @@ impl Node {
                 }
                 Size {
                     width: content_width.max(width + padding + border),
-                    height: height + padding + border,
+                    height: height + padding_v + border,
                 }
             }
         };
@@ -1765,6 +1776,44 @@ mod tests {
             10,
         );
         assert!(lines.iter().any(|line| line.contains('a') && line.contains('b')), "{lines:?}");
+    }
+
+    #[test]
+    fn header_segments_keep_title_and_version_on_one_line() {
+        let lines = render_json(
+            serde_json::json!({
+                "type": "box",
+                "border": "single",
+                "padding": 1,
+                "width": "100%",
+                "children": [{
+                    "type": "box",
+                    "direction": "row",
+                    "justify": "space-between",
+                    "children": [
+                        {
+                            "type": "box",
+                            "paddingLeft": 1,
+                            "paddingRight": 1,
+                            "children": [{
+                                "type": "text",
+                                "text": "▼ Magic Context",
+                                "segments": [
+                                    { "text": "▼ " },
+                                    { "text": "Magic Context" }
+                                ]
+                            }]
+                        },
+                        { "type": "text", "text": "v0.49.52" }
+                    ]
+                }]
+            }),
+            38,
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Magic Context") && line.contains("v0.49.52")),
+            "{lines:?}"
+        );
     }
 
     #[test]
