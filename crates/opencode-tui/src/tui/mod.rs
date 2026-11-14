@@ -246,6 +246,8 @@ struct Ui {
     closed_tabs: Vec<(String, usize)>,
     /// tab under the mouse pointer; the close mark only shows while hovering
     tab_hover: Option<String>,
+    /// when the current tab hover began, for the delayed title marquee
+    tab_hover_at: Option<Instant>,
     /// sessions in visit order, most recent last
     tab_history: Vec<String>,
     /// terminal title and default background as last sent (OSC 0 / OSC 11)
@@ -262,6 +264,43 @@ struct Ui {
     plugin_status: String,
     plugin_sidebar: Vec<Value>,
     plugin_slots_at: Instant,
+}
+
+/// Hovered tab title: after 600 ms, advance one cell every 80 ms through
+/// `title · title · ` and take the window that fits.
+fn tab_marquee(title: &str, width: usize, elapsed: Option<Duration>) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let Some(elapsed) = elapsed else {
+        return draw::take_width(title, width);
+    };
+    if draw::width(title) <= width || elapsed < Duration::from_millis(600) {
+        return draw::take_width(title, width);
+    }
+    let cycle = format!("{title} · ");
+    let cycle_width = draw::width(&cycle);
+    if cycle_width == 0 {
+        return String::new();
+    }
+    let step = ((elapsed.as_millis().saturating_sub(600) / 80) as usize + 1) % cycle_width;
+    let repeated = format!("{cycle}{cycle}");
+    let mut out = String::new();
+    let mut skipped = 0usize;
+    let mut used = 0usize;
+    for ch in repeated.chars() {
+        let cw = draw::width(&ch.to_string());
+        if skipped + cw <= step {
+            skipped += cw;
+            continue;
+        }
+        if used + cw > width {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out
 }
 
 fn titlecase(s: &str) -> String {
@@ -433,6 +472,7 @@ impl Ui {
             saved_tabs: vec![],
             closed_tabs: vec![],
             tab_hover: None,
+            tab_hover_at: None,
             tab_history: vec![],
             chrome: Default::default(),
             redo: vec![],
@@ -2902,7 +2942,10 @@ impl Ui {
                 } else {
                     None
                 };
-                self.tab_hover = hover;
+                if self.tab_hover != hover {
+                    self.tab_hover = hover;
+                    self.tab_hover_at = self.tab_hover.as_ref().map(|_| Instant::now());
+                }
                 if let (Some(Dialog::Select(s)), Some(p)) = (self.dialog.as_mut(), self.hits.dialog.as_ref()) {
                     if let Some((_, i)) = p.rows.iter().find(|(ry, _)| *ry == y) {
                         if inside(p.list) && s.selected != *i {
@@ -3301,16 +3344,32 @@ impl Ui {
             if w < 8 {
                 break;
             }
-            let bg = if active { t.raised_high } else { t.bg };
+            let hovered = self.tab_hover.as_deref() == Some(id.as_str());
+            let bg = if hovered {
+                if active { t.raised_high } else { t.raised }
+            } else if active {
+                t.raised_high
+            } else {
+                t.bg
+            };
             let dot = if h.is_busy() { SPINNER[(self.frame / 2) % SPINNER.len()] } else { " " };
-            let ts = if active { draw::bold(draw::st(t.text, bg)) } else { draw::st(t.muted, bg) };
+            let ts = if active {
+                draw::bold(draw::st(t.text, bg))
+            } else if hovered {
+                draw::st(t.text, bg)
+            } else {
+                draw::st(t.muted, bg)
+            };
             let xs = draw::st(t.muted, bg);
             // Upstream pins the close mark to the tab's right edge (absolute right=1) and the
             // title gives up two cells while hovered. Pad the label so it fills that width instead
             // of leaving the mark next to a short title.
-            let hovered = self.tab_hover.as_deref() == Some(id.as_str());
             let title_width = w as usize - if hovered { 5 } else { 3 };
-            let mut label = draw::truncate(&title, title_width);
+            let mut label = if hovered {
+                tab_marquee(&title, title_width, self.tab_hover_at.map(|at| at.elapsed()))
+            } else {
+                draw::take_width(&title, title_width)
+            };
             let used = draw::width(&label);
             if used < title_width {
                 label.push_str(&" ".repeat(title_width - used));
@@ -4419,7 +4478,7 @@ impl Ui {
                     dirty = true;
                 }
                 _ = tick.tick() => {
-                    let animating = self.handle.is_busy() || !self.shells.is_empty() || self.tabs.iter().any(|t| self.app.session(t).map(|h| h.is_busy()).unwrap_or(false));
+                    let animating = self.handle.is_busy() || !self.shells.is_empty() || self.tab_hover.is_some() || self.tabs.iter().any(|t| self.app.session(t).map(|h| h.is_busy()).unwrap_or(false));
                     let form = self.pending_form().map(|form| form.id).unwrap_or_default();
                     if form != self.form.id {
                         dirty = true;
