@@ -2012,14 +2012,15 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
   const items = nested ? (nested.synthetic === true && Array.isArray(nested.children) ? nested.children : [nested]) : []
   const rawBorder = jsxProp(props, "borderStyle")
   const borderValue = jsxProp(props, "border")
+  // OpenTUI's `border` prop is `boolean | BorderSides[]`; a style comes from
+  // `borderStyle`. Plugins that pass an object here (Magic Context passes
+  // `{ type: "single" }`) render no border upstream, so ignore it too.
   const border = typeof rawBorder === "string"
     ? rawBorder
     : borderValue === true || (Array.isArray(borderValue) && borderValue.some(Boolean))
     ? "single"
     : typeof borderValue === "string"
     ? borderValue
-    : borderValue && typeof borderValue === "object"
-    ? String(borderValue.type ?? borderValue.style ?? borderValue.borderStyle ?? "single")
     : undefined
   const padding = jsxNumber(jsxProp(props, "padding"))
   const margin = jsxNumber(jsxProp(props, "margin"))
