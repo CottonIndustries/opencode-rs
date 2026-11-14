@@ -605,6 +605,16 @@ impl App {
         self.sessions.lock().unwrap().remove(id);
     }
 
+    /// In-memory child sessions of `parent`, as counted in the status bar.
+    pub fn active_children(&self, parent: &str) -> usize {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|handle| handle.with(|session| session.parent_id.as_deref() == Some(parent)))
+            .count()
+    }
+
     /// Permission check: evaluates rules for the agent and session, prompting when needed.
     pub async fn authorize(
         &self,

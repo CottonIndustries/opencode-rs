@@ -3600,8 +3600,12 @@ impl Ui {
 
     /// Context tokens of the last step and the session cost.
     fn usage(&self) -> Vec<String> {
+        let children = self.app.active_children(&self.sid());
         self.handle.with(|s| {
             let mut out = Vec::new();
+            if children > 0 {
+                out.push(format!("{children} subagent{}", if children == 1 { "" } else { "s" }));
+            }
             if let Some(m) = s.messages.iter().rev().find(|m| m.role == Role::Assistant && (m.usage.input + m.usage.output + m.usage.cache_read) > 0) {
                 let u = &m.usage;
                 let tokens = u.input + u.output + u.reasoning + u.cache_read + u.cache_write;
