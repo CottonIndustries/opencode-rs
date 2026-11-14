@@ -55,7 +55,6 @@ pub struct StartOptions {
 }
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const TICK: Duration = Duration::from_millis(40);
 /// Messages rendered when a long session opens; older chunks load on scroll.
 const TRANSCRIPT_WINDOW: usize = 250;
 const LOGO_LEFT: [&str; 4] = ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"];
@@ -1304,11 +1303,20 @@ impl Ui {
             }
             _ => {}
         }
+        self.set_window_title();
         self.route = Route::Home;
         self.cache = None;
         self.scroll = 0;
         self.redo.clear();
         self.dialog = None;
+    }
+
+    fn set_window_title(&self) {
+        if !self.settings.bool("terminal.title").unwrap_or(true) {
+            return;
+        }
+        let title = self.handle.with(|session| session.title.clone());
+        let _ = execute!(std::io::stdout(), ratatui::crossterm::terminal::SetTitle(format!("{title} - opencode")));
     }
 
     fn open_session(&mut self, value: &str) {
@@ -1323,6 +1331,7 @@ impl Ui {
                     self.terminal_pane.clear();
                 }
                 self.handle = h;
+                self.set_window_title();
                 self.route = Route::Session;
                 self.cache = None;
                 self.scroll = 0;
@@ -1342,6 +1351,7 @@ impl Ui {
         if let Ok(h) = self.app.session(id) {
             h.with(|s| s.title = title.to_string());
             h.save();
+            self.set_window_title();
             self.cache = None;
         }
     }
@@ -5761,7 +5771,8 @@ impl Ui {
         });
         self.refresh_plugin_slots().await;
         let mut events = self.app.subscribe();
-        let mut tick = tokio::time::interval(TICK);
+        let tick_ms = if self.settings.animations() { 40 } else { 250 };
+        let mut tick = tokio::time::interval(Duration::from_millis(tick_ms));
         if let Some(p) = initial {
             self.editor.set(&p);
             self.submit();
