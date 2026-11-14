@@ -84,6 +84,22 @@ impl Settings {
         self.str("tabs.indicators").unwrap_or("status")
     }
 
+    pub fn mini_footer(&self) -> bool {
+        self.str("mini.footer") != Some("hide")
+    }
+
+    pub fn mini_splash(&self) -> bool {
+        self.str("mini.splash") != Some("hide")
+    }
+
+    pub fn mini_thinking(&self) -> bool {
+        match self.str("mini.thinking") {
+            Some("show") => true,
+            Some("hide") => false,
+            _ => self.thinking_shown(),
+        }
+    }
+
     /// Set `path` (dotted) and persist.
     pub fn set(&mut self, path: &str, value: Value) {
         let keys: Vec<&str> = path.split('.').collect();

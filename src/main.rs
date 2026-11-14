@@ -436,7 +436,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Mini { project, tui }) => {
             std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
-            tui::start(project.unwrap_or_else(cwd), tui.into()).await
+            let mut opts: tui::StartOptions = tui.into();
+            opts.mini = true;
+            tui::start(project.unwrap_or_else(cwd), opts).await
         }
         Some(Cmd::Run { message, continue_last, session, fork, model, agent, format, file, title, thinking, auto_approve, dir }) => {
             let app = app::App::init(dir.unwrap_or_else(cwd)).await?;
@@ -513,6 +515,6 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
 
 impl From<TuiArgs> for tui::StartOptions {
     fn from(a: TuiArgs) -> Self {
-        tui::StartOptions { model: a.model, agent: a.agent, continue_last: a.continue_last, session: a.session, fork: a.fork, prompt: a.prompt }
+        tui::StartOptions { model: a.model, agent: a.agent, continue_last: a.continue_last, session: a.session, fork: a.fork, prompt: a.prompt, mini: false }
     }
 }

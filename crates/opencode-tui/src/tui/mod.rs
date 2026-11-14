@@ -49,6 +49,7 @@ pub struct StartOptions {
     pub session: Option<String>,
     pub fork: bool,
     pub prompt: Option<String>,
+    pub mini: bool,
 }
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -223,6 +224,7 @@ struct Ui {
     handle: Arc<Handle>,
     route: Route,
     settings: Settings,
+    mini: bool,
     keys: Keymap,
     theme: Theme,
     mode: Mode,
@@ -465,6 +467,7 @@ impl Ui {
             handle,
             route,
             settings,
+            mini: opts.mini,
             keys,
             mode,
             editor: Editor::default(),
@@ -695,7 +698,18 @@ impl Ui {
         }
     }
 
+    fn thinking_shown(&self) -> bool {
+        if self.mini {
+            self.settings.mini_thinking()
+        } else {
+            self.settings.thinking_shown()
+        }
+    }
+
     fn tabs_visible(&self) -> bool {
+        if self.mini {
+            return false;
+        }
         match self.settings.tabs_mode() {
             "off" => false,
             "on" => true,
@@ -1408,7 +1422,7 @@ impl Ui {
     }
 
     fn sidebar_visible(&self) -> bool {
-        if self.route != Route::Session || self.handle.with(|s| s.parent_id.is_some()) {
+        if self.mini || self.route != Route::Session || self.handle.with(|s| s.parent_id.is_some()) {
             return false;
         }
         match self.sidebar {
@@ -3718,7 +3732,7 @@ impl Ui {
         draw::fill(buf, area, t.bg);
         self.hits = Hits::default();
         let mut body = area;
-        let vertical = self.tabs_vertical() && self.route == Route::Session && !self.tabs.is_empty();
+        let vertical = !self.mini && self.tabs_vertical() && self.route == Route::Session && !self.tabs.is_empty();
         if vertical {
             self.draw_tabs(buf, area, &t);
             body = Rect { x: area.x + 42, width: area.width.saturating_sub(42), ..area };
@@ -4054,7 +4068,9 @@ impl Ui {
 
     fn draw_home(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) -> Option<(u16, u16)> {
         let (w, h) = (area.width as usize, area.height);
-        let footer_h: u16 = if h >= 14 && w >= 44 {
+        let footer_h: u16 = if self.mini && !self.settings.mini_footer() {
+            0
+        } else if h >= 14 && w >= 44 {
             if h < 16 {
                 1
             } else {
@@ -4067,7 +4083,7 @@ impl Ui {
         let pad = if w < 44 { 1 } else { 2 };
         let prompt_w = 75.min(w.saturating_sub(pad * 2)) as u16;
         let prompt_h = self.prompt_height(prompt_w as usize) as u16;
-        let logo_h: u16 = if h < 12 || w < 44 { 0 } else { 4 };
+        let logo_h: u16 = if (self.mini && !self.settings.mini_splash()) || h < 12 || w < 44 { 0 } else { 4 };
         let fixed = 3 + logo_h + 1 + 1 + prompt_h;
         let free = main_h.saturating_sub(fixed);
         let spacer = if main_h >= fixed { 3 } else { 3u16.saturating_sub(fixed - main_h) };
@@ -4461,7 +4477,7 @@ impl Ui {
 
     fn draw_session(&mut self, buf: &mut Buffer, area: Rect, t: &Theme) -> Option<(u16, u16)> {
         let w = area.width as usize;
-        let terminal_visible = self.terminal_pane.visible && !self.terminal_pane.tabs.is_empty();
+        let terminal_visible = !self.mini && self.terminal_pane.visible && !self.terminal_pane.tabs.is_empty();
         let terminal_w = if terminal_visible {
             self.terminal_width().min(area.width.saturating_sub(24))
         } else {
@@ -4624,7 +4640,7 @@ impl Ui {
         (
             width,
             self.theme.name.as_str(),
-            self.settings.thinking_shown(),
+            self.thinking_shown(),
             self.settings.grouping(),
             self.settings.tps(),
             &queued,
@@ -4696,7 +4712,7 @@ impl Ui {
             t: &self.theme,
             width,
             term_width: self.size.0 as usize,
-            thinking: self.settings.thinking_shown(),
+            thinking: self.thinking_shown(),
             grouping: self.settings.grouping(),
             tps: self.settings.tps(),
             spinner,
