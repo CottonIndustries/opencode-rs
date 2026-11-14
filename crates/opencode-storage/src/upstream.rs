@@ -983,6 +983,61 @@ pub fn delete(id: &str) -> bool {
         .is_ok_and(|rows| rows > 0)
 }
 
+fn updated_connection(connection: &Connection, id: &str) -> Option<i64> {
+    connection
+        .query_row(
+            "SELECT time_updated FROM session_v2 WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+pub fn updated(id: &str) -> Option<i64> {
+    updated_connection(&connection()?, id)
+}
+
+/// Mirror local JSON sessions that upstream does not have yet, or that are
+/// newer than the upstream row. This makes existing opencode-rs sessions
+/// visible to the TypeScript TUI without requiring the session to be reopened.
+pub fn sync_local() -> usize {
+    let Some(mut connection) = connection() else {
+        return 0;
+    };
+    let root = crate::paths::get().storage().join("session");
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut synced = 0;
+    for project in projects.flatten() {
+        let Ok(files) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            if file.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(file.path()) else {
+                continue;
+            };
+            let Ok(session) = serde_json::from_str::<Session>(&text) else {
+                continue;
+            };
+            if updated_connection(&connection, &session.id)
+                .is_some_and(|updated| updated >= session.time_updated)
+            {
+                continue;
+            }
+            if save_connection(&mut connection, &session).is_ok() {
+                synced += 1;
+            }
+        }
+    }
+    synced
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

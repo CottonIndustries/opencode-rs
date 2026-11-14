@@ -416,6 +416,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     tokio::spawn(async {
         let _ = models::refresh().await;
     });
+    let _ = upstream::sync_local();
     match cli.command {
         None => {
             std::env::set_var("OPENCODE_RESUME_BACKGROUND", "1");
