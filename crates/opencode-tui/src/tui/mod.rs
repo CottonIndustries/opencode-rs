@@ -4169,7 +4169,12 @@ impl Ui {
                         }
                     }
                 } else if self.tabs.contains(&session) {
-                    self.tab_unread.insert(session);
+                    let fresh = self.tab_unread.insert(session);
+                    if fresh && self.settings.bool("attention.sounds").unwrap_or(true) {
+                        use std::io::Write;
+                        print!("\x07");
+                        let _ = std::io::stdout().flush();
+                    }
                 }
             }
             _ => {}
@@ -5070,8 +5075,9 @@ impl Ui {
         }
         let bg = t.raised;
         draw::fill(buf, area, bg);
+        let chrome = self.settings.bool("terminal.title").unwrap_or(true);
         let inner_w = area.width.saturating_sub(2);
-        let inner_h = area.height.saturating_sub(2);
+        let inner_h = area.height.saturating_sub(if chrome { 2 } else { 0 });
         if let Some(terminal) = self.terminal_pane.active_mut() {
             let (cols, rows) = terminal.size();
             if cols != inner_w || rows != inner_h {
@@ -5080,31 +5086,34 @@ impl Ui {
         }
         self.terminal_pane.refresh();
         self.hits.terminal_pane = area;
-        let titles = self.terminal_pane.tab_titles();
-        let mut x = area.x + 1;
-        for (index, title) in titles.iter().enumerate() {
-            if x >= area.x + area.width.saturating_sub(2) {
-                break;
+        if chrome {
+            let titles = self.terminal_pane.tab_titles();
+            let mut x = area.x + 1;
+            for (index, title) in titles.iter().enumerate() {
+                if x >= area.x + area.width.saturating_sub(2) {
+                    break;
+                }
+                let active = index == self.terminal_pane.active;
+                let label = draw::take_width(title, 20);
+                let width = draw::width(&label) as u16 + 2;
+                let row_bg = if active { t.raised_high } else { bg };
+                let fg = if active { t.text } else { t.muted };
+                draw::draw_line(buf, x, area.y, width.min(area.x + area.width - x), &line(vec![span(" ", fg, row_bg), Span::styled(label, draw::st(fg, row_bg))], row_bg));
+                self.hits.terminal_tabs.push((Rect { x, y: area.y, width, height: 1 }, index));
+                x += width + 1;
             }
-            let active = index == self.terminal_pane.active;
-            let label = draw::take_width(title, 20);
-            let width = draw::width(&label) as u16 + 2;
-            let row_bg = if active { t.raised_high } else { bg };
-            let fg = if active { t.text } else { t.muted };
-            draw::draw_line(buf, x, area.y, width.min(area.x + area.width - x), &line(vec![span(" ", fg, row_bg), Span::styled(label, draw::st(fg, row_bg))], row_bg));
-            self.hits.terminal_tabs.push((Rect { x, y: area.y, width, height: 1 }, index));
-            x += width + 1;
+            let close = Rect { x: area.x + area.width.saturating_sub(3), y: area.y, width: 2, height: 1 };
+            draw::draw_line(buf, close.x, close.y, close.width, &line(vec![span("\u{2715} ", t.muted, bg)], bg));
+            self.hits.terminal_close.push((close, self.terminal_pane.active));
         }
-        let close = Rect { x: area.x + area.width.saturating_sub(3), y: area.y, width: 2, height: 1 };
-        draw::draw_line(buf, close.x, close.y, close.width, &line(vec![span("\u{2715} ", t.muted, bg)], bg));
-        self.hits.terminal_close.push((close, self.terminal_pane.active));
         let lines = self.terminal_pane.lines();
+        let top = area.y + if chrome { 1 } else { 0 };
         for (row, text) in lines.iter().take(inner_h as usize).enumerate() {
             let text_line = draw::take_width(text, inner_w as usize);
-            draw::draw_line(buf, area.x + 1, area.y + 1 + row as u16, inner_w, &line(vec![span(text_line, t.text, bg)], bg));
+            draw::draw_line(buf, area.x + 1, top + row as u16, inner_w, &line(vec![span(text_line, t.text, bg)], bg));
         }
         if self.terminal_pane.focus {
-            self.terminal_pane.cursor().map(|(cx, cy)| (area.x + 1 + cx.min(inner_w.saturating_sub(1)), area.y + 1 + cy.min(inner_h.saturating_sub(1))))
+            self.terminal_pane.cursor().map(|(cx, cy)| (area.x + 1 + cx.min(inner_w.saturating_sub(1)), top + cy.min(inner_h.saturating_sub(1))))
         } else {
             None
         }

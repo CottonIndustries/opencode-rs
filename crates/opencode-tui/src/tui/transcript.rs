@@ -540,7 +540,20 @@ fn entry(e: &Entry, session: &Session, ctx: &Ctx) -> Vec<Row> {
             }
         }
         Entry::Reasoning(m, i, text) => vec![Row::new(reasoning(m, *i, text, ctx))],
-        Entry::Tool(m, p) => tool(m, p, ctx),
+        Entry::Tool(m, p) => {
+            let mut rows = tool(m, p, ctx);
+            if ctx.image_preview {
+                if let Part::Tool { state: ToolState::Completed { attachments, .. }, .. } = p {
+                    for file in attachments.iter().filter(|file| file.mime.starts_with("image/")) {
+                        let lines = super::image_view::lines(&file.data, &file.mime, ctx.width.saturating_sub(3), 8, bg);
+                        if !lines.is_empty() {
+                            rows.push(Row::new(indent3(lines, bg)));
+                        }
+                    }
+                }
+            }
+            rows
+        }
         Entry::Footer(m, idx) => vec![Row::new(footer(session, m, *idx, ctx))],
         Entry::Shell(command, exit, output) => {
             let id = format!("shell-run:{}:{}", command.len(), output.len());
