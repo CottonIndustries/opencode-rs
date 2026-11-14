@@ -242,15 +242,24 @@ pub fn plugin_theme(theme: &Theme) -> Value {
         "text": {
             "base": color(theme.base.text),
             "muted": color(theme.base.muted),
+            "faint": color(theme.base.faint),
             "feedback": {
-                "error": { "base": color(theme.base.error.base) },
-                "warning": { "base": color(theme.base.warning.base) },
-                "success": { "base": color(theme.base.success.base) },
-                "info": { "base": color(theme.base.info.base) }
+                "error": { "base": color(theme.base.error.base), "muted": color(theme.base.error.muted) },
+                "warning": { "base": color(theme.base.warning.base), "muted": color(theme.base.warning.muted) },
+                "success": { "base": color(theme.base.success.base), "muted": color(theme.base.success.muted) },
+                "info": { "base": color(theme.base.info.base), "muted": color(theme.base.info.muted) }
             }
         },
-        "background": { "base": color(theme.base.bg) },
+        "background": {
+            "base": color(theme.base.bg),
+            "raised": {
+                "base": color(theme.base.raised),
+                "high": color(theme.base.raised_high),
+                "max": color(theme.base.raised_max)
+            }
+        },
         "border": { "base": color(theme.base.border) },
+        "scrollbar": { "base": color(theme.base.scrollbar) },
         "hue": { "accent": Value::Object(accent) }
     })
 }
