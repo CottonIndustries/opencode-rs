@@ -181,14 +181,17 @@ if yours live elsewhere.
     router pages, session panels and footer/sidebar slots. Slot and page JSX is
     reduced to a layout tree and rendered by ratatui. Compiled Solid JSX
     plugins run through a Solid-compatible runtime and a flexbox-style Rust
-    layout engine with row/column placement, basis, grow/shrink, wrap,
-    align/justify, padding, borders, overflow clipping and scrolling. Markdown
-    and code blocks use the native markdown and syntax renderers; inputs,
-    textareas and selects are editable and focused from the keyboard; pages
-    route keys and paste events back to plugin handlers and support
-    `requestRender` animation ticks. This remains a renderer subset rather than
-    a port of the native OpenTUI engine, so uncommon widgets and mouse text
-    selection still fall back to text.
+    layout engine with row/column placement, basis, grow/shrink, min/max
+    constraints, wrap, align/justify, separate row/column gaps, padding,
+    borders, percentage absolute offsets, aspect ratios, overflow clipping,
+    scrolling and scrollbars. Markdown and code blocks use the native markdown
+    renderer and tree-sitter syntax highlighting (Rust, TypeScript/TSX,
+    JavaScript, Python, Go, C, C++, Java, Ruby, PHP, Bash, JSON, YAML, HTML and
+    CSS); inputs, textareas and selects are editable and focused from the
+    keyboard; pages route keys and paste events back to plugin handlers and
+    support `requestRender` animation ticks. This remains a renderer subset
+    rather than a port of the native OpenTUI engine, so custom OpenTUI
+    renderables and native image/video widgets still fall back to text.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
   permission dialog, model/session/agent pickers, command palette, slash
   commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants
@@ -201,9 +204,11 @@ if yours live elsewhere.
   middle-click close, context menu, unread and pinned indicators, a docked
   persistent terminal pane with multiple tabs, a composer for subagents, shell
   jobs and terminals, a full-screen diff viewer (file tree, unified or split,
-  hunk and file navigation, reviewed marks), a mini mode, inline image previews
+  hunk and file navigation, scrolling, folded files, reviewed marks), a mini
+  mode, inline image previews
   with a full-size image dialog, a 38-entry settings dialog and all 233 upstream
-  keybinding definitions. Project skills live in
+  keybinding definitions, and mouse text selection with copy in the
+  transcript. Project skills live in
   `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
 
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`
