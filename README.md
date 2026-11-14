@@ -188,8 +188,9 @@ if yours live elsewhere.
     renderer and tree-sitter syntax highlighting (Rust, TypeScript/TSX,
     JavaScript, Python, Go, C, C++, Java, Ruby, PHP, Bash, JSON, YAML, HTML and
     CSS); inputs, textareas and selects are editable and focused from the
-    keyboard; pages route keys and paste events back to plugin handlers and
-    support `requestRender` animation ticks. This remains a renderer subset
+    keyboard; pages route keys and paste events back to plugin handlers, honor
+    renderer clipboard and terminal-title calls, and animate `requestRender`
+    and `useTimeline` ticks. This remains a renderer subset
     rather than a port of the native OpenTUI engine, so custom OpenTUI
     renderables and native image/video widgets still fall back to text.
 - **TUI** (ratatui): markdown rendering, thinking blocks, tool calls with diffs,
