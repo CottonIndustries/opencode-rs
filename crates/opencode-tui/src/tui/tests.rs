@@ -242,6 +242,44 @@ async fn report_slash_commands_open_dialogs() {
 }
 
 #[tokio::test]
+async fn composer_tabs_cycle_and_close() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.open_composer(0);
+    assert!(ui.composer_open);
+    assert_eq!(ui.composer_tab, 0);
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    assert_eq!(ui.hits.composer_tabs.len(), 3);
+    let key = |name: &str| keymap::Key { ctrl: false, alt: false, shift: false, name: name.into() };
+    ui.composer_key(&key("right"));
+    assert_eq!(ui.composer_tab, 1);
+    ui.composer_key(&key("escape"));
+    assert!(!ui.composer_open);
+}
+
+#[tokio::test]
+async fn settings_dialog_lists_upstream_entries() {
+    let mut ui = ui().await;
+    ui.open_settings();
+    let Some(Dialog::Select(select)) = ui.dialog.as_ref() else {
+        panic!("settings dialog did not open");
+    };
+    assert!(select.options.len() >= 30, "expected the full settings list, got {}", select.options.len());
+    assert!(select.options.iter().any(|option| option.value == "theme.mode"));
+    assert!(select.options.iter().any(|option| option.value == "diffs.source"));
+    assert!(select.options.iter().any(|option| option.value == "leader.timeout"));
+}
+
+#[tokio::test]
+async fn diff_command_opens_viewer() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.exec("diff.open", "");
+    assert!(matches!(ui.dialog, Some(Dialog::Diff(_))));
+}
+
+#[tokio::test]
 async fn skills_command_opens_dialog_and_inserts_mention() {
     let mut ui = ui().await;
     ui.route = Route::Session;
