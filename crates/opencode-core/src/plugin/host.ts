@@ -2166,10 +2166,10 @@ function jsxLayout(
     ...(normalize(jsxProp(props, "alignItems")) ? { align: normalize(jsxProp(props, "alignItems")) } : {}),
     ...(normalize(jsxProp(props, "justifyContent")) ? { justify: normalize(jsxProp(props, "justifyContent")) } : {}),
     ...(jsxProp(props, "position") ? { position: String(jsxProp(props, "position")) } : {}),
-    ...(jsxNumber(jsxProp(props, "left")) !== undefined ? { left: jsxNumber(jsxProp(props, "left")) } : {}),
-    ...(jsxNumber(jsxProp(props, "top")) !== undefined ? { top: jsxNumber(jsxProp(props, "top")) } : {}),
-    ...(jsxNumber(jsxProp(props, "right")) !== undefined ? { right: jsxNumber(jsxProp(props, "right")) } : {}),
-    ...(jsxNumber(jsxProp(props, "bottom")) !== undefined ? { bottom: jsxNumber(jsxProp(props, "bottom")) } : {}),
+    ...(jsxDim(jsxProp(props, "left")) !== undefined ? { left: jsxDim(jsxProp(props, "left")) } : {}),
+    ...(jsxDim(jsxProp(props, "top")) !== undefined ? { top: jsxDim(jsxProp(props, "top")) } : {}),
+    ...(jsxDim(jsxProp(props, "right")) !== undefined ? { right: jsxDim(jsxProp(props, "right")) } : {}),
+    ...(jsxDim(jsxProp(props, "bottom")) !== undefined ? { bottom: jsxDim(jsxProp(props, "bottom")) } : {}),
     ...(type.includes("scrollbox") ? { overflow: "scroll" } : jsxProp(props, "overflow") ? { overflow: String(jsxProp(props, "overflow")) } : {}),
     ...(jsxNumber(jsxProp(props, "scrollTop", "scrollY")) !== undefined
       ? { scrollTop: jsxNumber(jsxProp(props, "scrollTop", "scrollY")) }

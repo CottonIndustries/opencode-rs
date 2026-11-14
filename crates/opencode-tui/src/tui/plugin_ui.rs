@@ -167,10 +167,10 @@ struct Node {
     align: Align,
     justify: Justify,
     position: Position,
-    left: Option<usize>,
-    top: Option<usize>,
-    right: Option<usize>,
-    bottom: Option<usize>,
+    left: Option<Dim>,
+    top: Option<Dim>,
+    right: Option<Dim>,
+    bottom: Option<Dim>,
     hidden: bool,
 }
 
@@ -539,10 +539,10 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                     Some("absolute") => Position::Absolute,
                     _ => Position::Relative,
                 },
-                left: number(value.get("left")),
-                top: number(value.get("top")),
-                right: number(value.get("right")),
-                bottom: number(value.get("bottom")),
+                left: dim(value.get("left")),
+                top: dim(value.get("top")),
+                right: dim(value.get("right")),
+                bottom: dim(value.get("bottom")),
                 hidden: bool_of(value.get("hidden")),
             })
         }
@@ -1116,14 +1116,18 @@ impl Node {
         for child in absolute {
             let width = child.content_width(area.width as usize, false) + child.outer_width();
             let height = child.measure(area.width as usize, false).height;
-            let x = match (child.left, child.right) {
+            let left = child.left.map(|left| left.resolve(area.width as usize));
+            let right = child.right.map(|right| right.resolve(area.width as usize));
+            let top = child.top.map(|top| top.resolve(area.height as usize));
+            let bottom = child.bottom.map(|bottom| bottom.resolve(area.height as usize));
+            let x = match (left, right) {
                 (Some(left), _) => left + area.x as usize,
                 (None, Some(right)) => (area.x as usize)
                     .saturating_add(area.width as usize)
                     .saturating_sub(width + right),
                 _ => area.x as usize,
             };
-            let y = match (child.top, child.bottom) {
+            let y = match (top, bottom) {
                 (Some(top), _) => top + area.y as usize,
                 (None, Some(bottom)) => (area.y as usize)
                     .saturating_add(area.height as usize)
