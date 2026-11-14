@@ -282,6 +282,7 @@ struct Ui {
     tab_history: Vec<String>,
     /// terminal title and default background as last sent (OSC 0 / OSC 11)
     chrome: (String, String),
+    window_title: Option<String>,
     redo: Vec<(String, Vec<Message>)>,
     shells: Vec<String>,
     terminal_pane: terminal::TerminalPane,
@@ -519,6 +520,7 @@ impl Ui {
             tab_menu_target: None,
             tab_history: vec![],
             chrome: Default::default(),
+            window_title: None,
             redo: vec![],
             shells: vec![],
             terminal_pane: terminal::TerminalPane::default(),
@@ -582,7 +584,10 @@ impl Ui {
     /// Window title like upstream's `app.tsx` ("OpenCode", or "OC | <title>" in a titled session),
     /// and the theme background as the terminal's default colour so window padding blends in.
     fn chrome(&self) -> (String, String) {
-        let title = match self.route {
+        let title = if let Some(title) = &self.window_title {
+            title.clone()
+        } else {
+            match self.route {
             Route::Session => {
                 let t = self.handle.with(|s| s.title.clone());
                 let fallback = t.is_empty() || t.starts_with(crate::session::DEFAULT_TITLE_PREFIX) || t.starts_with("Child session - ");
@@ -595,6 +600,7 @@ impl Ui {
                 }
             }
             _ => "OpenCode".to_string(),
+            }
         };
         let title = title.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
         let bg = if self.theme.bg.a > 0.0 { self.theme.bg.hex() } else { String::new() };
@@ -4315,6 +4321,10 @@ impl Ui {
                 }
             }
             AppEvent::Clipboard { text } => copy_to_clipboard(&text),
+            AppEvent::WindowTitle { title } => {
+                self.window_title = Some(title);
+                self.sync_chrome();
+            }
             AppEvent::Toast { title, message, variant } => {
                 let variant = match variant.as_str() {
                     "success" => Variant::Success,

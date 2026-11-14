@@ -37,6 +37,7 @@ pub enum AppEvent {
     Notice { message: String },
     Toast { title: Option<String>, message: String, variant: String },
     Clipboard { text: String },
+    WindowTitle { title: String },
     PluginPage { page: String, title: String, text: String, layout: serde_json::Value },
     PluginInvalidate,
     McpAuth {
@@ -905,6 +906,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "tui.clipboard",
             "properties": { "text": text }
+        }),
+        AppEvent::WindowTitle { title } => json!({
+            "id": id(),
+            "type": "tui.title",
+            "properties": { "title": title }
         }),
         AppEvent::PluginInvalidate => json!({
             "id": id(),
