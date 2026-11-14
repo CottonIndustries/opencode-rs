@@ -196,8 +196,14 @@ if yours live elsewhere.
   /compact /undo /redo /copy /export /cd /editor /skills /worktrees /terminal
   /plugins /diff /stats /btw /reload /debug /pair /restart /highlights /update`
   plus config/plugin commands), `@file` attachments, `@skill` mentions, prompt
-  history, queued messages, a persistent terminal dialog, diff and stats views,
-  workspace switching, side questions and config reload. Project skills live in
+  history, queued prompts, prompt stash, session goals, message and subagent
+  navigation, horizontal or vertical session tabs with drag reorder, hover close,
+  middle-click close, context menu, unread and pinned indicators, a docked
+  persistent terminal pane with multiple tabs, a composer for subagents, shell
+  jobs and terminals, a full-screen diff viewer (file tree, unified or split,
+  hunk and file navigation, reviewed marks), a mini mode, inline image previews
+  with a full-size image dialog, a 38-entry settings dialog and all 233 upstream
+  keybinding definitions. Project skills live in
   `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
 
 Sessions remain readable as JSON in `~/.local/share/opencode/storage/session/<project>/`
