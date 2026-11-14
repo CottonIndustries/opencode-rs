@@ -656,11 +656,14 @@ impl Node {
         let inner = parent
             .saturating_sub(self.outer_width() + padding + border)
             .max(1);
+        // A row whose children grow must claim the full line; without this a
+        // synthetic row of empty flex segments (the token bar) measures zero.
+        let grow_row = matches!(&self.kind, Kind::Box(children) if self.direction.is_row() && children.iter().any(|child| child.grow > 0.0));
         let natural = self
             .width
             .map(|width| width.resolve(inner))
             .unwrap_or_else(|| {
-                if fill {
+                if fill || grow_row {
                     inner
                 } else {
                     self.intrinsic_width(inner)

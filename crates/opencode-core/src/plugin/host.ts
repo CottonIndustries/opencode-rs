@@ -1910,19 +1910,34 @@ function jsxNumber(value: Json): number | undefined {
   return Number.isFinite(number) ? number : undefined
 }
 
-function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): Json | null {
+function jsxLayout(
+  value: Json,
+  depth = 0,
+  budget = { nodes: 0, controls: 0 },
+  parentDirection: "row" | "column" = "column",
+): Json | null {
   if (depth > 32 || budget.nodes > 2000) return null
   const current = jsxResolve(value)
   if (current === null || current === undefined || current === false || current === true) return null
-  if (current?.type === "#lazy") return jsxLayout(current.get, depth + 1, budget)
+  if (current?.type === "#lazy") return jsxLayout(current.get, depth + 1, budget, parentDirection)
   if (current?.type === "#for") {
     const each = jsxResolve(current.when)
     const items = Array.isArray(each) ? each : []
     const render = current.children
     const children = items
-      .map((item, index) => jsxLayout(typeof render === "function" ? render(item, index) : render, depth + 1, budget))
+      .map((item, index) =>
+        jsxLayout(typeof render === "function" ? render(item, index) : render, depth + 1, budget, parentDirection),
+      )
       .filter(Boolean)
-    return children.length ? { type: "box", direction: "column", children, synthetic: true } : null
+    return children.length
+      ? {
+          type: "box",
+          direction: parentDirection,
+          children,
+          synthetic: true,
+          ...(parentDirection === "row" ? { width: "100%" } : {}),
+        }
+      : null
   }
   if (current?.type === "#show") {
     const when = jsxResolve(current.when)
@@ -1936,6 +1951,7 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
         : current.fallback,
       depth + 1,
       budget,
+      parentDirection,
     )
   }
   if (typeof current === "string" || typeof current === "number" || typeof current === "bigint") {
@@ -1943,8 +1959,16 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     return text ? { type: "text", text, segments: [{ text }] } : null
   }
   if (Array.isArray(current)) {
-    const children = current.map((item) => jsxLayout(item, depth + 1, budget)).filter(Boolean)
-    return children.length ? { type: "box", direction: "column", children, synthetic: true } : null
+    const children = current.map((item) => jsxLayout(item, depth + 1, budget, parentDirection)).filter(Boolean)
+    return children.length
+      ? {
+          type: "box",
+          direction: parentDirection,
+          children,
+          synthetic: true,
+          ...(parentDirection === "row" ? { width: "100%" } : {}),
+        }
+      : null
   }
   if (typeof current !== "object") return null
   const rawProps = current.props ?? {}
@@ -2045,16 +2069,26 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
   }
   if (children === undefined) {
     const text = jsxText(current)
-    if (!text.trim()) return null
-    budget.nodes += 1
-    return { type: "text", text, segments: jsxSegments(current) }
+    if (text.trim()) {
+      budget.nodes += 1
+      return { type: "text", text, segments: jsxSegments(current) }
+    }
+    // Flex spacers and chart bars are empty boxes with only a background,
+    // size or grow value; dropping them removes the token bar entirely.
+    const visual =
+      jsxProp(props, "backgroundColor", "bg") !== undefined ||
+      jsxProp(props, "color", "fg") !== undefined ||
+      jsxProp(props, "width") !== undefined ||
+      jsxProp(props, "height") !== undefined ||
+      jsxProp(props, "flexGrow") !== undefined
+    if (!visual) return null
   }
   budget.nodes += 1
   const flexDirection = String(jsxProp(props, "flexDirection", "direction") ?? "column").toLowerCase()
   const direction = flexDirection === "row" || flexDirection === "row-reverse" || flexDirection === "column-reverse"
     ? flexDirection
     : "column"
-  const nested = jsxLayout(children, depth + 1, budget)
+  const nested = jsxLayout(children, depth + 1, budget, direction.startsWith("row") ? "row" : "column")
   const items = nested ? (nested.synthetic === true && Array.isArray(nested.children) ? nested.children : [nested]) : []
   const rawBorder = jsxProp(props, "borderStyle")
   const borderValue = jsxProp(props, "border")
