@@ -1779,18 +1779,19 @@ function jsxDim(value: Json): string | number | undefined {
 }
 
 function jsxStyle(props: Json): Json {
-  const attributes = Number(jsxProp(props, "attributes") ?? 0)
-  const color = jsxColor(jsxProp(props, "fg", "color", "foreground"))
-  const background = jsxColor(jsxProp(props, "bg", "backgroundColor", "background"))
+  const merged = { ...(props?.style && typeof props.style === "object" ? props.style : {}), ...(props ?? {}) }
+  const attributes = Number(jsxProp(merged, "attributes") ?? 0)
+  const color = jsxColor(jsxProp(merged, "fg", "color", "foreground"))
+  const background = jsxColor(jsxProp(merged, "bg", "backgroundColor", "background"))
   return {
     ...(color ? { color } : {}),
     ...(background ? { background } : {}),
-    ...(jsxProp(props, "bold") || (attributes & 1) !== 0 || props?.textAttributes === "bold" ? { bold: true } : {}),
-    ...(jsxProp(props, "dim") || (attributes & 2) !== 0 ? { dim: true } : {}),
-    ...(jsxProp(props, "italic") || (attributes & 4) !== 0 ? { italic: true } : {}),
-    ...(jsxProp(props, "underline") || (attributes & 8) !== 0 ? { underline: true } : {}),
-    ...(jsxProp(props, "strikethrough") || (attributes & 128) !== 0 ? { strikethrough: true } : {}),
-    ...(jsxProp(props, "inverse") || (attributes & 32) !== 0 ? { inverse: true } : {}),
+    ...(jsxProp(merged, "bold") || (attributes & 1) !== 0 || merged?.textAttributes === "bold" ? { bold: true } : {}),
+    ...(jsxProp(merged, "dim") || (attributes & 2) !== 0 ? { dim: true } : {}),
+    ...(jsxProp(merged, "italic") || (attributes & 4) !== 0 ? { italic: true } : {}),
+    ...(jsxProp(merged, "underline") || (attributes & 8) !== 0 ? { underline: true } : {}),
+    ...(jsxProp(merged, "strikethrough") || (attributes & 128) !== 0 ? { strikethrough: true } : {}),
+    ...(jsxProp(merged, "inverse") || (attributes & 32) !== 0 ? { inverse: true } : {}),
   }
 }
 
@@ -1804,8 +1805,16 @@ function jsxSegments(value: Json, inherited: Json = {}, depth = 0): Json[] {
   if (Array.isArray(current)) return current.flatMap((item) => jsxSegments(item, inherited, depth + 1))
   if (typeof current !== "object") return []
   const props = current.props ?? {}
-  const style = { ...inherited, ...jsxStyle(props) }
   const type = typeof current.type === "string" ? current.type.toLowerCase() : ""
+  const tagStyle =
+    type === "b" || type === "strong"
+      ? { bold: true }
+      : type === "i" || type === "em"
+      ? { italic: true }
+      : type === "u" || type === "a"
+      ? { underline: true }
+      : {}
+  const style = { ...inherited, ...tagStyle, ...jsxStyle(props) }
   if (type === "#text" || type === "text-node" || (current.text !== undefined && current.children === undefined)) {
     const text = current.text ?? props.text ?? props.content
     return text === undefined || text === null ? [] : [{ text: String(text), ...style }]
@@ -1839,7 +1848,8 @@ function jsxLayout(value: Json, depth = 0, budget = { nodes: 0, controls: 0 }): 
     return children.length ? { type: "box", direction: "column", children, synthetic: true } : null
   }
   if (typeof current !== "object") return null
-  const props = current.props ?? {}
+  const rawProps = current.props ?? {}
+  const props = { ...(rawProps.style && typeof rawProps.style === "object" ? rawProps.style : {}), ...rawProps }
   const children = props.children !== undefined ? props.children : current.children
   const type = typeof current.type === "string" ? current.type.toLowerCase() : ""
   if (type === "br") {
