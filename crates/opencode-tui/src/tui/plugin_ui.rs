@@ -150,6 +150,8 @@ struct Node {
     padding: Edges,
     margin: Edges,
     gap: usize,
+    row_gap: usize,
+    column_gap: usize,
     aspect_ratio: Option<f32>,
     grow: f32,
     shrink: f32,
@@ -361,6 +363,8 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 padding: Edges::default(),
                 margin: Edges::default(),
                 gap: 0,
+                row_gap: 0,
+                column_gap: 0,
                 aspect_ratio: None,
                 grow: 0.0,
                 shrink: 1.0,
@@ -503,6 +507,8 @@ fn parse(value: &Value, theme: &Theme, depth: usize, inherited: Option<Rgba>) ->
                 padding,
                 margin,
                 gap: number(value.get("gap")).unwrap_or(0).min(16),
+                row_gap: number(value.get("rowGap")).unwrap_or(0).min(16),
+                column_gap: number(value.get("columnGap")).unwrap_or(0).min(16),
                 aspect_ratio: value.get("aspectRatio").and_then(Value::as_f64).map(|ratio| ratio as f32).filter(|ratio| *ratio > 0.0),
                 grow: value.get("grow").and_then(Value::as_f64).unwrap_or(0.0) as f32,
                 shrink: value.get("shrink").and_then(Value::as_f64).unwrap_or(1.0) as f32,
@@ -558,6 +564,8 @@ fn leaf(kind: Kind, background: Option<Rgba>) -> Node {
         padding: Edges::default(),
         margin: Edges::default(),
         gap: 0,
+        row_gap: 0,
+        column_gap: 0,
         aspect_ratio: None,
         grow: 0.0,
         shrink: 1.0,
@@ -582,6 +590,14 @@ fn leaf(kind: Kind, background: Option<Rgba>) -> Node {
 }
 
 impl Node {
+    fn gap_x(&self) -> usize {
+        if self.column_gap > 0 { self.column_gap } else { self.gap }
+    }
+
+    fn gap_y(&self) -> usize {
+        if self.row_gap > 0 { self.row_gap } else { self.gap }
+    }
+
     fn outer_width(&self) -> usize {
         self.margin.left + self.margin.right
     }
@@ -656,7 +672,7 @@ impl Node {
                     }
                 }
                 if self.direction.is_row() && flow.len() > 1 {
-                    width = width.saturating_add((flow.len() - 1) * self.gap);
+                    width = width.saturating_add((flow.len() - 1) * self.gap_x());
                 }
                 width + padding + border
             }
@@ -751,13 +767,13 @@ impl Node {
                         let child_width = child_size.width + child.outer_width();
                         let child_height = child_size.height + child.outer_height();
                         if line_width > 0 && line_width + child_width > inner_width {
-                            total_height += line_height + self.gap;
+                            total_height += line_height + self.gap_y();
                             line_width = 0;
                             line_height = 0;
                         }
-                        line_width += child_width + self.gap;
+                        line_width += child_width + self.gap_x();
                         line_height = line_height.max(child_height);
-                        width = width.max(line_width.saturating_sub(self.gap));
+                        width = width.max(line_width.saturating_sub(self.gap_x()));
                     }
                     total_height += line_height;
                     return Size {
@@ -791,7 +807,7 @@ impl Node {
                     }
                 }
                 if flow > 1 {
-                    let gaps = (flow - 1) * self.gap;
+                    let gaps = (flow - 1) * if self.direction.is_row() { self.gap_x() } else { self.gap_y() };
                     if self.direction.is_row() {
                         width = width.saturating_add(gaps);
                     } else {
@@ -871,12 +887,12 @@ impl Node {
                     .iter()
                     .map(|child| child.measure(area.width as usize, true).height)
                     .sum::<usize>()
-                    + self.gap.saturating_mul(flow.len().saturating_sub(1));
+                    + self.gap_y().saturating_mul(flow.len().saturating_sub(1));
                 let content_width = if self.direction.is_row() {
                     flow.iter()
                         .map(|child| child.measure(area.width as usize, false).width + child.outer_width())
                         .sum::<usize>()
-                        + self.gap.saturating_mul(flow.len().saturating_sub(1))
+                        + self.gap_x().saturating_mul(flow.len().saturating_sub(1))
                 } else {
                     flow.iter()
                         .map(|child| child.measure(area.width as usize, false).width + child.outer_width())
@@ -1151,7 +1167,7 @@ impl Node {
             })
             .collect();
         let mut total = sizes.iter().map(|size| size.height).sum::<usize>()
-            + self.gap.saturating_mul(children.len().saturating_sub(1));
+            + self.gap_y().saturating_mul(children.len().saturating_sub(1));
         if total > available {
             let overflow = total - available;
             let shrink_total: f32 = children.iter().map(|child| child.shrink.max(0.0)).sum();
@@ -1163,7 +1179,7 @@ impl Node {
                     }
                 }
                 total = sizes.iter().map(|size| size.height).sum::<usize>()
-                    + self.gap.saturating_mul(children.len().saturating_sub(1));
+                    + self.gap_y().saturating_mul(children.len().saturating_sub(1));
             }
         }
         let grow_total: f32 = children.iter().map(|child| child.grow.max(0.0)).sum();
@@ -1176,7 +1192,7 @@ impl Node {
                 }
             }
             total = sizes.iter().map(|size| size.height).sum::<usize>()
-                + self.gap.saturating_mul(children.len().saturating_sub(1));
+                + self.gap_y().saturating_mul(children.len().saturating_sub(1));
             extra = available as isize - total as isize;
         }
         let _ = extra;
@@ -1184,7 +1200,7 @@ impl Node {
             area.y as usize,
             available,
             total,
-            self.gap,
+            self.gap_y(),
             children.len(),
             self.justify,
         );
@@ -1261,7 +1277,7 @@ impl Node {
                     continue;
                 }
                 if x > area.x as usize && x + width > area.x as usize + available {
-                    y += line_height + self.gap;
+                    y += line_height + self.gap_y();
                     x = area.x as usize;
                     line_height = 0;
                 }
@@ -1278,7 +1294,7 @@ impl Node {
                     theme,
                     background,
                 );
-                x += width + self.gap;
+                x += width + self.gap_x();
                 line_height = line_height.max(height);
             }
             return;
@@ -1296,7 +1312,7 @@ impl Node {
             })
             .collect();
         let mut total = widths.iter().sum::<usize>()
-            + self.gap.saturating_mul(children.len().saturating_sub(1));
+            + self.gap_x().saturating_mul(children.len().saturating_sub(1));
         if total > available {
             let overflow = total - available;
             let shrink_total: f32 = children.iter().map(|child| child.shrink.max(0.0)).sum();
@@ -1308,7 +1324,7 @@ impl Node {
                     }
                 }
                 total = widths.iter().sum::<usize>()
-                    + self.gap.saturating_mul(children.len().saturating_sub(1));
+                    + self.gap_x().saturating_mul(children.len().saturating_sub(1));
             }
         }
         let grow_total: f32 = children.iter().map(|child| child.grow.max(0.0)).sum();
@@ -1320,7 +1336,7 @@ impl Node {
                 }
             }
             total = widths.iter().sum::<usize>()
-                + self.gap.saturating_mul(children.len().saturating_sub(1));
+                + self.gap_x().saturating_mul(children.len().saturating_sub(1));
             extra = available as isize - total as isize;
         }
         let _ = extra;
@@ -1328,7 +1344,7 @@ impl Node {
             area.x as usize,
             available,
             total,
-            self.gap,
+            self.gap_x(),
             children.len(),
             self.justify,
         );

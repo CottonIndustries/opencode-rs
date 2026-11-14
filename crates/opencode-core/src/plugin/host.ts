@@ -2107,7 +2107,9 @@ function jsxLayout(
   const margin = jsxNumber(jsxProp(props, "margin"))
   const grow = jsxNumber(jsxProp(props, "flexGrow"))
   const shrink = jsxNumber(jsxProp(props, "flexShrink"))
-  const gap = jsxNumber(jsxProp(props, "gap", "columnGap", "rowGap"))
+  const gap = jsxNumber(jsxProp(props, "gap"))
+  const rowGap = jsxNumber(jsxProp(props, "rowGap"))
+  const columnGap = jsxNumber(jsxProp(props, "columnGap"))
   const normalize = (value: Json) =>
     String(value ?? "").toLowerCase().replace("flex-start", "start").replace("flex-end", "end")
   if (type.includes("scrollbox") && props.ref && typeof props.ref === "object" && props.ref.current) {
@@ -2142,6 +2144,8 @@ function jsxLayout(
     ...(jsxNumber(jsxProp(props, "marginLeft")) !== undefined ? { marginLeft: jsxNumber(jsxProp(props, "marginLeft")) } : {}),
     ...(jsxNumber(jsxProp(props, "marginRight")) !== undefined ? { marginRight: jsxNumber(jsxProp(props, "marginRight")) } : {}),
     ...(gap !== undefined ? { gap } : {}),
+    ...(rowGap !== undefined ? { rowGap } : {}),
+    ...(columnGap !== undefined ? { columnGap } : {}),
     ...(jsxNumber(jsxProp(props, "aspectRatio")) !== undefined ? { aspectRatio: jsxNumber(jsxProp(props, "aspectRatio")) } : {}),
     ...(grow !== undefined ? { grow } : {}),
     ...(shrink !== undefined ? { shrink } : {}),
