@@ -237,7 +237,13 @@ impl Ctx<'_> {
 }
 
 pub fn render(session: &Session, queued: &[String], ctx: &Ctx) -> Out {
-    let entries = entries(session, ctx);
+    render_range(session, 0, session.messages.len(), queued, ctx)
+}
+
+/// Render a contiguous message range. The TUI keeps the prefix of a large
+/// conversation cached and only re-renders the last message while it streams.
+pub fn render_range(session: &Session, start: usize, end: usize, queued: &[String], ctx: &Ctx) -> Out {
+    let entries = entries_range(session, start, end, ctx);
     let mut rows: Vec<Row> = Vec::new();
     let mut i = 0;
     while i < entries.len() {
@@ -276,6 +282,85 @@ pub fn render(session: &Session, queued: &[String], ctx: &Ctx) -> Out {
     out
 }
 
+/// Append a rendered suffix, shifting its clickable and user-message offsets.
+pub fn append(base: &mut Out, part: Out) {
+    let offset = base.lines.len();
+    base.lines.extend(part.lines);
+    base.clicks.extend(part.clicks.into_iter().map(|(a, b, id)| (a + offset, b + offset, id)));
+    base.users.extend(part.users.into_iter().map(|line| line + offset));
+}
+
+/// Cheap content fingerprint for a message range. Deep ranges (the live last
+/// message) include text and tool output; long prefixes only need stable
+/// identity and lengths because completed history does not change.
+pub fn hash_range(session: &Session, start: usize, end: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let deep = end.saturating_sub(start) <= 8;
+    for m in session.messages.iter().take(end).skip(start) {
+        m.id.hash(&mut h);
+        matches!(m.role, Role::User).hash(&mut h);
+        m.parts.len().hash(&mut h);
+        m.completed.hash(&mut h);
+        m.model.hash(&mut h);
+        m.agent.hash(&mut h);
+        m.finish.hash(&mut h);
+        m.error.hash(&mut h);
+        m.usage.input.hash(&mut h);
+        m.usage.output.hash(&mut h);
+        m.usage.reasoning.hash(&mut h);
+        m.usage.cache_read.hash(&mut h);
+        m.usage.cache_write.hash(&mut h);
+        m.cost.to_bits().hash(&mut h);
+        for p in &m.parts {
+            match p {
+                Part::Text { text, synthetic } => {
+                    synthetic.hash(&mut h);
+                    if deep { text.hash(&mut h) } else { text.len().hash(&mut h) }
+                }
+                Part::Reasoning { text, .. } => {
+                    if deep { text.hash(&mut h) } else { text.len().hash(&mut h) }
+                }
+                Part::Tool { id, name, input, state, .. } => {
+                    id.hash(&mut h);
+                    name.hash(&mut h);
+                    if deep {
+                        input.to_string().hash(&mut h);
+                    } else {
+                        input.as_object().map_or(0, |object| object.len()).hash(&mut h);
+                    }
+                    match state {
+                        ToolState::Pending => 0u8.hash(&mut h),
+                        ToolState::Running => 1u8.hash(&mut h),
+                        ToolState::Completed { output, metadata, .. } => {
+                            2u8.hash(&mut h);
+                            if deep { output.hash(&mut h) } else { output.len().hash(&mut h) }
+                            if deep {
+                                metadata.to_string().hash(&mut h);
+                            } else {
+                                metadata.as_object().map_or(0, |object| object.len()).hash(&mut h);
+                            }
+                        }
+                        ToolState::Error { error } => {
+                            3u8.hash(&mut h);
+                            error.hash(&mut h);
+                        }
+                    }
+                }
+                Part::File(file) => {
+                    file.mime.hash(&mut h);
+                    file.name.hash(&mut h);
+                    file.data.len().hash(&mut h);
+                }
+                Part::Compaction { summary, .. } => {
+                    if deep { summary.hash(&mut h) } else { summary.len().hash(&mut h) }
+                }
+            }
+        }
+    }
+    h.finish()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
     Reasoning,
@@ -290,12 +375,20 @@ fn group_kind(e: &Entry, ctx: &Ctx) -> Option<Group> {
     }
 }
 
-fn entries<'a>(session: &'a Session, ctx: &Ctx) -> Vec<Entry<'a>> {
+fn entries_range<'a>(session: &'a Session, start: usize, end: usize, ctx: &Ctx) -> Vec<Entry<'a>> {
     let msgs = &session.messages;
     let mut out = Vec::new();
     let mut prev_model: Option<&str> = None;
     let mut prev_agent: Option<&str> = None;
-    for (idx, m) in msgs.iter().enumerate() {
+    for m in msgs.iter().take(start) {
+        if let Some(model) = m.model.as_deref() {
+            prev_model = Some(model);
+        }
+        if let Some(agent) = m.agent.as_deref() {
+            prev_agent = Some(agent);
+        }
+    }
+    for (idx, m) in msgs.iter().enumerate().take(end).skip(start) {
         match m.role {
             Role::User => {
                 if m.parts.iter().any(|p| matches!(p, Part::Compaction { .. })) {

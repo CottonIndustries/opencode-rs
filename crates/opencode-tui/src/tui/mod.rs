@@ -52,6 +52,8 @@ pub struct StartOptions {
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TICK: Duration = Duration::from_millis(40);
+/// Messages rendered when a long session opens; older chunks load on scroll.
+const TRANSCRIPT_WINDOW: usize = 250;
 const LEADER_TIMEOUT: Duration = Duration::from_millis(2000);
 const LOGO_LEFT: [&str; 4] = ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"];
 const LOGO_RIGHT: [&str; 4] = ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"];
@@ -170,8 +172,27 @@ struct Hits {
 }
 
 struct Cache {
+    /// Width, theme, settings, queue and other renderer inputs.
     key: u64,
     out: transcript::Out,
+    /// First message rendered; older messages load when the user scrolls up.
+    start: usize,
+    /// Whether the previous chunk above the window has already been loaded.
+    older_loaded: bool,
+    /// Busy state used by the live suffix footer.
+    busy: bool,
+    /// Number of messages in the cached prefix, and its fingerprint.
+    prefix_len: usize,
+    prefix_key: u64,
+    /// Line/click/user counts at the end of the prefix, so the live suffix can
+    /// be replaced without rebuilding the whole transcript.
+    base_lines: usize,
+    base_clicks: usize,
+    base_users: usize,
+    last_key: u64,
+    last_end_lines: usize,
+    last_end_clicks: usize,
+    last_end_users: usize,
 }
 
 enum Act {
@@ -613,10 +634,6 @@ impl Ui {
         crate::models::resolve(&self.app.providers.read().unwrap(), m).ok().map(|r| r.model)
     }
 
-    fn model_name(&self, full: &str) -> Option<String> {
-        crate::models::resolve(&self.app.providers.read().unwrap(), full).ok().map(|r| r.model.name)
-    }
-
     /// (model label, provider label) as in the prompt metadata row.
     fn model_labels(&self) -> (String, String) {
         let Some(m) = &self.model else { return ("No provider selected".into(), "Connect a provider".into()) };
@@ -898,7 +915,12 @@ impl Ui {
             "session.half.page.down" => self.scroll_by(-(self.body_height as isize / 4)),
             "session.line.up" => self.scroll_by(1),
             "session.line.down" => self.scroll_by(-1),
-            "session.first" => self.scroll = usize::MAX / 2,
+            "session.first" => {
+                self.scroll = usize::MAX / 2;
+                if let Some(cache) = self.cache.as_mut() {
+                    cache.older_loaded = false;
+                }
+            }
             "session.last" => self.scroll = 0,
             "session.messages_last_user" => self.jump_last_user(),
             "session.rename" => {
@@ -2845,6 +2867,11 @@ impl Ui {
 
     fn scroll_by(&mut self, d: isize) {
         self.scroll = (self.scroll as isize + d).max(0) as usize;
+        if d > 0 {
+            if let Some(cache) = self.cache.as_mut() {
+                cache.older_loaded = false;
+            }
+        }
     }
 
     // ---------------------------------------------------------------- mouse
@@ -3776,72 +3803,221 @@ impl Ui {
         use std::hash::{Hash, Hasher};
         let busy = self.handle.is_busy();
         let queued: Vec<String> = self.handle.queue.lock().unwrap().iter().map(|(m, _)| m.text()).collect();
+        let message_count = self.handle.with(|s| s.messages.len());
+        let home = crate::paths::get().home.to_string_lossy().to_string();
+        let base = self.cwd().to_string_lossy().to_string();
+        let perm_tool = self.permissions.front().and_then(|p| p.tool_call_id.clone());
+        let session_agent = self.handle.with(|s| s.agent.clone()).unwrap_or_else(|| self.agent.clone());
+        let spinner = SPINNER[(self.frame / 2) % SPINNER.len()];
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.handle.with(|s| {
-            s.id.hash(&mut h);
-            s.title.hash(&mut h);
-            s.messages.len().hash(&mut h);
-            for m in s.messages.iter().rev().take(4) {
-                (m.parts.len(), m.completed, &m.error).hash(&mut h);
-                for p in &m.parts {
-                    match p {
-                        Part::Text { text, .. } | Part::Reasoning { text, .. } => text.len().hash(&mut h),
-                        Part::Tool { state, input, .. } => {
-                            let n = match state {
-                                crate::session::ToolState::Pending => 0,
-                                crate::session::ToolState::Running => 1,
-                                crate::session::ToolState::Completed { output, metadata, .. } => 2 + output.len() + metadata.to_string().len(),
-                                crate::session::ToolState::Error { error } => 3 + error.len(),
-                            };
-                            (n, input.as_object().map_or(0, |o| o.len())).hash(&mut h)
-                        }
-                        _ => 0.hash(&mut h),
-                    }
-                }
-            }
-        });
-        (width, busy, self.theme.name.as_str(), self.settings.thinking_shown(), self.settings.grouping(), self.settings.tps(), &queued, self.permissions.len(), self.size.0, self.shells.len()).hash(&mut h);
+        (
+            width,
+            self.theme.name.as_str(),
+            self.settings.thinking_shown(),
+            self.settings.grouping(),
+            self.settings.tps(),
+            &queued,
+            perm_tool.as_deref(),
+            self.permissions.len(),
+            self.size.0,
+            &self.shells,
+            &base,
+        )
+            .hash(&mut h);
         let mut exp: Vec<&String> = self.expanded.iter().collect();
         exp.sort();
         exp.hash(&mut h);
-        if busy || !self.shells.is_empty() {
+        // Large conversations keep a static spinner: animating it would rebuild
+        // every rendered line on each tick. Small sessions keep the animation.
+        if message_count < 200 && (busy || !self.shells.is_empty()) {
             (self.frame / 2).hash(&mut h);
         }
         let key = h.finish();
-        if self.cache.as_ref().is_some_and(|c| c.key == key) {
-            return;
-        }
-        let home = crate::paths::get().home.to_string_lossy().to_string();
-        let base = self.cwd().to_string_lossy().to_string();
+
         let app = self.app.clone();
-        let child_busy = move |id: &str| app.session(id).map(|h| h.is_busy()).unwrap_or(false);
-        let perm_tool = self.permissions.front().and_then(|p| p.tool_call_id.clone());
-        let session_agent = self.handle.with(|s| s.agent.clone()).unwrap_or_else(|| self.agent.clone());
-        let session = self.handle.session.lock().unwrap().clone();
-        let spinner = SPINNER[(self.frame / 2) % SPINNER.len()];
-        let mut out = {
-            let agent_color = |id: &str| self.agent_color(id);
-            let model_name = |id: &str| self.model_name(id);
-            let ctx = transcript::Ctx {
-                t: &self.theme,
-                width,
-                term_width: self.size.0 as usize,
-                thinking: self.settings.thinking_shown(),
-                grouping: self.settings.grouping(),
-                tps: self.settings.tps(),
-                spinner,
-                expanded: &self.expanded,
-                agent_color: &agent_color,
-                model_name: &model_name,
-                child_busy: &child_busy,
-                base_dir: &base,
-                home: &home,
-                permission_tool: perm_tool.as_deref(),
-                busy,
-                session_agent: &session_agent,
-            };
-            transcript::render(&session, &queued, &ctx)
+        let app_models = app.clone();
+        let model_cache = std::cell::RefCell::new(std::collections::HashMap::<String, Option<String>>::new());
+        let model_name = |id: &str| {
+            if let Some(name) = model_cache.borrow().get(id) {
+                return name.clone();
+            }
+            let name = crate::models::resolve(&app_models.providers.read().unwrap(), id).ok().map(|r| r.model.name);
+            model_cache.borrow_mut().insert(id.to_string(), name.clone());
+            name
         };
+        let child_cache = std::cell::RefCell::new(std::collections::HashMap::<String, bool>::new());
+        let child_busy = |id: &str| {
+            if let Some(busy) = child_cache.borrow().get(id) {
+                return *busy;
+            }
+            let busy = app.session(id).map(|h| h.is_busy()).unwrap_or(false);
+            child_cache.borrow_mut().insert(id.to_string(), busy);
+            busy
+        };
+        let colors = self.theme.agent_colors();
+        let order = self.agent_order();
+        let fallback_color = colors.first().copied().unwrap_or(self.theme.base.text);
+        let mut agent_map = std::collections::HashMap::new();
+        for (i, id) in order.iter().enumerate() {
+            let color = self
+                .app
+                .agent(id)
+                .ok()
+                .and_then(|a| a.color.as_deref().and_then(Rgba::from_hex))
+                .unwrap_or_else(|| colors.get(i % colors.len().max(1)).copied().unwrap_or(fallback_color));
+            agent_map.insert(id.clone(), color);
+        }
+        let agent_color = |id: &str| *agent_map.get(id).unwrap_or(&fallback_color);
+
+        let session = self.handle.session.lock().unwrap();
+        let len = session.messages.len();
+        let default_start = len.saturating_sub(TRANSCRIPT_WINDOW);
+        let prefix_len = len.saturating_sub(1);
+        let start = self
+            .cache
+            .as_ref()
+            .map(|cache| cache.start)
+            .unwrap_or(default_start)
+            .min(prefix_len);
+        let prefix_key = transcript::hash_range(&session, start, prefix_len);
+        let last_key = transcript::hash_range(&session, prefix_len, len);
+        let ctx = transcript::Ctx {
+            t: &self.theme,
+            width,
+            term_width: self.size.0 as usize,
+            thinking: self.settings.thinking_shown(),
+            grouping: self.settings.grouping(),
+            tps: self.settings.tps(),
+            spinner,
+            expanded: &self.expanded,
+            agent_color: &agent_color,
+            model_name: &model_name,
+            child_busy: &child_busy,
+            base_dir: &base,
+            home: &home,
+            permission_tool: perm_tool.as_deref(),
+            busy,
+            session_agent: &session_agent,
+        };
+
+        if let Some(mut cache) = self.cache.take() {
+            if cache.key == key {
+                let total = cache.out.lines.len();
+                if self.scroll + self.body_height + 2 < total {
+                    cache.older_loaded = false;
+                }
+                if cache.prefix_len == prefix_len && cache.start > 0 && !cache.older_loaded && self.scroll + self.body_height >= total {
+                    let new_start = cache.start.saturating_sub(TRANSCRIPT_WINDOW);
+                    let prelude = transcript::render_range(&session, new_start, cache.start, &[], &ctx);
+                    let added = prelude.lines.len();
+                    let prelude_clicks = prelude.clicks.len();
+                    let prelude_users = prelude.users.len();
+                    if added > 0 {
+                        for (a, b, _) in &mut cache.out.clicks {
+                            *a += added;
+                            *b += added;
+                        }
+                        for line in &mut cache.out.users {
+                            *line += added;
+                        }
+                        let mut lines = prelude.lines;
+                        lines.append(&mut cache.out.lines);
+                        cache.out.lines = lines;
+                        let mut clicks = prelude.clicks;
+                        clicks.append(&mut cache.out.clicks);
+                        cache.out.clicks = clicks;
+                        let mut users = prelude.users;
+                        users.append(&mut cache.out.users);
+                        cache.out.users = users;
+                        cache.base_lines += added;
+                        cache.base_clicks += prelude_clicks;
+                        cache.base_users += prelude_users;
+                        cache.last_end_lines += added;
+                        cache.last_end_clicks += prelude_clicks;
+                        cache.last_end_users += prelude_users;
+                        self.scroll += added;
+                    }
+                    cache.start = new_start;
+                    cache.older_loaded = true;
+                    cache.prefix_key = transcript::hash_range(&session, new_start, prefix_len);
+                    self.cache = Some(cache);
+                    return;
+                }
+                if cache.prefix_len == prefix_len && cache.prefix_key == prefix_key {
+                    if cache.last_key == last_key && cache.busy == busy {
+                        self.cache = Some(cache);
+                        return;
+                    }
+                    cache.out.lines.truncate(cache.base_lines);
+                    cache.out.clicks.truncate(cache.base_clicks);
+                    cache.out.users.truncate(cache.base_users);
+                    let suffix = transcript::render_range(&session, prefix_len, len, &queued, &ctx);
+                    transcript::append(&mut cache.out, suffix);
+                    cache.last_key = last_key;
+                    cache.busy = busy;
+                    cache.last_end_lines = cache.out.lines.len();
+                    cache.last_end_clicks = cache.out.clicks.len();
+                    cache.last_end_users = cache.out.users.len();
+                    self.append_shells(&mut cache.out, spinner);
+                    self.cache = Some(cache);
+                    return;
+                }
+                // A new message arrived: the previous live suffix becomes part
+                // of the cached prefix, so a long conversation is not rebuilt
+                // on every prompt.
+                if cache.prefix_len + 1 == prefix_len {
+                    cache.out.lines.truncate(cache.last_end_lines);
+                    cache.out.clicks.truncate(cache.last_end_clicks);
+                    cache.out.users.truncate(cache.last_end_users);
+                    cache.base_lines = cache.out.lines.len();
+                    cache.base_clicks = cache.out.clicks.len();
+                    cache.base_users = cache.out.users.len();
+                    cache.prefix_len = prefix_len;
+                    cache.prefix_key = prefix_key;
+                    let suffix = transcript::render_range(&session, prefix_len, len, &queued, &ctx);
+                    transcript::append(&mut cache.out, suffix);
+                    cache.last_key = last_key;
+                    cache.busy = busy;
+                    cache.last_end_lines = cache.out.lines.len();
+                    cache.last_end_clicks = cache.out.clicks.len();
+                    cache.last_end_users = cache.out.users.len();
+                    self.append_shells(&mut cache.out, spinner);
+                    self.cache = Some(cache);
+                    return;
+                }
+            }
+        }
+
+        let mut out = transcript::render_range(&session, start, prefix_len, &[], &ctx);
+        let base_lines = out.lines.len();
+        let base_clicks = out.clicks.len();
+        let base_users = out.users.len();
+        let suffix = transcript::render_range(&session, prefix_len, len, &queued, &ctx);
+        transcript::append(&mut out, suffix);
+        let last_end_lines = out.lines.len();
+        let last_end_clicks = out.clicks.len();
+        let last_end_users = out.users.len();
+        drop(session);
+        self.append_shells(&mut out, spinner);
+        self.cache = Some(Cache {
+            key,
+            out,
+            start,
+            older_loaded: false,
+            busy,
+            prefix_len,
+            prefix_key,
+            base_lines,
+            base_clicks,
+            base_users,
+            last_key,
+            last_end_lines,
+            last_end_clicks,
+            last_end_users,
+        });
+    }
+
+    fn append_shells(&self, out: &mut transcript::Out, spinner: &str) {
         let t = &self.theme;
         for c in &self.shells {
             let bg = t.raised;
@@ -3851,7 +4027,6 @@ impl Ui {
             out.lines.push(line(vec![stripe.clone(), span("  ", t.text, bg), span(format!("{spinner} {c}"), t.text, bg)], bg));
             out.lines.push(line(vec![stripe], bg));
         }
-        self.cache = Some(Cache { key, out });
     }
 
     fn draw_sidebar(&self, buf: &mut Buffer, area: Rect, t: &Theme) {
