@@ -1039,6 +1039,7 @@ impl Ui {
                 c("session.terminal", "New terminal", "Session", &["terminal"], false),
                 c("terminal.toggle", "Toggle terminal pane", "Session", &[], false),
                 c("terminal.select", "Select terminal", "Session", &[], false),
+                c("shell.jobs", "Shell jobs", "Session", &["shells"], false),
                 c("terminal.close", "Close terminal pane", "Session", &[], false),
                 c("session.aside", "Ask a side question", "Session", &["btw"], false),
                 c("session.child.first", "Toggle subagent picker", "Session", &[], false),
@@ -1238,6 +1239,7 @@ impl Ui {
                 self.cache = None;
             }
             "terminal.select" => self.open_composer(2),
+            "shell.jobs" => self.open_shell_jobs(),
             "terminal.close" => {
                 self.terminal_pane.close_active();
                 self.cache = None;
@@ -2436,6 +2438,50 @@ impl Ui {
         self.dialog = Some(Dialog::Select(Select::new(Kind::Experiments, "Experiments", opts)));
     }
 
+    fn open_shell_jobs(&mut self) {
+        let sid = self.sid();
+        let jobs = crate::job::list(Some(&sid), Some("shell"), None, true);
+        if jobs.is_empty() {
+            self.info("No shell jobs");
+            return;
+        }
+        let opts = jobs
+            .iter()
+            .map(|job| {
+                let title = job.get("title").and_then(Value::as_str).unwrap_or("shell").to_string();
+                let status = job.get("status").and_then(Value::as_str).unwrap_or("").to_string();
+                let id = job.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                dialog::Opt {
+                    title,
+                    description: String::new(),
+                    footer: status,
+                    category: "Shell".into(),
+                    value: id,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        self.dialog = Some(Dialog::Select(Select::new(Kind::ShellJobs, "Shell jobs", opts)));
+    }
+
+    fn show_shell_job(&mut self, id: &str) {
+        let Some(job) = crate::job::list(None, Some("shell"), None, true)
+            .into_iter()
+            .find(|job| job.get("id").and_then(Value::as_str) == Some(id))
+        else {
+            self.info("Shell output is no longer available");
+            return;
+        };
+        let title = job.get("title").and_then(Value::as_str).unwrap_or("Shell").to_string();
+        let output = job
+            .get("output")
+            .and_then(Value::as_str)
+            .or_else(|| job.get("error").and_then(Value::as_str))
+            .unwrap_or("(no output)")
+            .to_string();
+        self.show_text(&title, output);
+    }
+
     fn open_console(&mut self) {
         let path = crate::paths::get().log.join("opencode.log");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|error| format!("No log at {}: {error}", path.display()));
@@ -3070,6 +3116,10 @@ impl Ui {
                 if !self.editor.text.split_whitespace().any(|word| word == format!("@{value}")) {
                     self.editor.insert(&mention);
                 }
+            }
+            Kind::ShellJobs => {
+                self.dialog = None;
+                self.show_shell_job(&value);
             }
             Kind::Plugins => {
                 self.dialog = None;

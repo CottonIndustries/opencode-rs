@@ -50,6 +50,7 @@ pub enum Kind {
     Plugins,
     Devtools,
     Experiments,
+    ShellJobs,
 }
 
 #[derive(Clone, Debug, Default)]
