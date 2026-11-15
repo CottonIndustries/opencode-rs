@@ -255,6 +255,9 @@ struct Ui {
     form: forms::FormUi,
     toasts: VecDeque<Toast>,
     scroll: usize,
+    /// wheel momentum for the scroll acceleration setting
+    last_wheel: Option<Instant>,
+    wheel_boost: f64,
     select_anchor: Option<(usize, usize)>,
     select_focus: Option<(usize, usize)>,
     select_dragging: bool,
@@ -502,6 +505,8 @@ impl Ui {
             form: forms::FormUi::default(),
             toasts: VecDeque::new(),
             scroll: 0,
+            last_wheel: None,
+            wheel_boost: 1.0,
             select_anchor: None,
             select_focus: None,
             select_dragging: false,
@@ -4048,7 +4053,18 @@ impl Ui {
                     a.selected = if up { (a.selected + n - 1) % n } else { (a.selected + 1) % n };
                     return;
                 }
-                let speed = self.settings.scroll_speed().round().max(1.0) as isize;
+                let mut speed = self.settings.scroll_speed();
+                if self.settings.bool("scroll.acceleration").unwrap_or(false) {
+                    let now = Instant::now();
+                    if self.last_wheel.is_some_and(|last| now.duration_since(last) < Duration::from_millis(120)) {
+                        self.wheel_boost = (self.wheel_boost + 0.25).min(4.0);
+                    } else {
+                        self.wheel_boost = 1.0;
+                    }
+                    self.last_wheel = Some(now);
+                    speed *= self.wheel_boost;
+                }
+                let speed = speed.round().max(1.0) as isize;
                 let step = if up { speed } else { -speed };
                 match self.dialog.as_mut() {
                     Some(Dialog::Plugin { scroll, .. }) | Some(Dialog::Text { scroll, .. }) | Some(Dialog::Image { scroll, .. }) | Some(Dialog::Btw { scroll, .. }) => {
