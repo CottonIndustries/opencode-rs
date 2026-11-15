@@ -4139,7 +4139,6 @@ impl Ui {
             "savedPermissions": crate::permission_saved::list(None),
             "forms": forms,
             "tabs": tabs,
-            "tabs": tabs,
             "projects": [{
                 "id": self.app.project,
                 "worktree": self.app.worktree.to_string_lossy(),
