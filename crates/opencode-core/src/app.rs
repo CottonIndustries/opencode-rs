@@ -40,6 +40,7 @@ pub enum AppEvent {
     WindowTitle { title: String },
     PluginPage { page: String, title: String, text: String, layout: serde_json::Value },
     BtwAnswer { question: String, answer: String },
+    BtwFailed { message: String },
     PluginInvalidate,
     McpAuth {
         name: String,
@@ -907,6 +908,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "server.notice",
             "properties": { "message": answer, "title": question }
+        }),
+        AppEvent::BtwFailed { message } => json!({
+            "id": id(),
+            "type": "server.notice",
+            "properties": { "message": message, "title": "btw" }
         }),
         AppEvent::Clipboard { text } => json!({
             "id": id(),

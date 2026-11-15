@@ -437,6 +437,20 @@ async fn btw_answer_dialog_matches_upstream() {
 }
 
 #[tokio::test]
+async fn btw_shows_pending_status_in_prompt_footer() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.settings.set_memory("animations", serde_json::json!(true));
+    ui.btw_pending = 1;
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("/btw"), "missing /btw pending status in {screen:?}");
+    ui.on_app_event(AppEvent::BtwAnswer { question: "q".into(), answer: "a".into() });
+    assert_eq!(ui.btw_pending, 0);
+}
+
+#[tokio::test]
 async fn btw_prompt_uses_upstream_title_and_placeholder() {
     let mut ui = ui().await;
     ui.route = Route::Session;

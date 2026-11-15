@@ -301,7 +301,10 @@ struct Ui {
     size: (u16, u16),
     theme_before: Option<String>,
     pending_editor: bool,
+    /// plugin status line and sidebar text as last received
     plugin_status: String,
+    /// side questions still waiting for an answer
+    btw_pending: usize,
     plugin_sidebar: Vec<Value>,
     plugin_slots_at: Instant,
 }
@@ -542,6 +545,7 @@ impl Ui {
             theme_before: None,
             pending_editor: false,
             plugin_status: String::new(),
+            btw_pending: 0,
             plugin_sidebar: Vec::new(),
             plugin_slots_at: Instant::now(),
         };
@@ -2776,14 +2780,11 @@ impl Ui {
     fn ask_btw(&mut self, question: String) {
         let app = self.app.clone();
         let sid = self.sid();
+        self.btw_pending += 1;
         tokio::spawn(async move {
             match actions::btw(app.clone(), sid, question.clone()).await {
                 Ok(answer) => app.emit(AppEvent::BtwAnswer { question, answer }),
-                Err(error) => app.emit(AppEvent::Toast {
-                    title: None,
-                    message: format!("Side question failed: {error}"),
-                    variant: "error".into(),
-                }),
+                Err(error) => app.emit(AppEvent::BtwFailed { message: format!("Side question failed: {error}") }),
             }
         });
     }
@@ -4369,7 +4370,12 @@ impl Ui {
                 });
             }
             AppEvent::BtwAnswer { question, answer } => {
+                self.btw_pending = self.btw_pending.saturating_sub(1);
                 self.dialog = Some(Dialog::Btw { question, answer, scroll: 0, copied: false });
+            }
+            AppEvent::BtwFailed { message } => {
+                self.btw_pending = self.btw_pending.saturating_sub(1);
+                self.toast(Variant::Error, None, message);
             }
             AppEvent::DiffLoaded { source, files } => {
                 if let Some(Dialog::Diff(view)) = self.dialog.as_mut() {
@@ -5162,7 +5168,17 @@ impl Ui {
         }
         let rw: usize = right.iter().map(|s| draw::width(&s.content)).sum();
         let left_w = w.saturating_sub(rw + if rw > 0 { 2 } else { 0 });
+        let btw = if self.btw_pending > 0 {
+            let frame = if self.settings.animations() { SPINNER[(self.frame / 2) % SPINNER.len()] } else { "[~]" };
+            format!("{frame} /btw  ")
+        } else {
+            String::new()
+        };
+        let btw_w = draw::width(&btw);
         let mut spans: Vec<Span<'static>> = Vec::new();
+        if !btw.is_empty() {
+            spans.push(span(btw, t.info.base, bg));
+        }
         if busy {
             spans.push(span(" ", t.text, bg));
             spans.extend(self.scanner(t, bg));
@@ -5180,7 +5196,7 @@ impl Ui {
             if !self.plugin_status.is_empty() {
                 label = format!("{label}  ·  {}", self.plugin_status);
             }
-            spans.push(span(draw::truncate(&label, left_w), t.muted, bg));
+            spans.push(span(draw::truncate(&label, left_w.saturating_sub(btw_w)), t.muted, bg));
         }
         let lw: usize = spans.iter().map(|s| draw::width(&s.content)).sum();
         spans.push(span(" ".repeat(w.saturating_sub(lw + rw)), t.text, bg));
