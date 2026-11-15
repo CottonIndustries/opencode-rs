@@ -315,6 +315,7 @@ struct Ui {
     devtools_frames: VecDeque<f32>,
     devtools_last: Instant,
     devtools_frame_ms: f32,
+    usage_limits: Option<Value>,
 }
 
 /// Hovered tab title: after 600 ms, advance one cell every 80 ms through
@@ -564,6 +565,7 @@ impl Ui {
             devtools_frames: VecDeque::new(),
             devtools_last: Instant::now(),
             devtools_frame_ms: 0.0,
+            usage_limits: None,
         };
         let name = ui.settings.theme();
         ui.set_theme(&name);
@@ -599,6 +601,14 @@ impl Ui {
                     },
                 ],
             )));
+        }
+        if std::env::var_os("OPENCODE_DISABLE_USAGE_LIMITS").is_none() {
+            let app = ui.app.clone();
+            tokio::spawn(async move {
+                if let Ok(Some(info)) = crate::account::usage_limits().await {
+                    app.emit(AppEvent::UsageLimits(info));
+                }
+            });
         }
         Ok(ui)
     }
@@ -914,6 +924,41 @@ impl Ui {
     }
 
     /// (model label, provider label) as in the prompt metadata row.
+    /// A Console budget label once the selected model is running low, like upstream's prompt metadata limit.
+    fn limit_label(&self) -> Option<(String, bool)> {
+        let model = self.model.as_deref()?;
+        let (provider, id) = model.split_once('/')?;
+        if provider != "opencode" {
+            return None;
+        }
+        let info = self.usage_limits.as_ref()?;
+        let budgets = info.get("budgets")?.as_array()?;
+        for budget in budgets {
+            let Some(models) = budget.get("models").and_then(Value::as_array) else { continue };
+            let matched = models.iter().any(|item| {
+                item.get("providerID").and_then(Value::as_str) == Some(provider)
+                    && item.get("modelID").and_then(Value::as_str) == Some(id)
+            });
+            if !matched {
+                continue;
+            }
+            let limit = budget.get("limit").and_then(Value::as_f64).unwrap_or(0.0);
+            let spent = budget.get("spent").and_then(Value::as_f64).unwrap_or(0.0);
+            if limit <= 0.0 {
+                return None;
+            }
+            let left = limit - spent;
+            if left <= 0.0 {
+                return Some(("Limit reached".into(), true));
+            }
+            if left / limit <= 0.25 {
+                return Some((format!("${left:.2} left"), left / limit <= 0.1));
+            }
+            return None;
+        }
+        None
+    }
+
     fn model_labels(&self) -> (String, String) {
         let Some(m) = &self.model else { return ("No provider selected".into(), "Connect a provider".into()) };
         let providers = self.app.providers.read().unwrap();
@@ -4977,6 +5022,7 @@ impl Ui {
                     }
                 }
             }
+            AppEvent::UsageLimits(info) => self.usage_limits = Some(info),
             AppEvent::UiCommand { id, args } => self.exec(&id, &args),
             AppEvent::PromptInput { action, text } => match action.as_str() {
                 "append" => {
@@ -5731,6 +5777,10 @@ impl Ui {
         if let Some(v) = variant {
             spans.push(span(" · ", t.muted, bg));
             spans.push(Span::styled(v, draw::bold(draw::st(t.warning.base, bg))));
+        }
+        if let Some((label, danger)) = self.limit_label() {
+            spans.push(span("  ", t.muted, bg));
+            spans.push(span(label, if danger { t.error.base } else { t.muted }, bg));
         }
         spans
     }

@@ -437,6 +437,22 @@ async fn btw_answer_dialog_matches_upstream() {
 }
 
 #[tokio::test]
+async fn prompt_shows_low_console_budget() {
+    let mut ui = ui().await;
+    ui.model = Some("opencode/gpt-5".into());
+    ui.usage_limits = Some(serde_json::json!({
+        "budgets": [{
+            "limit": 10.0,
+            "spent": 9.0,
+            "models": [{ "providerID": "opencode", "modelID": "gpt-5" }]
+        }]
+    }));
+    let (label, danger) = ui.limit_label().unwrap();
+    assert_eq!(label, "$1.00 left");
+    assert!(danger);
+}
+
+#[tokio::test]
 async fn plugin_prompt_events_edit_the_editor() {
     let mut ui = ui().await;
     ui.on_app_event(AppEvent::PromptInput { action: "append".into(), text: "hello".into() });
