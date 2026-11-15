@@ -2531,6 +2531,12 @@ impl Ui {
             value: "workspace-new".into(),
             ..Default::default()
         });
+        opts.push(Opt {
+            title: "Create git worktree".into(),
+            category: "Actions".into(),
+            value: "worktree-new".into(),
+            ..Default::default()
+        });
         let mut s = Select::new(Kind::Workspaces, "Workspaces", opts);
         s.size = Size::Large;
         self.dialog = Some(Dialog::Select(s));
@@ -3038,6 +3044,13 @@ impl Ui {
                         editor,
                         target: "workspace".into(),
                         placeholder: String::new(),
+                    }));
+                } else if value == "worktree-new" {
+                    self.dialog = Some(Dialog::Rename(dialog::Prompt {
+                        title: "Worktree name".into(),
+                        editor: Editor::default(),
+                        target: "worktree".into(),
+                        placeholder: "branch-name".into(),
                     }));
                 } else {
                     match navigation::bind_workspace(&self.handle, &value) {
@@ -3588,6 +3601,17 @@ impl Ui {
                 } else if target == "btw" {
                     if !title.is_empty() {
                         self.ask_btw(title);
+                    }
+                } else if target == "worktree" {
+                    if !title.is_empty() {
+                        let value = json!({ "sourceDirectory": self.app.worktree.to_string_lossy(), "name": title });
+                        match crate::vcs::dispatch("worktree.create", &value) {
+                            Ok(result) => {
+                                let directory = result.get("directory").and_then(Value::as_str).unwrap_or_default().to_string();
+                                self.toast(Variant::Success, None, format!("Worktree created at {directory}"));
+                            }
+                            Err(error) => self.toast(Variant::Error, None, format!("Worktree failed: {error}")),
+                        }
                     }
                 } else if target == "workspace" {
                     if !title.is_empty() {
