@@ -19,7 +19,7 @@ fn legacy_thinking(model: &Model) -> bool {
 }
 
 /// Returns (thinking, effort, needs_interleaved_beta).
-fn reasoning(model: &Model, variant: Option<&str>, max_tokens: u64) -> (Option<Value>, Option<String>, bool) {
+pub(super) fn reasoning(model: &Model, variant: Option<&str>, max_tokens: u64) -> (Option<Value>, Option<String>, bool) {
     if !model.reasoning {
         return (None, None, false);
     }

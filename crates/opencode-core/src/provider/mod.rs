@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod bedrock;
+pub mod vertex;
 pub mod media;
 pub mod google;
 pub mod oauth;
@@ -153,6 +154,7 @@ pub async fn stream(mut req: Request, tx: Tx) -> Result<()> {
     match req.provider.protocol_for(&req.model)? {
         Protocol::Anthropic => anthropic::stream(req, tx).await,
         Protocol::Bedrock => bedrock::stream(req, tx).await,
+        Protocol::Vertex => vertex::stream(req, tx).await,
         Protocol::OpenAIChat => openai_chat::stream(req, tx).await,
         Protocol::OpenAIResponses => openai_responses::stream(req, tx).await,
         Protocol::Google => google::stream(req, tx).await,

@@ -14,6 +14,7 @@ const MODELS_URL: &str = "https://models.dev/api.json";
 pub enum Protocol {
     Anthropic,
     Bedrock,
+    Vertex,
     OpenAIChat,
     OpenAIResponses,
     Google,
@@ -128,6 +129,12 @@ pub struct Provider {
 impl Provider {
     pub fn protocol_for(&self, model: &Model) -> Result<Protocol> {
         let npm = model.npm.as_deref().unwrap_or(&self.npm);
+        if matches!(self.npm.as_str(), "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic") {
+            return Ok(Protocol::Vertex);
+        }
+        if self.npm == "@ai-sdk/amazon-bedrock" {
+            return Ok(Protocol::Bedrock);
+        }
         if model.shape.as_deref() == Some("responses") {
             return Ok(Protocol::OpenAIResponses);
         }
@@ -137,9 +144,10 @@ impl Provider {
         Ok(match npm {
             "@ai-sdk/anthropic" => Protocol::Anthropic,
             "@ai-sdk/amazon-bedrock" => Protocol::Bedrock,
+            "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic" => Protocol::Vertex,
             "@ai-sdk/openai" => Protocol::OpenAIResponses,
             "@ai-sdk/google" => Protocol::Google,
-            "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic" | "@ai-sdk/azure"
+            "@ai-sdk/azure"
                 if self.base_url(model).is_none() =>
             {
                 return Err(anyhow!(
