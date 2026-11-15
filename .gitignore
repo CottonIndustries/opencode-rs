@@ -1,5 +1,5 @@
 target/
-/tools/
+tools/test-plugin.ps1
 reference/
 .codegraph/
 .serena/
