@@ -15,9 +15,9 @@ pub async fn btw(
         return Err(anyhow!("btw needs a question"));
     }
     let prompt = format!(
-        "Answer this as a one-shot side question, using the current session context for reference. \
-Do not change files, do not call tools, and do not modify or continue the main conversation. \
-Reply with the answer only.\n\nQuestion: {question}"
+        "The user is asking a quick side question about the conversation so far. \
+Answer directly and concisely in markdown from what you already know. \
+Do not call any tools and do not take any actions.\n\n{question}"
     );
     let value = crate::plugin::client_call(
         &app,

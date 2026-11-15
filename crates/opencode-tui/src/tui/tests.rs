@@ -106,6 +106,7 @@ async fn tabs_close_to_previous_and_reopen_in_place() {
 #[tokio::test]
 async fn draws_session_and_dialogs() {
     let mut ui = ui().await;
+    ui.settings.set_memory("session.thinking", serde_json::json!("show"));
     ui.route = Route::Session;
     ui.handle.with(|s| {
         s.title = "Fix notes file".into();
@@ -286,9 +287,11 @@ async fn settings_dialog_lists_upstream_entries() {
     let Some(Dialog::Select(select)) = ui.dialog.as_ref() else {
         panic!("settings dialog did not open");
     };
-    assert!(select.options.len() >= 30, "expected the full settings list, got {}", select.options.len());
+    assert_eq!(select.options.len(), 36, "expected the upstream settings list");
     assert!(select.options.iter().any(|option| option.value == "theme.mode"));
-    assert!(select.options.iter().any(|option| option.value == "diffs.source"));
+    assert!(select.options.iter().any(|option| option.value == "scroll.speed"));
+    assert!(select.options.iter().any(|option| option.value == "terminal.copy"));
+    assert!(select.options.iter().any(|option| option.value == "debug.devtools"));
     assert!(select.options.iter().any(|option| option.value == "leader.timeout"));
 }
 
@@ -377,6 +380,72 @@ async fn plugin_page_edits_input_and_cycles_select() {
         panic!("plugin dialog disappeared");
     };
     assert_eq!(plugin_ui::controls(layout)[1].selected, 1);
+}
+
+#[tokio::test]
+async fn hides_thinking_body_when_setting_off() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.settings.set_memory("session.thinking", serde_json::json!("hide"));
+    ui.handle.with(|s| {
+        s.messages.push(Message::user_text("why?"));
+        let mut a = Message::new(Role::Assistant);
+        a.parts.push(Part::Reasoning {
+            text: "secret reasoning body".into(),
+            signature: None,
+            redacted: None,
+            item_id: None,
+            started: Some(a.time),
+            ended: Some(a.time + 400),
+        });
+        a.parts.push(Part::Text { text: "answer".into(), synthetic: false });
+        a.completed = Some(a.time + 500);
+        s.messages.push(a);
+    });
+    let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("Thought"), "missing collapsed thinking row in {screen:?}");
+    assert!(!screen.contains("secret reasoning body"), "thinking body shown while disabled in {screen:?}");
+    ui.settings.set_memory("session.thinking", serde_json::json!("show"));
+    ui.cache = None;
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("secret reasoning body"), "thinking body hidden while enabled in {screen:?}");
+}
+
+#[tokio::test]
+async fn btw_answer_dialog_matches_upstream() {
+    let mut ui = ui().await;
+    ui.on_app_event(AppEvent::BtwAnswer {
+        question: "what changed\nhere?".into(),
+        answer: "## Answer\n\nThe **file** was fixed.".into(),
+    });
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    let screen = dump(&t);
+    assert!(screen.contains("/btw"), "missing title in {screen:?}");
+    assert!(screen.contains("what changed here?"), "question not collapsed in {screen:?}");
+    assert!(screen.contains("Answer"), "missing answer body in {screen:?}");
+    assert!(screen.contains("copy response"), "missing copy hint in {screen:?}");
+    let event = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+    let key = keymap::from_event(&event).unwrap();
+    ui.dialog_key(&key, &event);
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| ui.draw(f)).unwrap();
+    assert!(dump(&t).contains("copied"), "copy state not shown");
+}
+
+#[tokio::test]
+async fn btw_prompt_uses_upstream_title_and_placeholder() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.exec("session.aside", "");
+    let Some(Dialog::Rename(prompt)) = ui.dialog.as_ref() else {
+        panic!("btw prompt did not open");
+    };
+    assert_eq!(prompt.title, "/btw");
+    assert_eq!(prompt.placeholder, "Ask anything");
 }
 
 #[tokio::test]

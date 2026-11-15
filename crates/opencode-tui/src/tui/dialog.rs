@@ -3,6 +3,7 @@
 //! and an action footer.
 
 use super::draw::{self, line, span};
+use super::markdown;
 use super::prompt::{fuzzy, Editor};
 use super::theme::{Theme, Tokens};
 use ratatui::buffer::Buffer;
@@ -184,6 +185,7 @@ pub struct Prompt {
     pub title: String,
     pub editor: Editor,
     pub target: String,
+    pub placeholder: String,
 }
 
 /// Remote MCP OAuth sign-in dialog: waiting text, authorization link, and a redirect URL field.
@@ -206,6 +208,7 @@ pub enum Dialog {
     Diff(super::diff_view::DiffView),
     Image { data: String, mime: String, scroll: usize },
     Text { title: String, text: String, scroll: usize, layout: serde_json::Value },
+    Btw { question: String, answer: String, scroll: usize, copied: bool },
     Plugin { page: String, title: String, text: String, scroll: usize, layout: serde_json::Value, focus: usize },
 }
 
@@ -523,10 +526,87 @@ pub fn draw_prompt(buf: &mut Buffer, area: Rect, theme: &Theme, p: &Prompt) -> (
     let x = panel.x + INSET;
     let w = panel.width.saturating_sub(INSET * 2);
     draw::draw_line(buf, x, panel.y + 1, w, &header(t, &p.title, "", "esc", w as usize));
-    draw::draw_line(buf, x, panel.y + 3, w, &line(vec![span(p.editor.text.clone(), t.text, t.bg)], t.bg));
+    let value = if p.editor.text.is_empty() && !p.placeholder.is_empty() {
+        line(vec![span(p.placeholder.clone(), t.muted, t.bg)], t.bg)
+    } else {
+        line(vec![span(p.editor.text.clone(), t.text, t.bg)], t.bg)
+    };
+    draw::draw_line(buf, x, panel.y + 3, w, &value);
     let hint = line(vec![span("enter ", t.text, t.bg), span("submit", t.muted, t.bg)], t.bg);
     draw::draw_line(buf, x, panel.y + 5, w, &hint);
     (x + draw::width(&p.editor.text[..p.editor.cursor]).min(w as usize) as u16, panel.y + 3)
+}
+
+/// Upstream `/btw` answer dialog: bold title and question in the header, a scrollable markdown
+/// body, and copy/scroll hints in the footer.
+pub fn draw_btw(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    question: &str,
+    answer: &str,
+    scroll: usize,
+    copied: bool,
+) -> Rect {
+    let t = &theme.dialog;
+    let w = width(Size::Large).min(area.width.saturating_sub(2));
+    let h = ((area.height as f32) * 0.6).floor() as u16;
+    let h = h.max(10).min(area.height.saturating_sub(2));
+    let panel = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    draw::dim(buf, area, 150);
+    draw::fill(buf, panel, t.bg);
+    let x = panel.x + INSET;
+    let inner = panel.width.saturating_sub(INSET * 2);
+    let question = question.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = "/btw";
+    let room = inner.saturating_sub(draw::width(title) as u16 + 2 + draw::width("esc") as u16);
+    let question = draw::take_width(&question, room as usize);
+    let head = line(
+        vec![
+            Span::styled(title.to_string(), draw::bold(draw::st(t.text, t.bg))),
+            span("  ", t.text, t.bg),
+            span(question, t.muted, t.bg),
+        ],
+        t.bg,
+    );
+    draw::draw_line(buf, x, panel.y + 1, inner, &head);
+    let close = span("esc", t.muted, t.bg);
+    draw::draw_line(
+        buf,
+        x + inner.saturating_sub(3),
+        panel.y + 1,
+        3,
+        &line(vec![close], t.bg),
+    );
+    let body_top = panel.y + 3;
+    let body_height = panel.height.saturating_sub(5) as usize;
+    let body = markdown::render(answer, inner as usize, t, t.bg);
+    let scroll = scroll.min(body.len().saturating_sub(body_height));
+    for (index, line) in body.iter().skip(scroll).take(body_height).enumerate() {
+        draw::draw_line(buf, x, body_top + index as u16, inner, line);
+    }
+    let hint = if copied {
+        line(vec![span("✓ copied", t.success.base, t.bg)], t.bg)
+    } else {
+        line(
+            vec![
+                span("c ", t.text, t.bg),
+                span("copy response  ", t.muted, t.bg),
+                span("j/k ", t.text, t.bg),
+                span("scroll  ", t.muted, t.bg),
+                span("esc ", t.text, t.bg),
+                span("close", t.muted, t.bg),
+            ],
+            t.bg,
+        )
+    };
+    draw::draw_line(buf, x, panel.y + panel.height - 2, inner, &hint);
+    panel
 }
 
 #[cfg(test)]

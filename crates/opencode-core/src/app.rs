@@ -39,6 +39,7 @@ pub enum AppEvent {
     Clipboard { text: String },
     WindowTitle { title: String },
     PluginPage { page: String, title: String, text: String, layout: serde_json::Value },
+    BtwAnswer { question: String, answer: String },
     PluginInvalidate,
     McpAuth {
         name: String,
@@ -901,6 +902,11 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
             "id": id(),
             "type": "server.notice",
             "properties": { "message": text, "title": title }
+        }),
+        AppEvent::BtwAnswer { question, answer } => json!({
+            "id": id(),
+            "type": "server.notice",
+            "properties": { "message": answer, "title": question }
         }),
         AppEvent::Clipboard { text } => json!({
             "id": id(),

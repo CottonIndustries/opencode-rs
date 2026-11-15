@@ -61,11 +61,19 @@ impl Settings {
     }
 
     pub fn animations(&self) -> bool {
-        self.bool("animations").unwrap_or(true)
+        self.bool("animations").unwrap_or(false)
     }
 
     pub fn mouse(&self) -> bool {
         self.bool("mouse").unwrap_or(true)
+    }
+
+    pub fn scroll_speed(&self) -> f64 {
+        self.f64("scroll.speed").unwrap_or(3.0).clamp(0.25, 10.0)
+    }
+
+    pub fn copy_behavior(&self) -> &str {
+        self.str("terminal.copy").unwrap_or(if cfg!(windows) { "manual" } else { "select" })
     }
 
     pub fn keybinds(&self) -> Value {
@@ -108,8 +116,8 @@ impl Settings {
         }
     }
 
-    /// Set `path` (dotted) and persist.
-    pub fn set(&mut self, path: &str, value: Value) {
+    /// Set `path` (dotted) without persisting; used by tests and live UI state.
+    pub fn set_memory(&mut self, path: &str, value: Value) {
         let keys: Vec<&str> = path.split('.').collect();
         let mut cur = &mut self.data;
         for k in &keys[..keys.len() - 1] {
@@ -119,6 +127,11 @@ impl Settings {
             cur = &mut cur[*k];
         }
         cur[keys[keys.len() - 1]] = value;
+    }
+
+    /// Set `path` (dotted) and persist.
+    pub fn set(&mut self, path: &str, value: Value) {
+        self.set_memory(path, value);
         if let Some(d) = self.path.parent() {
             let _ = std::fs::create_dir_all(d);
         }

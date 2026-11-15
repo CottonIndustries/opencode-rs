@@ -1194,7 +1194,7 @@ impl Ui {
                     let title = self.handle.with(|s| s.title.clone());
                     let mut e = Editor::default();
                     e.set(&title);
-                    self.dialog = Some(Dialog::Rename(dialog::Prompt { title: "Rename Session".into(), editor: e, target: self.sid() }));
+                    self.dialog = Some(Dialog::Rename(dialog::Prompt { title: "Rename Session".into(), editor: e, target: self.sid(), placeholder: String::new() }));
                 } else {
                     let id = self.sid();
                     self.rename(&id, args.trim());
@@ -1304,12 +1304,12 @@ impl Ui {
     // ---------------------------------------------------------------- actions
 
     fn new_session(&mut self) {
-        let location = self.settings.str("session.new_location").unwrap_or("project").to_string();
+        let location = self.settings.str("session.new_location").unwrap_or("launch").to_string();
         let cwd = self.cwd();
         let home = crate::paths::get().home.clone();
         self.handle = self.app.new_session(None);
         match location.as_str() {
-            "current" => {
+            "inherit" | "current" => {
                 self.handle.with(|session| session.directory = cwd);
             }
             "global" => {
@@ -1692,7 +1692,9 @@ impl Ui {
             return;
         }
         let text = self.expand_pasted(raw.trim_end());
-        self.scroll = 0;
+        if self.settings.str("session.submit_scroll").unwrap_or("bottom") != "keep" {
+            self.scroll = 0;
+        }
         self.history.append(&raw, &self.pasted, self.shell);
         if self.shell {
             self.clear_prompt();
@@ -2129,40 +2131,38 @@ impl Ui {
             Opt { title: "Color mode".into(), footer: self.settings.str("theme.mode").unwrap_or("system").into(), category: "Appearance".into(), value: "theme.mode".into(), ..Default::default() },
             Opt { title: "Animations".into(), footer: on(self.settings.animations()), category: "Appearance".into(), value: "animations".into(), ..Default::default() },
             Opt { title: "Sidebar".into(), footer: if self.settings.sidebar_auto() { "auto".into() } else { "hide".into() }, category: "Session".into(), value: "sidebar".into(), ..Default::default() },
-            Opt { title: "Scrollbar".into(), footer: self.settings.str("session.scrollbar").unwrap_or("auto").into(), category: "Session".into(), value: "session.scrollbar".into(), ..Default::default() },
-            Opt { title: "Submit scroll".into(), footer: self.settings.str("session.submit_scroll").unwrap_or("auto").into(), category: "Session".into(), value: "session.submit_scroll".into(), ..Default::default() },
-            Opt { title: "Show thinking".into(), footer: on(self.settings.thinking_shown()), category: "Session".into(), value: "thinking".into(), ..Default::default() },
+            Opt { title: "Scrollbar".into(), footer: on(self.settings.bool("session.scrollbar").unwrap_or(false)), category: "Session".into(), value: "session.scrollbar".into(), ..Default::default() },
+            Opt { title: "Scroll on send".into(), footer: self.settings.str("session.submit_scroll").unwrap_or("bottom").into(), category: "Session".into(), value: "session.submit_scroll".into(), ..Default::default() },
+            Opt { title: "Thinking".into(), footer: self.settings.str("session.thinking").unwrap_or("hide").into(), category: "Session".into(), value: "thinking".into(), ..Default::default() },
             Opt { title: "Markdown".into(), footer: self.settings.str("session.markdown").unwrap_or("rendered").into(), category: "Session".into(), value: "session.markdown".into(), ..Default::default() },
-            Opt { title: "Group related tool calls".into(), footer: on(self.settings.grouping()), category: "Session".into(), value: "grouping".into(), ..Default::default() },
-            Opt { title: "Verbosity".into(), footer: self.settings.str("session.verbosity").unwrap_or("default").into(), category: "Session".into(), value: "session.verbosity".into(), ..Default::default() },
-            Opt { title: "Image previews".into(), footer: on(self.settings.bool("session.image_preview").unwrap_or(true)), category: "Session".into(), value: "session.image_preview".into(), ..Default::default() },
-            Opt { title: "Tokens per second".into(), footer: on(self.settings.tps()), category: "Session".into(), value: "tps".into(), ..Default::default() },
-            Opt { title: "New session location".into(), footer: self.settings.str("session.new_location").unwrap_or("project").into(), category: "Session".into(), value: "session.new_location".into(), ..Default::default() },
-            Opt { title: "Permissions".into(), footer: self.settings.str("session.permissions").unwrap_or("ask").into(), category: "Session".into(), value: "session.permissions".into(), ..Default::default() },
-            Opt { title: "Tab mode".into(), footer: self.settings.tabs_mode().into(), category: "Tabs".into(), value: "tabs.mode".into(), ..Default::default() },
-            Opt { title: "Tab scope".into(), footer: self.settings.tabs_scope().into(), category: "Tabs".into(), value: "tabs.scope".into(), ..Default::default() },
-            Opt { title: "Tab layout".into(), footer: self.settings.tabs_layout().into(), category: "Tabs".into(), value: "tabs.layout".into(), ..Default::default() },
-            Opt { title: "Tab indicators".into(), footer: self.settings.tabs_indicators().into(), category: "Tabs".into(), value: "tabs.indicators".into(), ..Default::default() },
-            Opt { title: "Diff source".into(), footer: self.settings.str("diffs.source").unwrap_or("branch").into(), category: "Diffs".into(), value: "diffs.source".into(), ..Default::default() },
-            Opt { title: "Diff wrapping".into(), footer: self.settings.str("diffs.wrap").unwrap_or("word").into(), category: "Diffs".into(), value: "diffs.wrap".into(), ..Default::default() },
-            Opt { title: "Diff file tree".into(), footer: on(self.settings.bool("diffs.tree").unwrap_or(true)), category: "Diffs".into(), value: "diffs.tree".into(), ..Default::default() },
-            Opt { title: "Diff single patch".into(), footer: on(self.settings.bool("diffs.single").unwrap_or(false)), category: "Diffs".into(), value: "diffs.single".into(), ..Default::default() },
-            Opt { title: "Diff view".into(), footer: self.settings.str("diffs.view").unwrap_or("auto").into(), category: "Diffs".into(), value: "diffs.view".into(), ..Default::default() },
-            Opt { title: "Diff fullscreen".into(), footer: on(self.settings.bool("diffs.fullscreen").unwrap_or(false)), category: "Diffs".into(), value: "diffs.fullscreen".into(), ..Default::default() },
-            Opt { title: "Editor context".into(), footer: on(self.settings.bool("prompt.editor_context").unwrap_or(true)), category: "Prompt".into(), value: "prompt.editor_context".into(), ..Default::default() },
-            Opt { title: "Large pastes".into(), footer: on(self.settings.bool("prompt.large_pastes").unwrap_or(true)), category: "Prompt".into(), value: "prompt.large_pastes".into(), ..Default::default() },
-            Opt { title: "Prompt images".into(), footer: on(self.settings.bool("prompt.images").unwrap_or(true)), category: "Prompt".into(), value: "prompt.images".into(), ..Default::default() },
-            Opt { title: "Leader timeout".into(), footer: format!("{} ms", self.settings.leader_timeout()), category: "Leader".into(), value: "leader.timeout".into(), ..Default::default() },
-            Opt { title: "Notifications".into(), footer: on(self.settings.bool("attention.notifications").unwrap_or(true)), category: "Attention".into(), value: "attention.notifications".into(), ..Default::default() },
-            Opt { title: "Sounds".into(), footer: on(self.settings.bool("attention.sounds").unwrap_or(true)), category: "Attention".into(), value: "attention.sounds".into(), ..Default::default() },
-            Opt { title: "Volume".into(), footer: format!("{:.0}%", self.settings.f64("attention.volume").unwrap_or(1.0) * 100.0), category: "Attention".into(), value: "attention.volume".into(), ..Default::default() },
-            Opt { title: "Release highlights".into(), footer: on(self.settings.bool("release.highlights").unwrap_or(true)), category: "Release".into(), value: "release.highlights".into(), ..Default::default() },
+            Opt { title: "Tool grouping".into(), footer: self.settings.str("session.grouping").unwrap_or("auto").into(), category: "Session".into(), value: "grouping".into(), ..Default::default() },
+            Opt { title: "Verbosity".into(), footer: self.settings.str("session.verbosity").unwrap_or("medium").into(), category: "Session".into(), value: "session.verbosity".into(), ..Default::default() },
+            Opt { title: "Transcript images".into(), footer: on(self.settings.bool("session.image_preview").unwrap_or(false)), category: "Session".into(), value: "session.image_preview".into(), ..Default::default() },
+            Opt { title: "TPS".into(), footer: on(self.settings.tps()), category: "Session".into(), value: "tps".into(), ..Default::default() },
+            Opt { title: "New session location".into(), footer: self.settings.str("session.new_location").unwrap_or("launch").into(), category: "Session".into(), value: "session.new_location".into(), ..Default::default() },
+            Opt { title: "Permissions".into(), footer: self.settings.str("session.permissions").unwrap_or("prompt").into(), category: "Session".into(), value: "session.permissions".into(), ..Default::default() },
+            Opt { title: "Mode".into(), footer: self.settings.tabs_mode().into(), category: "Tabs".into(), value: "tabs.mode".into(), ..Default::default() },
+            Opt { title: "Scope".into(), footer: self.settings.tabs_scope().into(), category: "Tabs".into(), value: "tabs.scope".into(), ..Default::default() },
+            Opt { title: "Layout".into(), footer: self.settings.tabs_layout().into(), category: "Tabs".into(), value: "tabs.layout".into(), ..Default::default() },
+            Opt { title: "Indicators".into(), footer: self.settings.tabs_indicators().into(), category: "Tabs".into(), value: "tabs.indicators".into(), ..Default::default() },
+            Opt { title: "Layout".into(), footer: self.settings.str("diffs.view").unwrap_or("auto").into(), category: "Diffs".into(), value: "diffs.view".into(), ..Default::default() },
+            Opt { title: "Wrapping".into(), footer: self.settings.str("diffs.wrap").unwrap_or("word").into(), category: "Diffs".into(), value: "diffs.wrap".into(), ..Default::default() },
+            Opt { title: "File tree".into(), footer: on(self.settings.bool("diffs.tree").unwrap_or(true)), category: "Diffs".into(), value: "diffs.tree".into(), ..Default::default() },
+            Opt { title: "Single patch".into(), footer: on(self.settings.bool("diffs.single").unwrap_or(false)), category: "Diffs".into(), value: "diffs.single".into(), ..Default::default() },
+            Opt { title: "Scroll speed".into(), footer: format!("{:.2}", self.settings.f64("scroll.speed").unwrap_or(3.0)), category: "Input".into(), value: "scroll.speed".into(), ..Default::default() },
+            Opt { title: "Acceleration".into(), footer: on(self.settings.bool("scroll.acceleration").unwrap_or(false)), category: "Input".into(), value: "scroll.acceleration".into(), ..Default::default() },
+            Opt { title: "Mouse".into(), footer: on(self.settings.mouse()), category: "Input".into(), value: "mouse".into(), ..Default::default() },
+            Opt { title: "Editor context".into(), footer: on(self.settings.bool("prompt.editor").unwrap_or(true)), category: "Input".into(), value: "prompt.editor".into(), ..Default::default() },
+            Opt { title: "Large pastes".into(), footer: self.settings.str("prompt.paste").unwrap_or("compact").into(), category: "Input".into(), value: "prompt.paste".into(), ..Default::default() },
+            Opt { title: "Image previews".into(), footer: on(self.settings.bool("prompt.image_preview").unwrap_or(false)), category: "Input".into(), value: "prompt.image_preview".into(), ..Default::default() },
+            Opt { title: "Leader timeout".into(), footer: format!("{} ms", self.settings.leader_timeout()), category: "Input".into(), value: "leader.timeout".into(), ..Default::default() },
+            Opt { title: "Notifications".into(), footer: on(self.settings.bool("attention.notifications").unwrap_or(false)), category: "Alerts".into(), value: "attention.notifications".into(), ..Default::default() },
+            Opt { title: "Sounds".into(), footer: on(self.settings.bool("attention.sound").unwrap_or(false)), category: "Alerts".into(), value: "attention.sound".into(), ..Default::default() },
+            Opt { title: "Volume".into(), footer: format!("{:.0}%", self.settings.f64("attention.volume").unwrap_or(0.4) * 100.0), category: "Alerts".into(), value: "attention.volume".into(), ..Default::default() },
+            Opt { title: "Release highlights".into(), footer: on(self.settings.bool("highlights").unwrap_or(true)), category: "Alerts".into(), value: "highlights".into(), ..Default::default() },
             Opt { title: "Window title".into(), footer: on(self.settings.bool("terminal.title").unwrap_or(true)), category: "Terminal".into(), value: "terminal.title".into(), ..Default::default() },
-            Opt { title: "Copy on select".into(), footer: on(self.settings.bool("terminal.copy").unwrap_or(false)), category: "Terminal".into(), value: "terminal.copy".into(), ..Default::default() },
-            Opt { title: "Developer tools".into(), footer: on(self.settings.bool("developer.devtools").unwrap_or(false)), category: "Developer".into(), value: "developer.devtools".into(), ..Default::default() },
-            Opt { title: "Debug console".into(), footer: on(self.settings.bool("developer.debug_console").unwrap_or(false)), category: "Developer".into(), value: "developer.debug_console".into(), ..Default::default() },
-            Opt { title: "Plugin inventory".into(), footer: on(self.settings.bool("developer.plugin_inventory").unwrap_or(true)), category: "Developer".into(), value: "developer.plugin_inventory".into(), ..Default::default() },
-            Opt { title: "Prompt stash".into(), footer: on(self.settings.bool("prompt.stash").unwrap_or(true)), category: "Prompt".into(), value: "prompt.stash".into(), ..Default::default() },
+            Opt { title: "Copy behavior".into(), footer: self.settings.str("terminal.copy").unwrap_or(if cfg!(windows) { "manual" } else { "select" }).into(), category: "Terminal".into(), value: "terminal.copy".into(), ..Default::default() },
+            Opt { title: "Developer tools".into(), footer: on(self.settings.bool("debug.devtools").unwrap_or(false)), category: "Debug".into(), value: "debug.devtools".into(), ..Default::default() },
         ];
         self.dialog = Some(Dialog::Select(Select::new(Kind::Settings, "Settings", opts)));
     }
@@ -2170,19 +2170,22 @@ impl Ui {
     fn cycle_setting(&mut self, path: &str) {
         let enum_values: &[&str] = match path {
             "theme.mode" => &["system", "dark", "light"],
-            "session.scrollbar" => &["auto", "hide"],
-            "session.submit_scroll" => &["auto", "sticky", "bottom"],
+            "session.sidebar" => &["auto", "hide"],
+            "session.submit_scroll" => &["bottom", "keep"],
+            "session.thinking" => &["hide", "show"],
             "session.markdown" => &["rendered", "source"],
-            "session.verbosity" => &["default", "expanded", "compact"],
-            "session.new_location" => &["project", "current", "global"],
-            "session.permissions" => &["ask", "allow", "deny"],
+            "session.grouping" => &["auto", "none"],
+            "session.verbosity" => &["low", "medium", "high"],
+            "session.new_location" => &["launch", "inherit"],
+            "session.permissions" => &["prompt", "autoaccept"],
             "tabs.mode" => &["auto", "on", "off"],
             "tabs.scope" => &["cwd", "global"],
             "tabs.layout" => &["horizontal", "vertical"],
             "tabs.indicators" => &["status", "numbers"],
-            "diffs.source" => &["branch", "working"],
-            "diffs.wrap" => &["word", "char", "none"],
-            "diffs.view" => &["auto", "unified", "split"],
+            "diffs.wrap" => &["word", "none"],
+            "diffs.view" => &["auto", "split", "unified"],
+            "prompt.paste" => &["compact", "full"],
+            "terminal.copy" => &["manual", "select"],
             _ => &[],
         };
         if !enum_values.is_empty() {
@@ -2201,36 +2204,68 @@ impl Ui {
                 let name = self.theme.name.clone();
                 self.set_theme(&name);
             }
+            if path == "session.sidebar" {
+                self.sidebar = None;
+            }
             if path == "session.permissions" {
                 *self.app.ask_mode.lock().unwrap() = match next {
-                    "allow" => crate::app::AskMode::AutoApprove,
+                    "autoaccept" | "allow" => crate::app::AskMode::AutoApprove,
                     "deny" => crate::app::AskMode::AutoReject,
                     _ => crate::app::AskMode::Interactive,
                 };
             }
+            if path == "tabs.scope" {
+                self.saved_tabs.clear();
+            }
             self.cache = None;
+            return;
+        }
+        if path == "scroll.speed" {
+            let current = self.settings.f64("scroll.speed").unwrap_or(3.0);
+            let next = if current >= 10.0 { 0.25 } else { (current + 0.25).min(10.0) };
+            self.settings.set(path, json!(next));
             return;
         }
         if path == "leader.timeout" {
             let current = self.settings.leader_timeout();
-            let next = match current {
-                0..=1000 => 1500,
-                1001..=1500 => 2000,
-                1501..=2000 => 3000,
-                2001..=3000 => 5000,
-                _ => 1000,
-            };
+            let next = if current >= 10000 { 250 } else { (current + 250).min(10000) };
             self.settings.set(path, json!(next));
             return;
         }
         if path == "attention.volume" {
-            let current = self.settings.f64("attention.volume").unwrap_or(1.0);
-            let next = ((current * 5.0).round() as i64 + 1) % 6;
-            self.settings.set(path, json!(next as f64 / 5.0));
+            let current = self.settings.f64("attention.volume").unwrap_or(0.4);
+            let next = if current >= 1.0 { 0.0 } else { ((current + 0.1) * 10.0).round() / 10.0 };
+            self.settings.set(path, json!(next));
             return;
         }
-        let current = self.settings.bool(path).unwrap_or(true);
-        self.settings.set(path, json!(!current));
+        let default = match path {
+            "animations" => false,
+            "session.scrollbar" => false,
+            "session.image_preview" => false,
+            "session.tps" => true,
+            "diffs.tree" => true,
+            "diffs.single" => false,
+            "scroll.acceleration" => false,
+            "mouse" => true,
+            "prompt.editor" => true,
+            "prompt.image_preview" => false,
+            "attention.notifications" => false,
+            "attention.sound" => false,
+            "highlights" => true,
+            "terminal.title" => true,
+            "debug.devtools" => false,
+            _ => false,
+        };
+        let current = self.settings.bool(path).unwrap_or(default);
+        let next = !current;
+        self.settings.set(path, json!(next));
+        if path == "mouse" {
+            if next {
+                let _ = execute!(std::io::stdout(), EnableMouseCapture);
+            } else {
+                let _ = execute!(std::io::stdout(), DisableMouseCapture);
+            }
+        }
     }
 
 
@@ -2355,6 +2390,7 @@ impl Ui {
                 title: "Change working directory".into(),
                 editor,
                 target: "cd".into(),
+                placeholder: String::new(),
             }));
             return;
         }
@@ -2364,9 +2400,10 @@ impl Ui {
     fn open_btw(&mut self, args: &str) {
         if args.trim().is_empty() {
             self.dialog = Some(Dialog::Rename(dialog::Prompt {
-                title: "Ask a side question".into(),
+                title: "/btw".into(),
                 editor: Editor::default(),
                 target: "btw".into(),
+                placeholder: "Ask anything".into(),
             }));
             return;
         }
@@ -2735,11 +2772,14 @@ impl Ui {
         let app = self.app.clone();
         let sid = self.sid();
         tokio::spawn(async move {
-            let text = match actions::btw(app.clone(), sid, question).await {
-                Ok(text) => text,
-                Err(error) => format!("Side question failed: {error}"),
-            };
-            app.emit(AppEvent::PluginPage { page: String::new(), title: "btw".into(), text, layout: Value::Null });
+            match actions::btw(app.clone(), sid, question.clone()).await {
+                Ok(answer) => app.emit(AppEvent::BtwAnswer { question, answer }),
+                Err(error) => app.emit(AppEvent::Toast {
+                    title: None,
+                    message: format!("Side question failed: {error}"),
+                    variant: "error".into(),
+                }),
+            }
         });
     }
 
@@ -2749,6 +2789,7 @@ impl Ui {
             title: format!("API key for {provider}"),
             editor: Editor::default(),
             target: format!("connect:{provider}"),
+            placeholder: String::new(),
         }));
     }
 
@@ -2879,6 +2920,7 @@ impl Ui {
                         title: "Workspace directory".into(),
                         editor,
                         target: "workspace".into(),
+                        placeholder: String::new(),
                     }));
                 } else {
                     match navigation::bind_workspace(&self.handle, &value) {
@@ -2962,6 +3004,7 @@ impl Ui {
                             title: "Rename Session".into(),
                             editor,
                             target,
+                            placeholder: String::new(),
                         }));
                     }
                     _ => {}
@@ -3218,6 +3261,39 @@ impl Ui {
                         }
                     }
                 }
+                Some(Dialog::Btw { scroll, answer, copied, .. }) => match k.name.as_str() {
+                    "escape" | "q" | "return" => Act::Close,
+                    "up" | "k" => {
+                        *scroll = scroll.saturating_sub(1);
+                        Act::None
+                    }
+                    "down" | "j" => {
+                        *scroll = scroll.saturating_add(1);
+                        Act::None
+                    }
+                    "pageup" => {
+                        *scroll = scroll.saturating_sub(12);
+                        Act::None
+                    }
+                    "pagedown" => {
+                        *scroll = scroll.saturating_add(12);
+                        Act::None
+                    }
+                    "home" | "g" => {
+                        *scroll = 0;
+                        Act::None
+                    }
+                    "end" | "G" => {
+                        *scroll = usize::MAX;
+                        Act::None
+                    }
+                    "c" => {
+                        copy_to_clipboard(answer);
+                        *copied = true;
+                        Act::None
+                    }
+                    _ => Act::None,
+                },
                 Some(Dialog::Text { scroll, .. }) => match k.name.as_str() {
                     "escape" | "return" => Act::Close,
                     "up" => {
@@ -3395,7 +3471,7 @@ impl Ui {
             Act::RenameOpen(target, title) => {
                 let mut e = Editor::default();
                 e.set(&title);
-                self.dialog = Some(Dialog::Rename(dialog::Prompt { title: "Rename Session".into(), editor: e, target }));
+                self.dialog = Some(Dialog::Rename(dialog::Prompt { title: "Rename Session".into(), editor: e, target, placeholder: String::new() }));
             }
             Act::Sessions(all) => self.open_sessions(all),
             Act::Delete(v) => {
@@ -3972,9 +4048,10 @@ impl Ui {
                     a.selected = if up { (a.selected + n - 1) % n } else { (a.selected + 1) % n };
                     return;
                 }
-                let step = if up { 3 } else { -3 };
+                let speed = self.settings.scroll_speed().round().max(1.0) as isize;
+                let step = if up { speed } else { -speed };
                 match self.dialog.as_mut() {
-                    Some(Dialog::Plugin { scroll, .. }) | Some(Dialog::Text { scroll, .. }) | Some(Dialog::Image { scroll, .. }) => {
+                    Some(Dialog::Plugin { scroll, .. }) | Some(Dialog::Text { scroll, .. }) | Some(Dialog::Image { scroll, .. }) | Some(Dialog::Btw { scroll, .. }) => {
                         *scroll = (*scroll as isize + step).max(0) as usize;
                         return;
                     }
@@ -4090,7 +4167,9 @@ impl Ui {
                 }
                 if self.select_dragging {
                     self.select_dragging = false;
-                    self.copy_selection();
+                    if self.settings.copy_behavior() == "select" {
+                        self.copy_selection();
+                    }
                     return;
                 }
                 if let Some((line, _)) = self.select_anchor.take() {
@@ -4273,6 +4352,9 @@ impl Ui {
                     Dialog::Text { title, text, layout, scroll }
                 });
             }
+            AppEvent::BtwAnswer { question, answer } => {
+                self.dialog = Some(Dialog::Btw { question, answer, scroll: 0, copied: false });
+            }
             AppEvent::DiffLoaded { source, files } => {
                 if let Some(Dialog::Diff(view)) = self.dialog.as_mut() {
                     if view.source.name() == source {
@@ -4349,11 +4431,11 @@ impl Ui {
                     }
                 } else if self.tabs.contains(&session) {
                     let fresh = self.tab_unread.insert(session.clone());
-                    if fresh && self.settings.bool("attention.notifications").unwrap_or(true) {
+                    if fresh && self.settings.bool("attention.notifications").unwrap_or(false) {
                         let title = self.app.session(&session).map(|handle| handle.with(|session| session.title.clone())).unwrap_or_default();
                         self.toast(Variant::Info, Some(title), "Session finished");
                     }
-                    if fresh && self.settings.bool("attention.sounds").unwrap_or(true) {
+                    if fresh && self.settings.bool("attention.sound").unwrap_or(false) {
                         use std::io::Write;
                         print!("\x07");
                         let _ = std::io::stdout().flush();
@@ -4476,6 +4558,11 @@ impl Ui {
                     let (panel, position) = dialog::draw_mcp_auth(buf, area, &t, auth);
                     self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
                     cursor = Some(position);
+                }
+                Dialog::Btw { question, answer, scroll, copied } => {
+                    let panel = dialog::draw_btw(buf, area, &t, question, answer, *scroll, *copied);
+                    self.hits.dialog = Some(dialog::Placed { panel, list: Rect::default(), rows: vec![] });
+                    cursor = None;
                 }
                 Dialog::Text { title, text, scroll, layout } => {
                     let mut lines = plugin_ui::render_native(layout, area.width.saturating_sub(6).max(20) as usize, &t, d_t.bg);
@@ -5172,7 +5259,7 @@ impl Ui {
         let skip = if total <= h { 0 } else { total - h - self.scroll };
         draw::draw_lines(buf, tr, &out.lines, skip);
         self.draw_selection(buf, tr, skip);
-        if self.settings.str("session.scrollbar").unwrap_or("auto") != "hide" && total > h && tr.width > 1 {
+        if self.settings.bool("session.scrollbar").unwrap_or(false) && total > h && tr.width > 1 {
             let track = tr.height as usize;
             let thumb = ((track * track) / total.max(1)).max(1).min(track);
             let max_scroll = total.saturating_sub(h).max(1);
@@ -5397,8 +5484,8 @@ impl Ui {
             term_width: self.size.0 as usize,
             thinking: self.thinking_shown(),
             markdown_source: self.settings.str("session.markdown") == Some("source"),
-            verbosity: self.settings.str("session.verbosity").unwrap_or("default"),
-            image_preview: self.settings.bool("session.image_preview").unwrap_or(true),
+            verbosity: self.settings.str("session.verbosity").unwrap_or("medium"),
+            image_preview: self.settings.bool("session.image_preview").unwrap_or(false),
             grouping: self.settings.grouping(),
             tps: self.settings.tps(),
             spinner,

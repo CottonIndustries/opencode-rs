@@ -542,7 +542,7 @@ fn entry(e: &Entry, session: &Session, ctx: &Ctx) -> Vec<Row> {
         Entry::Reasoning(m, i, text) => vec![Row::new(reasoning(m, *i, text, ctx))],
         Entry::Tool(m, p) => {
             let mut rows = tool(m, p, ctx);
-            if ctx.verbosity == "compact" && matches!(p, Part::Tool { state: ToolState::Completed { .. } | ToolState::Error { .. }, .. }) {
+            if matches!(ctx.verbosity, "low" | "compact") && matches!(p, Part::Tool { state: ToolState::Completed { .. } | ToolState::Error { .. }, .. }) {
                 rows.truncate(1);
             }
             if ctx.image_preview {
@@ -808,10 +808,6 @@ fn group(es: &[Entry], kind: Group, completed: bool, ctx: &Ctx) -> Vec<Row> {
         }
         Group::Reasoning => {
             let thoughts: Vec<(&Message, usize, &str)> = es.iter().filter_map(|e| if let Entry::Reasoning(m, i, s) = e { Some((*m, *i, *s)) } else { None }).collect();
-            if let (1, false) = (thoughts.len(), expanded) {
-                let (m, i, s) = thoughts[0];
-                return vec![Row::new(reasoning(m, i, s, ctx))];
-            }
             let done = completed || thoughts.iter().all(|(m, _, _)| reasoning_done(m, ctx));
             let latest = thoughts.iter().rev().find_map(|(_, _, s)| reasoning_title(s));
             let total: i64 = thoughts.iter().filter_map(|(m, i, _)| reasoning_duration(m, *i)).sum();
