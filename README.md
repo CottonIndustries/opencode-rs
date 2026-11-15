@@ -69,12 +69,15 @@ if yours live elsewhere.
 ## What is ported
 
 - **Providers** via the models.dev catalog (snapshot embedded, refreshed into
-  `~/.cache/opencode/models.json`) with four native streaming protocols:
+  `~/.cache/opencode/models.json`) with six native streaming protocols:
   Anthropic Messages (adaptive thinking + effort, signatures round-tripped,
-  prompt caching, eager tool-input streaming on first-party), OpenAI Responses
-  (encrypted reasoning round-trip), OpenAI-compatible Chat Completions (OpenRouter,
-  Groq, DeepSeek, xAI, local servers, `interleaved` reasoning fields) and Gemini
-  (thought signatures). Retries with backoff on 429/5xx (not on quota errors).
+  prompt caching, eager tool-input streaming on first-party), Amazon Bedrock
+  Converse (SigV4, event-stream decoding, tool use and reasoning), Google
+  Vertex AI (Gemini and Anthropic publisher models over OAuth access tokens),
+  OpenAI Responses (encrypted reasoning round-trip), OpenAI-compatible Chat
+  Completions (OpenRouter, Groq, DeepSeek, xAI, local servers, `interleaved`
+  reasoning fields) and Gemini (thought signatures). Retries with backoff on
+  429/5xx (not on quota errors).
   `#variant` selects reasoning effort/budget. OpenAI Responses can use the
   WebSocket transport (`provider.<id>.options.transport: "websocket"`) with the
   same BoringSSL/Bun HTTP stack, for primary step requests. One socket is
@@ -248,8 +251,7 @@ config, instructions and skills are cached under `storage` and merged below
 local configuration. Things in the original that depend on domains this port
 does not implement: `github`, `upgrade`, and Claude Pro/Max OAuth. ChatGPT,
 GitHub Copilot, and OpenCode Console device logins are available through
-`opencode auth login`. Bedrock/Vertex/Azure still need an OpenAI-compatible
-`baseURL`. Shell permission parsing uses a quote-aware splitter instead of
+`opencode auth login`. Shell permission parsing uses a quote-aware splitter instead of
 tree-sitter. Code Mode uses Deno with a `tools.*` bridge rather than the
 upstream bytecode VM; snapshots, the `search` helper and static tool
 authorization are not part of it. Remote workspace/environment drivers are not
