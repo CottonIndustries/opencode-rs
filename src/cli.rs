@@ -766,6 +766,27 @@ pub fn service_status() -> Result<()> {
     Ok(())
 }
 
+pub fn service_get(key: Option<&str>) -> Result<()> {
+    let value = crate::service::config_get(key);
+    match value {
+        serde_json::Value::String(text) => println!("{text}"),
+        other => println!("{}", serde_json::to_string_pretty(&other)?),
+    }
+    Ok(())
+}
+
+pub fn service_set(key: &str, value: &str) -> Result<()> {
+    let config = crate::service::config_set(key, value)?;
+    println!("{}", serde_json::to_string_pretty(&config)?);
+    Ok(())
+}
+
+pub fn service_unset(key: &str) -> Result<()> {
+    let config = crate::service::config_unset(key)?;
+    println!("{}", serde_json::to_string_pretty(&config)?);
+    Ok(())
+}
+
 pub fn workspace_list() -> Result<()> {
     let workspaces = crate::workspace::list();
     if workspaces.is_empty() {

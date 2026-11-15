@@ -9,6 +9,52 @@ fn state_path() -> PathBuf {
     crate::paths::get().storage().join("server.json")
 }
 
+fn config_path() -> PathBuf {
+    crate::paths::get().config.join("service.json")
+}
+
+fn read_config() -> Value {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn save_config(value: &Value) -> Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    Ok(())
+}
+
+pub fn config_get(key: Option<&str>) -> Value {
+    let config = read_config();
+    match key {
+        Some(key) => config.get(key).cloned().unwrap_or(Value::Null),
+        None => config,
+    }
+}
+
+pub fn config_set(key: &str, value: &str) -> Result<Value> {
+    let mut config = read_config();
+    let parsed = serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+    config[key] = parsed;
+    save_config(&config)?;
+    Ok(config)
+}
+
+pub fn config_unset(key: &str) -> Result<Value> {
+    let mut config = read_config();
+    if let Some(object) = config.as_object_mut() {
+        object.remove(key);
+    }
+    save_config(&config)?;
+    Ok(config)
+}
+
 fn log_path() -> PathBuf {
     crate::paths::get().log.join("service.log")
 }
@@ -82,6 +128,12 @@ pub fn status() -> Value {
 }
 
 pub fn start(port: u16, directory: PathBuf) -> Result<Value> {
+    let config = read_config();
+    let port = if port == 0 {
+        config.get("port").and_then(Value::as_u64).unwrap_or(4096) as u16
+    } else {
+        port
+    };
     let current = status();
     if current.get("running").and_then(Value::as_bool) == Some(true) {
         return Err(anyhow!(
@@ -101,9 +153,11 @@ pub fn start(port: u16, directory: PathBuf) -> Result<Value> {
     let output = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     let error = output.try_clone()?;
     let mut command = Command::new(executable);
-    command
-        .args(["serve", "--port", &port.to_string(), "--dir"])
-        .arg(&directory)
+    command.args(["serve", "--port", &port.to_string()]);
+    if let Some(password) = config.get("password").and_then(Value::as_str) {
+        command.args(["--password", password]);
+    }
+    command.arg("--dir").arg(&directory)
         .stdin(Stdio::null())
         .stdout(Stdio::from(output))
         .stderr(Stdio::from(error));

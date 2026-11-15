@@ -316,7 +316,8 @@ enum McpCmd {
 enum ServiceCmd {
     /// Start a detached server
     Start {
-        #[arg(short, long, default_value_t = 4096)]
+        /// Port; 0 uses service.port or 4096
+        #[arg(short, long, default_value_t = 0)]
         port: u16,
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -325,13 +326,27 @@ enum ServiceCmd {
     Stop,
     /// Restart the detached server
     Restart {
-        #[arg(short, long, default_value_t = 4096)]
+        /// Port; 0 uses service.port or 4096
+        #[arg(short, long, default_value_t = 0)]
         port: u16,
         #[arg(long)]
         dir: Option<PathBuf>,
     },
     /// Show detached server status
     Status,
+    /// Read service configuration, or one key
+    Get {
+        key: Option<String>,
+    },
+    /// Write a service configuration value
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Remove a service configuration value
+    Unset {
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -511,6 +526,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             ServiceCmd::Stop => cli::service_stop(),
             ServiceCmd::Restart { port, dir } => cli::service_restart(port, dir),
             ServiceCmd::Status => cli::service_status(),
+            ServiceCmd::Get { key } => cli::service_get(key.as_deref()),
+            ServiceCmd::Set { key, value } => cli::service_set(&key, &value),
+            ServiceCmd::Unset { key } => cli::service_unset(&key),
         },
         Some(Cmd::Workspace { command }) => match command {
             WorkspaceCmd::List => cli::workspace_list(),
