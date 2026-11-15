@@ -81,7 +81,7 @@ enum Cmd {
         #[arg(long)]
         thinking: bool,
         /// Approve permission requests that would otherwise ask
-        #[arg(long, alias = "yes", alias = "dangerously-skip-permissions")]
+        #[arg(long, alias = "yes", alias = "auto", alias = "yolo", alias = "dangerously-skip-permissions")]
         auto_approve: bool,
         /// Working directory
         #[arg(long)]
