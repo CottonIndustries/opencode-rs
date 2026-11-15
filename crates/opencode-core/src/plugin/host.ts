@@ -3026,10 +3026,17 @@ function makeTuiContext(plugin: PluginRecord): Json {
       const command = tuiCommands.get(id);
       if (command?.run) void settle(command.run(input));
     },
-    shortcuts: () => [],
-    commands: () => [...tuiCommands.values()],
-    pending: () => [],
-    active: () => [],
+    shortcuts: (id: string) => {
+      const keymap = (tuiSnapshot().keymap ?? {}) as Json;
+      return tuiArray((keymap.shortcuts as Json)?.[id]);
+    },
+    commands: () => {
+      const keymap = (tuiSnapshot().keymap ?? {}) as Json;
+      const list = tuiArray(keymap.commands);
+      return list.length > 0 ? list : [...tuiCommands.values()];
+    },
+    pending: () => tuiArray(((tuiSnapshot().keymap ?? {}) as Json).pending),
+    active: () => tuiArray(((tuiSnapshot().keymap ?? {}) as Json).active),
     mode: { current: () => "base", push: () => () => {} },
   };
   const toast = {
@@ -3142,27 +3149,27 @@ function makeTuiContext(plugin: PluginRecord): Json {
       enabled: () => true,
       list: () => tuiArray(tuiSnapshot().tabs),
       open: (sessionID: string) => {
-        void request("tui.tabs", { action: "open", sessionID }).catch((error: unknown) =>
-          log("error", "tui tabs failed: " + String(error))
-        );
+        void request("tui.tabs", { action: "open", sessionID }).catch((
+          error: unknown,
+        ) => log("error", "tui tabs failed: " + String(error)));
         return true;
       },
       focus: (sessionID: string) => {
-        void request("tui.tabs", { action: "focus", sessionID }).catch((error: unknown) =>
-          log("error", "tui tabs failed: " + String(error))
-        );
+        void request("tui.tabs", { action: "focus", sessionID }).catch((
+          error: unknown,
+        ) => log("error", "tui tabs failed: " + String(error)));
         return true;
       },
       move: (sessionID: string, index: number) => {
-        void request("tui.tabs", { action: "move", sessionID, index }).catch((error: unknown) =>
-          log("error", "tui tabs failed: " + String(error))
-        );
+        void request("tui.tabs", { action: "move", sessionID, index }).catch((
+          error: unknown,
+        ) => log("error", "tui tabs failed: " + String(error)));
         return true;
       },
       close: (sessionID?: string) => {
-        void request("tui.tabs", { action: "close", sessionID }).catch((error: unknown) =>
-          log("error", "tui tabs failed: " + String(error))
-        );
+        void request("tui.tabs", { action: "close", sessionID }).catch((
+          error: unknown,
+        ) => log("error", "tui tabs failed: " + String(error)));
         return true;
       },
     },

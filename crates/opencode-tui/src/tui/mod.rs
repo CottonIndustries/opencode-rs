@@ -4114,6 +4114,19 @@ impl Ui {
                 json!({ "name": name, "status": status })
             })
             .collect();
+        let keymap_commands: Vec<Value> = self
+            .commands()
+            .into_iter()
+            .map(|command| json!({ "id": command.id, "title": command.title, "category": command.category, "slash": command.slash }))
+            .collect();
+        let keymap_shortcuts: serde_json::Map<String, Value> = self
+            .commands()
+            .into_iter()
+            .map(|command| {
+                let labels = self.keys.labels(&command.id).into_iter().collect::<Vec<_>>();
+                (command.id, json!(labels))
+            })
+            .collect();
         let pending: serde_json::Map<String, Value> = sessions
             .iter()
             .filter_map(|session| session.get("id").and_then(Value::as_str))
@@ -4139,6 +4152,12 @@ impl Ui {
             "savedPermissions": crate::permission_saved::list(None),
             "forms": forms,
             "tabs": tabs,
+            "keymap": {
+                "shortcuts": keymap_shortcuts,
+                "commands": keymap_commands,
+                "pending": [],
+                "active": [],
+            },
             "projects": [{
                 "id": self.app.project,
                 "worktree": self.app.worktree.to_string_lossy(),
