@@ -52,6 +52,7 @@ pub enum AppEvent {
     McpAuthDone { name: String, error: Option<String> },
     DiffLoaded { source: String, files: serde_json::Value },
     PromptInput { action: String, text: String },
+    UiCommand { id: String, args: String },
 }
 
 impl AppEvent {
@@ -951,7 +952,7 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
                 "error": error,
             }
         }),
-        AppEvent::PluginTabs { .. } | AppEvent::PromptInput { .. } => serde_json::Value::Null,
+        AppEvent::PluginTabs { .. } | AppEvent::PromptInput { .. } | AppEvent::UiCommand { .. } => serde_json::Value::Null,
     }
 }
 

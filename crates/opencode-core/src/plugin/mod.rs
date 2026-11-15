@@ -2298,8 +2298,37 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             app.emit(crate::app::AppEvent::PromptInput { action: "clear".into(), text: String::new() });
             Ok(Value::Null)
         }
-        "tui.openHelp" | "tui.openSessions" | "tui.openThemes"
-        | "tui.openModels" | "tui.executeCommand" | "tui.openDialog" | "tui.control" => Ok(Value::Null),
+        "tui.openHelp" => {
+            app.emit(crate::app::AppEvent::UiCommand { id: "help.show".into(), args: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.openSessions" => {
+            app.emit(crate::app::AppEvent::UiCommand { id: "session.list".into(), args: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.openThemes" => {
+            app.emit(crate::app::AppEvent::UiCommand { id: "theme.switch".into(), args: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.openModels" => {
+            app.emit(crate::app::AppEvent::UiCommand { id: "model.list".into(), args: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.executeCommand" => {
+            let id = first
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| first.get("command").and_then(Value::as_str))
+                .or_else(|| first.get("text").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string();
+            let args = first.get("args").and_then(Value::as_str).unwrap_or_default().to_string();
+            if !id.is_empty() {
+                app.emit(crate::app::AppEvent::UiCommand { id, args });
+            }
+            Ok(Value::Null)
+        }
+        "tui.openDialog" | "tui.control" => Ok(Value::Null),
         "app.log" => {
             let message = body
                 .get("message")

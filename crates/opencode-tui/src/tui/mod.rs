@@ -4769,6 +4769,7 @@ impl Ui {
                     }
                 }
             }
+            AppEvent::UiCommand { id, args } => self.exec(&id, &args),
             AppEvent::PromptInput { action, text } => match action.as_str() {
                 "append" => {
                     self.editor.insert(&text);
