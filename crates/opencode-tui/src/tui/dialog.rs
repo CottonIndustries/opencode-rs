@@ -49,6 +49,7 @@ pub enum Kind {
     Goal,
     Plugins,
     Devtools,
+    Experiments,
 }
 
 #[derive(Clone, Debug, Default)]

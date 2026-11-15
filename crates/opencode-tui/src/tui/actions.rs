@@ -107,6 +107,23 @@ pub fn provider_choices(app: &crate::app::App) -> Vec<crate::tui::dialog::Opt> {
             }
         })
         .collect();
+    for (id, title) in [
+        ("openai", "Sign in with ChatGPT"),
+        ("github-copilot", "Sign in with GitHub Copilot"),
+        ("opencode", "Sign in with OpenCode Console"),
+    ] {
+        if providers.contains_key(id) && !creds.contains_key(id) {
+            opts.push(crate::tui::dialog::Opt {
+                title: title.into(),
+                description: id.into(),
+                footer: "oauth".into(),
+                category: "OAuth".into(),
+                search: format!("{} oauth sign in", id),
+                value: format!("oauth:{id}"),
+                current: false,
+            });
+        }
+    }
     opts.sort_by(|a, b| {
         (a.category != "Connected", a.title.to_lowercase())
             .cmp(&(b.category != "Connected", b.title.to_lowercase()))

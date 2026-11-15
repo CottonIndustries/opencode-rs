@@ -997,6 +997,7 @@ impl Ui {
             c("opencode.debug", "View debug info", "System", &["debug"], false),
             c("plugins.list", "Plugins", "System", &["plugins"], false),
             c("developer.devtools", "Developer tools", "System", &["devtools"], false),
+            c("developer.experiments", "Experiments", "System", &["experiments"], false),
             c("diff.open", "Open diff viewer", "VCS", &["diff"], false),
             c("stats.open", "Usage statistics", "System", &["stats"], false),
             c("variant.cycle", "Variant cycle", "Agent", &[], false),
@@ -1130,7 +1131,8 @@ impl Ui {
             "service.restart" => self.restart_service(),
             "location.reload" => self.reload_config(),
             "opencode.debug" => self.show_text("Debug", reports::debug(&self.app)),
-            "developer.devtools" => self.show_text("Developer tools", reports::debug(&self.app)),
+            "developer.devtools" => self.open_devtools(),
+            "developer.experiments" => self.open_experiments(),
             "plugins.list" => self.open_plugins(),
             "diff.open" => self.open_diff(),
             "app.clear" => self.clear_prompt(),
@@ -1809,6 +1811,17 @@ impl Ui {
         });
     }
 
+    fn shell_output(&self, command: &str) -> Option<String> {
+        self.handle.with(|session| {
+            session.messages.iter().rev().find_map(|message| {
+                message.parts.iter().find_map(|part| match part {
+                    Part::Text { text, synthetic: true } if text.contains("<shell-run command=") && text.contains(command) => Some(text.clone()),
+                    _ => None,
+                })
+            })
+        })
+    }
+
     /// Shell mode: run the command locally and record it in the session for the model.
     fn run_shell(&mut self, command: String) {
         self.enter_session();
@@ -2388,6 +2401,37 @@ impl Ui {
         });
     }
 
+    fn open_devtools(&mut self) {
+        let opts = vec![
+            dialog::Opt { title: "Experiments".into(), description: "Preview in-flight features".into(), footer: String::new(), category: String::new(), search: String::new(), value: "devtools:experiments".into(), current: false },
+            dialog::Opt { title: "Debug info".into(), description: "Version, paths, providers".into(), footer: String::new(), category: String::new(), search: String::new(), value: "devtools:debug".into(), current: false },
+            dialog::Opt { title: "Statistics".into(), description: "Session usage statistics".into(), footer: String::new(), category: String::new(), search: String::new(), value: "devtools:stats".into(), current: false },
+            dialog::Opt { title: "Plugins".into(), description: "Loaded plugins".into(), footer: String::new(), category: String::new(), search: String::new(), value: "devtools:plugins".into(), current: false },
+        ];
+        self.dialog = Some(Dialog::Select(Select::new(Kind::Devtools, "Developer tools", opts)));
+    }
+
+    fn open_experiments(&mut self) {
+        let config = self.app.config();
+        let flags = [
+            ("new-designs", "New designs", "Preview the new TUI designs", config.experimental.new_designs),
+            ("client-mcp", "TUI tools", "Let the agent open terminals in this TUI", config.experimental.client_mcp),
+        ];
+        let opts = flags
+            .into_iter()
+            .map(|(id, title, description, enabled)| dialog::Opt {
+                title: title.into(),
+                description: description.into(),
+                footer: if enabled { "on" } else { "off" }.into(),
+                category: String::new(),
+                search: String::new(),
+                value: format!("experiment:{id}"),
+                current: enabled,
+            })
+            .collect();
+        self.dialog = Some(Dialog::Select(Select::new(Kind::Experiments, "Experiments", opts)));
+    }
+
     fn open_connect(&mut self) {
         let opts = actions::provider_choices(&self.app);
         if opts.is_empty() {
@@ -2395,6 +2439,50 @@ impl Ui {
             return;
         }
         self.dialog = Some(Dialog::Select(Select::new(Kind::Connect, "Connect an integration", opts)));
+    }
+
+    fn open_connect_method(&mut self, value: &str) {
+        let provider = value.strip_prefix("provider:").unwrap_or(value).to_string();
+        if matches!(provider.as_str(), "openai" | "chatgpt" | "github-copilot" | "copilot" | "opencode" | "console") {
+            let opts = vec![
+                dialog::Opt {
+                    title: "Sign in with browser".into(),
+                    description: "OAuth login".into(),
+                    footer: String::new(),
+                    category: "OAuth".into(),
+                    search: String::new(),
+                    value: format!("oauth:{provider}"),
+                    current: false,
+                },
+                dialog::Opt {
+                    title: "Paste an API key".into(),
+                    description: String::new(),
+                    footer: String::new(),
+                    category: "API key".into(),
+                    search: String::new(),
+                    value: format!("key:{provider}"),
+                    current: false,
+                },
+            ];
+            self.dialog = Some(Dialog::Select(Select::new(Kind::Connect, &format!("Connect {provider}"), opts)));
+        } else {
+            self.open_provider_key(&provider);
+        }
+    }
+
+    fn start_oauth(&mut self, provider: &str) {
+        self.toast(Variant::Info, None, format!("Opening browser to sign in to {provider}..."));
+        let app = self.app.clone();
+        let provider = provider.to_string();
+        tokio::spawn(async move {
+            match crate::provider::oauth::login(&provider, None).await {
+                Ok(()) => {
+                    let _ = app.reload_config();
+                    app.emit(AppEvent::Notice { message: format!("Signed in to {provider}") });
+                }
+                Err(error) => app.emit(AppEvent::Notice { message: format!("Sign-in failed: {error}") }),
+            }
+        });
     }
 
     fn open_cd(&mut self, args: &str) {
@@ -2542,7 +2630,8 @@ impl Ui {
                 } else if let Some(index) = value.strip_prefix("shell:").and_then(|v| v.parse::<usize>().ok()) {
                     if let Some(command) = self.shells.get(index).cloned() {
                         self.close_composer();
-                        self.show_text("Shell", command);
+                        let text = self.shell_output(&command).unwrap_or(command);
+                        self.show_text("Shell", text);
                     }
                 }
             }
@@ -2921,7 +3010,13 @@ impl Ui {
             }
             Kind::Connect => {
                 self.dialog = None;
-                self.open_provider_key(&value);
+                if let Some(id) = value.strip_prefix("oauth:") {
+                    self.start_oauth(id);
+                } else if let Some(id) = value.strip_prefix("key:") {
+                    self.open_provider_key(id);
+                } else {
+                    self.open_connect_method(&value);
+                }
             }
             Kind::Workspaces => {
                 self.dialog = None;
@@ -2962,6 +3057,28 @@ impl Ui {
             }
             Kind::Devtools => {
                 self.dialog = None;
+                match value.as_str() {
+                    "devtools:experiments" => self.open_experiments(),
+                    "devtools:debug" => self.show_text("Debug", reports::debug(&self.app)),
+                    "devtools:stats" => self.open_stats(),
+                    "devtools:plugins" => self.open_plugins(),
+                    _ => {}
+                }
+            }
+            Kind::Experiments => {
+                if let Some(id) = value.strip_prefix("experiment:") {
+                    let enabled = match id {
+                        "new-designs" => self.app.config().experimental.new_designs,
+                        "client-mcp" => self.app.config().experimental.client_mcp,
+                        _ => false,
+                    };
+                    if let Err(error) = crate::config::set_experiment(id, !enabled) {
+                        self.toast(Variant::Error, None, format!("Could not save experiment: {error}"));
+                    } else {
+                        let _ = self.app.reload_config();
+                    }
+                }
+                self.open_experiments();
             }
             Kind::Stash => {
                 self.dialog = None;

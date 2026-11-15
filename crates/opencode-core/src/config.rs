@@ -5,7 +5,7 @@
 //! down to the working directory (`opencode.json[c]` and `.opencode/opencode.json[c]`),
 //! then `OPENCODE_CONFIG_CONTENT`.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -61,6 +61,10 @@ pub struct Experimental {
     pub image_generate: bool,
     pub subagent_depth: Option<u64>,
     pub location_idle_timeout: Option<u64>,
+    #[serde(rename = "new-designs")]
+    pub new_designs: bool,
+    #[serde(rename = "client-mcp")]
+    pub client_mcp: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -467,6 +471,52 @@ fn normalize_v2(raw: &mut Value) {
             }
         }
     }
+}
+
+/// Merge a patch into the global configuration file, the same file the
+/// experimental config endpoint writes.
+pub fn patch_global(patch: &Value) -> Result<()> {
+    let file = crate::paths::get().config.join("opencode.json");
+    let mut document = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let Some(target) = document.as_object_mut() else {
+        return Err(anyhow!("configuration must be an object"));
+    };
+    let Some(patch) = patch.as_object() else {
+        return Err(anyhow!("configuration patch must be an object"));
+    };
+    for (key, value) in patch {
+        target.insert(key.clone(), value.clone());
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file, serde_json::to_vec_pretty(&document)?)?;
+    Ok(())
+}
+
+/// Set one experimental flag in the global configuration file.
+pub fn set_experiment(id: &str, enabled: bool) -> Result<()> {
+    let file = crate::paths::get().config.join("opencode.json");
+    let mut document = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let Some(root) = document.as_object_mut() else {
+        return Err(anyhow!("configuration must be an object"));
+    };
+    let experimental = root.entry("experimental").or_insert_with(|| Value::Object(Map::new()));
+    if !experimental.is_object() {
+        *experimental = Value::Object(Map::new());
+    }
+    experimental.as_object_mut().unwrap().insert(id.to_string(), Value::Bool(enabled));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file, serde_json::to_vec_pretty(&document)?)?;
+    Ok(())
 }
 
 pub fn load(directory: &Path, worktree: &Path) -> Result<Loaded> {
