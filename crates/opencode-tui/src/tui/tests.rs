@@ -437,6 +437,15 @@ async fn btw_answer_dialog_matches_upstream() {
 }
 
 #[tokio::test]
+async fn plugin_prompt_events_edit_the_editor() {
+    let mut ui = ui().await;
+    ui.on_app_event(AppEvent::PromptInput { action: "append".into(), text: "hello".into() });
+    assert_eq!(ui.editor.text, "hello");
+    ui.on_app_event(AppEvent::PromptInput { action: "clear".into(), text: String::new() });
+    assert!(ui.editor.text.is_empty());
+}
+
+#[tokio::test]
 async fn btw_shows_pending_status_in_prompt_footer() {
     let mut ui = ui().await;
     ui.route = Route::Session;
