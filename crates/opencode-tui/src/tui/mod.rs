@@ -59,6 +59,7 @@ pub struct StartOptions {
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Messages rendered when a long session opens; older chunks load on scroll.
 const TRANSCRIPT_WINDOW: usize = 250;
+const TRANSCRIPT_LOAD: usize = 50;
 const LOGO_LEFT: [&str; 4] = ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"];
 const LOGO_RIGHT: [&str; 4] = ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"];
 
@@ -6253,7 +6254,8 @@ impl Ui {
                     cache.older_loaded = false;
                 }
                 if cache.prefix_len == prefix_len && cache.start > 0 && !cache.older_loaded && self.scroll + self.body_height >= total {
-                    let new_start = cache.start.saturating_sub(TRANSCRIPT_WINDOW);
+                    let preserve = total > self.body_height;
+                    let new_start = cache.start.saturating_sub(TRANSCRIPT_LOAD);
                     let prelude = transcript::render_range(&session, new_start, cache.start, &[], &ctx);
                     let added = prelude.lines.len();
                     let prelude_clicks = prelude.clicks.len();
@@ -6281,7 +6283,9 @@ impl Ui {
                         cache.last_end_lines += added;
                         cache.last_end_clicks += prelude_clicks;
                         cache.last_end_users += prelude_users;
-                        self.scroll += added;
+                        if preserve {
+                            self.scroll += added;
+                        }
                     }
                     cache.start = new_start;
                     cache.older_loaded = true;

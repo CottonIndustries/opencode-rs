@@ -437,6 +437,28 @@ async fn btw_answer_dialog_matches_upstream() {
 }
 
 #[tokio::test]
+async fn first_scroll_loads_older_without_losing_offset() {
+    let mut ui = ui().await;
+    ui.route = Route::Session;
+    ui.handle.with(|session| {
+        for i in 0..300 {
+            let mut message = Message::new(Role::User);
+            message.parts.push(Part::Text { text: format!("message {i}"), synthetic: false });
+            session.messages.push(message);
+        }
+    });
+    ui.body_height = 1000;
+    ui.render_transcript(80);
+    let start = ui.cache.as_ref().unwrap().start;
+    assert!(start > 0);
+    ui.scroll = 3;
+    ui.render_transcript(80);
+    let cache = ui.cache.as_ref().unwrap();
+    assert_eq!(ui.scroll, 3, "the first scroll must survive the older chunk load");
+    assert_eq!(cache.start, start.saturating_sub(TRANSCRIPT_LOAD));
+}
+
+#[tokio::test]
 async fn prompt_shows_low_console_budget() {
     let mut ui = ui().await;
     ui.model = Some("opencode/gpt-5".into());
