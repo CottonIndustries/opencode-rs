@@ -171,6 +171,17 @@ pub async fn usage_limits() -> String {
     }
 }
 
+/// Tail of the application log, shown by the console panel.
+pub fn console() -> String {
+    let path = crate::paths::get().log.join("opencode.log");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return format!("No log at {}", path.display());
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(500);
+    lines[start..].join("\n")
+}
+
 /// Paths, context, configuration files and registry counts.
 pub fn debug(app: &crate::app::App) -> String {
     let paths = crate::paths::get();

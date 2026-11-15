@@ -997,6 +997,7 @@ impl Ui {
             c("opencode.debug", "View debug info", "System", &["debug"], false),
             c("plugins.list", "Plugins", "System", &["plugins"], false),
             c("developer.devtools", "Developer tools", "System", &["devtools"], false),
+            c("app.console", "Console", "System", &["console"], false),
             c("developer.experiments", "Experiments", "System", &["experiments"], false),
             c("diff.open", "Open diff viewer", "VCS", &["diff"], false),
             c("stats.open", "Usage statistics", "System", &["stats"], false),
@@ -1133,6 +1134,7 @@ impl Ui {
             "opencode.debug" => self.show_text("Debug", reports::debug(&self.app)),
             "developer.devtools" => self.open_devtools(),
             "developer.experiments" => self.open_experiments(),
+            "app.console" => self.open_console(),
             "plugins.list" => self.open_plugins(),
             "diff.open" => self.open_diff(),
             "app.clear" => self.clear_prompt(),
@@ -2430,6 +2432,14 @@ impl Ui {
             })
             .collect();
         self.dialog = Some(Dialog::Select(Select::new(Kind::Experiments, "Experiments", opts)));
+    }
+
+    fn open_console(&mut self) {
+        let path = crate::paths::get().log.join("opencode.log");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| format!("No log at {}: {error}", path.display()));
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.len().saturating_sub(500);
+        self.show_text("Console", lines[start..].join("\n"));
     }
 
     fn open_connect(&mut self) {
