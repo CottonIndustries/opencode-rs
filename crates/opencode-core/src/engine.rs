@@ -1498,7 +1498,12 @@ async fn step_once(
                             out.metadata = metadata.clone();
                         }
                     }
-                    let mut text = if matches!(name.as_str(), "read" | "shell") { out.output } else { tools::truncate_output(&out.output).0 };
+                    let limit = app.config().tool_output;
+                    let mut text = if matches!(name.as_str(), "read" | "shell") {
+                        out.output
+                    } else {
+                        tools::truncate_output_with(&out.output, limit.max_lines, limit.max_bytes).0
+                    };
                     if let Some(c) = out.context {
                         text.push_str("\n\n");
                         text.push_str(&c);

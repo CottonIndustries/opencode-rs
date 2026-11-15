@@ -42,6 +42,7 @@ pub enum AppEvent {
     BtwAnswer { question: String, answer: String },
     BtwFailed { message: String },
     PluginInvalidate,
+    PluginTabs { action: String, session: String, index: Option<usize> },
     McpAuth {
         name: String,
         url: String,
@@ -64,7 +65,8 @@ impl AppEvent {
             | AppEvent::Busy { session, .. }
             | AppEvent::Error { session, .. }
             | AppEvent::Retry { session, .. }
-            | AppEvent::Title { session, .. } => Some(session),
+            | AppEvent::Title { session, .. }
+            | AppEvent::PluginTabs { session, .. } => Some(session),
             AppEvent::Permission(r) => Some(&r.session_id),
             _ => None,
         }
@@ -948,6 +950,7 @@ pub fn plugin_event(ev: &AppEvent) -> serde_json::Value {
                 "error": error,
             }
         }),
+        AppEvent::PluginTabs { .. } => serde_json::Value::Null,
     }
 }
 

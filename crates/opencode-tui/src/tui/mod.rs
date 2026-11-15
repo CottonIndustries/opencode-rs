@@ -306,6 +306,9 @@ struct Ui {
     /// side questions still waiting for an answer
     btw_pending: usize,
     plugin_sidebar: Vec<Value>,
+    plugin_composer: Vec<Value>,
+    plugin_prompt_file: Vec<Value>,
+    plugin_app: Vec<Value>,
     plugin_slots_at: Instant,
 }
 
@@ -547,6 +550,9 @@ impl Ui {
             plugin_status: String::new(),
             btw_pending: 0,
             plugin_sidebar: Vec::new(),
+            plugin_composer: Vec::new(),
+            plugin_prompt_file: Vec::new(),
+            plugin_app: Vec::new(),
             plugin_slots_at: Instant::now(),
         };
         let name = ui.settings.theme();
@@ -3851,6 +3857,194 @@ impl Ui {
         }
     }
 
+    fn plugin_data(&self) -> Value {
+        let current = self.sid();
+        let mut ids = self.tabs.clone();
+        if !ids.contains(&current) {
+            ids.push(current.clone());
+        }
+        let mut sessions = Vec::new();
+        let mut messages = serde_json::Map::new();
+        let mut statuses = serde_json::Map::new();
+        let mut shells = serde_json::Map::new();
+        for id in &ids {
+            let Ok(handle) = self.app.session(id) else { continue };
+            handle.with(|session| {
+                sessions.push(crate::plugin::session_json(session));
+                messages.insert(id.clone(), crate::plugin::session_messages_json(&session.messages));
+                shells.insert(id.clone(), json!(crate::job::list(Some(id), Some("shell"), None, false)));
+            });
+            statuses.insert(id.clone(), json!(if handle.is_busy() { "running" } else { "idle" }));
+        }
+        let summaries = crate::session::list(&self.app.project);
+        let known: std::collections::HashSet<String> =
+            sessions.iter().filter_map(|session| session.get("id").and_then(Value::as_str).map(String::from)).collect();
+        for summary in summaries {
+            if known.contains(&summary.id) {
+                continue;
+            }
+            sessions.push(json!({
+                "id": summary.id,
+                "projectID": self.app.project,
+                "title": summary.title,
+                "parentID": summary.parent_id,
+                "cost": summary.cost,
+                "tokens": {
+                    "input": summary.tokens.input,
+                    "output": summary.tokens.output,
+                    "reasoning": summary.tokens.reasoning,
+                    "cache": { "read": summary.tokens.cache_read, "write": summary.tokens.cache_write },
+                },
+                "time": {
+                    "created": summary.time_created,
+                    "updated": summary.time_updated,
+                },
+                "location": {
+                    "directory": summary.directory.to_string_lossy(),
+                    "workspaceID": summary.workspace_id,
+                },
+            }));
+        }
+        let permissions: Vec<Value> = self
+            .app
+            .pending_permissions()
+            .iter()
+            .map(|request| {
+                json!({
+                    "id": request.id,
+                    "sessionID": request.session_id,
+                    "toolCallID": request.tool_call_id,
+                    "action": request.action,
+                    "resources": request.resources,
+                    "title": request.title,
+                    "metadata": request.metadata,
+                })
+            })
+            .collect();
+        let forms: Vec<Value> = self
+            .app
+            .forms
+            .list(&current)
+            .into_iter()
+            .filter_map(|form| serde_json::to_value(form).ok())
+            .collect();
+        let tabs: Vec<Value> = self
+            .tabs
+            .iter()
+            .map(|id| {
+                let handle = self.app.session(id).ok();
+                let title = handle.as_ref().map(|handle| handle.with(|session| session.title.clone()));
+                json!({
+                    "sessionID": id,
+                    "title": title,
+                    "active": id == &current,
+                    "busy": handle.as_ref().map(|handle| handle.is_busy()).unwrap_or(false),
+                    "attention": false,
+                })
+            })
+            .collect();
+        let agents: Vec<Value> = self.app.agents.read().unwrap().values().map(crate::plugin::agent_json).collect();
+        let commands: Vec<Value> = self
+            .app
+            .commands
+            .read()
+            .unwrap()
+            .values()
+            .map(|command| {
+                json!({
+                    "name": command.name,
+                    "description": command.description,
+                    "template": command.template,
+                    "agent": command.agent,
+                    "model": command.model,
+                })
+            })
+            .collect();
+        let mut models = Vec::new();
+        let mut providers = Vec::new();
+        for provider in self.app.providers.read().unwrap().values() {
+            providers.push(json!({ "id": provider.id, "name": provider.name, "api": provider.api }));
+            models.extend(provider.models.values().map(crate::plugin::model_json));
+        }
+        let skills: Vec<Value> = self
+            .app
+            .skills
+            .read()
+            .unwrap()
+            .iter()
+            .map(|skill| {
+                json!({
+                    "id": skill.id,
+                    "name": skill.name,
+                    "description": skill.description,
+                    "path": skill.path.to_string_lossy(),
+                })
+            })
+            .collect();
+        let mcp: Vec<Value> = self
+            .app
+            .mcp
+            .snapshot()
+            .into_iter()
+            .map(|(name, status)| {
+                let status = match status {
+                    Some(crate::mcp::Status::Connected { tools }) => json!({ "type": "connected", "tools": tools }),
+                    Some(crate::mcp::Status::Disabled) => json!({ "type": "disabled" }),
+                    Some(crate::mcp::Status::Failed(message)) => json!({ "type": "failed", "message": message }),
+                    Some(crate::mcp::Status::NeedsAuth(message)) => json!({ "type": "needs_auth", "message": message }),
+                    None => json!({ "type": "pending" }),
+                };
+                json!({ "name": name, "status": status })
+            })
+            .collect();
+        let pending: serde_json::Map<String, Value> = sessions
+            .iter()
+            .filter_map(|session| session.get("id").and_then(Value::as_str))
+            .map(|id| {
+                let queued = self.app.session(id).ok().map(|handle| {
+                    handle
+                        .queue
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(message, _)| json!({ "id": message.id, "role": message.role }))
+                        .collect::<Vec<_>>()
+                });
+                (id.to_string(), json!(queued.unwrap_or_default()))
+            })
+            .collect();
+        json!({
+            "sessions": sessions,
+            "messages": messages,
+            "statuses": statuses,
+            "pending": pending,
+            "permissions": permissions,
+            "savedPermissions": crate::permission_saved::list(None),
+            "forms": forms,
+            "tabs": tabs,
+            "tabs": tabs,
+            "projects": [{
+                "id": self.app.project,
+                "worktree": self.app.worktree.to_string_lossy(),
+                "directory": self.app.directory.to_string_lossy(),
+            }],
+            "shells": shells.values().flat_map(|value| value.as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
+            "location": {
+                "directory": self.app.directory.to_string_lossy(),
+                "worktree": self.app.worktree.to_string_lossy(),
+                "projectID": self.app.project,
+                "agents": agents,
+                "commands": commands,
+                "models": models,
+                "providers": providers,
+                "skills": skills,
+                "mcp": mcp,
+                "references": [],
+                "integrations": [],
+            },
+        })
+    }
+
     async fn refresh_plugin_slots(&mut self) -> bool {
         if self.plugin_slots_at.elapsed() < Duration::from_secs(2) {
             return false;
@@ -3864,10 +4058,14 @@ impl Ui {
             "width": self.size.0,
             "height": self.size.1,
             "selection": self.selection_text(),
+            "data": self.plugin_data(),
         });
         let slots = self.app.plugins.tui_slots(input).await;
         let mut status = String::new();
         let mut sidebar = Vec::new();
+        let mut composer = Vec::new();
+        let mut prompt_file = Vec::new();
+        let mut app = Vec::new();
         for slot in slots {
             let placement = slot.get("placement").and_then(Value::as_str).unwrap_or_default();
             let plain = slot
@@ -3882,7 +4080,7 @@ impl Ui {
 ")
             };
             let text = text.trim();
-            if text.is_empty() {
+            if text.is_empty() && layout.is_none() {
                 continue;
             }
             match placement {
@@ -3895,12 +4093,28 @@ impl Ui {
                 "sidebar.content" | "sidebar.footer" => {
                     sidebar.push(layout.unwrap_or_else(|| json!({ "type": "text", "text": text })));
                 }
+                "session.composer.top" => {
+                    composer.push(layout.unwrap_or_else(|| json!({ "type": "text", "text": text })));
+                }
+                "prompt.footer.file" => {
+                    prompt_file.push(layout.unwrap_or_else(|| json!({ "type": "text", "text": text })));
+                }
+                "app" => {
+                    app.push(layout.unwrap_or_else(|| json!({ "type": "text", "text": text })));
+                }
                 _ => {}
             }
         }
-        let changed = self.plugin_status != status || self.plugin_sidebar != sidebar;
+        let changed = self.plugin_status != status
+            || self.plugin_sidebar != sidebar
+            || self.plugin_composer != composer
+            || self.plugin_prompt_file != prompt_file
+            || self.plugin_app != app;
         self.plugin_status = status;
         self.plugin_sidebar = sidebar;
+        self.plugin_composer = composer;
+        self.plugin_prompt_file = prompt_file;
+        self.plugin_app = app;
         changed
     }
 
@@ -4401,6 +4615,25 @@ impl Ui {
                     }
                 }
             }
+            AppEvent::PluginTabs { action, session, index } => match action.as_str() {
+                "open" => {
+                    if !session.is_empty() && !self.tabs.contains(&session) {
+                        self.tabs.push(session);
+                    }
+                }
+                "focus" => {
+                    if !session.is_empty() {
+                        self.open_session(&session);
+                    }
+                }
+                "move" => {
+                    if let Some(index) = index {
+                        self.move_tab(&session, index);
+                    }
+                }
+                "close" => self.close_tab_id(&session),
+                _ => {}
+            },
             AppEvent::McpAuth { name, url, instructions, handle } => {
                 self.dialog = Some(Dialog::McpAuth(dialog::McpAuth {
                     name,
@@ -4443,6 +4676,7 @@ impl Ui {
                 self.toast(variant, title, message);
             }
             AppEvent::Updated { session } => {
+                self.plugin_slots_at = Instant::now() - Duration::from_secs(3);
                 if session == sid {
                     self.tab_unread.remove(&session);
                     if !self.shells.is_empty() {
@@ -5193,6 +5427,12 @@ impl Ui {
             if let Some((_, status)) = self.goal_state() {
                 label = format!("{label}  goal {status}");
             }
+            if let Some(layout) = self.plugin_prompt_file.first() {
+                let file = layout_plain_lines(layout, 0).join(" ");
+                if !file.trim().is_empty() {
+                    label = format!("{label}  ·  {}", file.trim());
+                }
+            }
             if !self.plugin_status.is_empty() {
                 label = format!("{label}  ·  {}", self.plugin_status);
             }
@@ -5278,7 +5518,15 @@ impl Ui {
             None => self.prompt_height(pane.width as usize) as u16,
         };
         let composer_panel_h = if self.composer_open { 7 } else { 0 };
-        let composer_y = pane.y + pane.height.saturating_sub(composer_h);
+        let composer_slot_h = if self.plugin_composer.is_empty() {
+            0
+        } else {
+            self.plugin_composer
+                .iter()
+                .map(|layout| plugin_ui::render_native(layout, pane.width.max(1) as usize, t, t.bg).len())
+                .sum::<usize>() as u16
+        };
+        let composer_y = pane.y + pane.height.saturating_sub(composer_h + composer_slot_h);
         let composer_panel_y = composer_y.saturating_sub(composer_panel_h);
         let jump_y = composer_panel_y.saturating_sub(1);
         let tr = Rect { x: pane.x, y: pane.y, width: pane.width, height: jump_y.saturating_sub(pane.y) };
@@ -5314,7 +5562,14 @@ impl Ui {
             draw::draw_line(buf, r.x, r.y, r.width, &line(vec![span(label, t.text_secondary.base, t.bg)], t.bg));
             self.hits.jump = Some(r);
         }
-        let composer = Rect { x: pane.x, y: composer_y, width: pane.width, height: composer_h };
+        if composer_slot_h > 0 {
+            let mut lines = Vec::new();
+            for layout in &self.plugin_composer {
+                lines.extend(plugin_ui::render_native(layout, pane.width.max(1) as usize, t, t.bg));
+            }
+            draw::draw_lines(buf, Rect { x: pane.x, y: composer_y, width: pane.width, height: composer_slot_h }, &lines, 0);
+        }
+        let composer = Rect { x: pane.x, y: composer_y + composer_slot_h, width: pane.width, height: composer_h };
         if self.composer_open {
             self.draw_composer(buf, Rect { x: pane.x, y: composer_panel_y, width: pane.width, height: composer_panel_h }, t);
         }

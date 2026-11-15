@@ -5,7 +5,9 @@ pub mod codemode;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod image_generate;
 pub mod mcp_resource;
+pub mod opencode;
 pub mod patch;
 pub mod question;
 pub mod read;
@@ -132,15 +134,23 @@ pub fn arg_bool(v: &Value, k: &str) -> Option<bool> {
 
 /// Truncate large tool output, saving the full text to a file (head preview).
 pub fn truncate_output(text: &str) -> (String, bool) {
+    truncate_output_with(text, None, None)
+}
+
+pub fn truncate_output_with(text: &str, max_lines: Option<u64>, max_bytes: Option<u64>) -> (String, bool) {
+    let max_lines = max_lines.map(|value| value as usize).unwrap_or(MAX_LINES);
+    let max_bytes = max_bytes.map(|value| value as usize).unwrap_or(MAX_BYTES);
+    let max_lines = max_lines.max(1);
+    let max_bytes = max_bytes.max(1);
     let lines: Vec<&str> = text.strip_suffix('\n').unwrap_or(text).split('\n').collect();
-    if lines.len() <= MAX_LINES && text.len() <= MAX_BYTES {
+    if lines.len() <= max_lines && text.len() <= max_bytes {
         return (text.to_string(), false);
     }
     let mut kept = Vec::new();
     let mut bytes = 0;
-    for l in lines.iter().take(MAX_LINES) {
+    for l in lines.iter().take(max_lines) {
         let add = l.len() + if kept.is_empty() { 0 } else { 1 };
-        if bytes + add > MAX_BYTES {
+        if bytes + add > max_bytes {
             break;
         }
         kept.push(*l);
@@ -174,6 +184,13 @@ pub fn descriptors(config: &crate::config::Config) -> Vec<(String, String, Value
         Arc::new(artifact::Update),
         Arc::new(artifact::Delete),
         Arc::new(question::QuestionTool),
+        Arc::new(opencode::SessionRename),
+        Arc::new(opencode::SessionMove),
+        Arc::new(opencode::WorktreeCreate),
+        Arc::new(opencode::WorktreeList),
+        Arc::new(opencode::WorktreeRemove),
+        Arc::new(opencode::Models),
+        Arc::new(image_generate::ImageGenerate),
     ];
     if config.experimental.todo {
         tools.push(Arc::new(todo::TodoWrite));
@@ -312,6 +329,13 @@ pub async fn registry(app: &Arc<App>, agent: &Agent, model: &Model) -> Vec<Arc<d
         Arc::new(artifact::Update),
         Arc::new(artifact::Delete),
         Arc::new(question::QuestionTool),
+        Arc::new(opencode::SessionRename),
+        Arc::new(opencode::SessionMove),
+        Arc::new(opencode::WorktreeCreate),
+        Arc::new(opencode::WorktreeList),
+        Arc::new(opencode::WorktreeRemove),
+        Arc::new(opencode::Models),
+        Arc::new(image_generate::ImageGenerate),
     ];
     if websearch::configured(&app.config()).is_some() || app.plugins.has_websearch() {
         tools.push(Arc::new(websearch::WebSearch));

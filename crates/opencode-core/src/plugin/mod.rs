@@ -2189,6 +2189,13 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             }
             Ok(Value::Null)
         }
+        "tui.tabs" => {
+            let action = first.get("action").and_then(Value::as_str).unwrap_or_default().to_string();
+            let session = first.get("sessionID").and_then(Value::as_str).unwrap_or_default().to_string();
+            let index = first.get("index").and_then(Value::as_u64).map(|value| value as usize);
+            app.emit(crate::app::AppEvent::PluginTabs { action, session, index });
+            Ok(Value::Null)
+        }
         "tui.dialog" => {
             let kind = first.get("type").and_then(Value::as_str).unwrap_or("alert");
             let title = first

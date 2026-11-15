@@ -36,6 +36,13 @@ pub struct Config {
     pub websearch: Option<WebSearchConfig>,
     pub formatter: Option<Value>,
     pub lsp: Option<Value>,
+    pub media: MediaConfig,
+    pub reference: BTreeMap<String, Value>,
+    pub shell: Option<Value>,
+    pub tool_output: ToolOutputConfig,
+    pub warming: Option<Value>,
+    pub watcher: WatcherConfig,
+    pub worktree: Option<WorktreeConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -43,8 +50,51 @@ pub struct Config {
 pub struct Experimental {
     pub todo: bool,
     pub schedules: bool,
-    #[serde(alias = "codemodeVm")]
+    #[serde(alias = "codemodeVm", alias = "codemode_vm")]
     pub codemode: bool,
+    pub background_compaction: bool,
+    pub media_blob: bool,
+    pub artifacts: bool,
+    pub console_watches: bool,
+    pub all_flags: bool,
+    pub part_rows: bool,
+    pub image_generate: bool,
+    pub subagent_depth: Option<u64>,
+    pub location_idle_timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    pub image: MediaImageConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaImageConfig {
+    pub auto_resize: Option<bool>,
+    pub max_width: Option<u64>,
+    pub max_height: Option<u64>,
+    pub max_base64_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolOutputConfig {
+    pub max_lines: Option<u64>,
+    pub max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WatcherConfig {
+    pub ignore: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreeConfig {
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -655,6 +705,38 @@ mod tests {
         merge(&mut a, serde_json::json!({ "plugins": ["project"], "plugin": ["new"] }));
         assert_eq!(a["plugins"], serde_json::json!(["global", "project"]));
         assert_eq!(a["plugin"], serde_json::json!(["old", "new"]));
+    }
+
+    #[test]
+    fn parses_extended_groups() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "media": { "image": { "auto_resize": true, "max_width": 1024 } },
+            "reference": { "docs": { "repository": "owner/repo" } },
+            "shell": { "path": "/bin/zsh" },
+            "tool_output": { "max_lines": 500, "max_bytes": 20000 },
+            "warming": { "prompt": "hi", "interval": "auto" },
+            "watcher": { "ignore": ["dist"] },
+            "worktree": { "directory": "../worktrees" },
+            "experimental": {
+                "background_compaction": true,
+                "media_blob": true,
+                "artifacts": true,
+                "console_watches": true,
+                "part_rows": true,
+                "image_generate": true,
+                "subagent_depth": 3,
+                "location_idle_timeout": 60
+            }
+        }))
+        .unwrap();
+        assert_eq!(config.media.image.max_width, Some(1024));
+        assert!(config.reference.contains_key("docs"));
+        assert!(config.shell.is_some());
+        assert_eq!(config.tool_output.max_lines, Some(500));
+        assert_eq!(config.watcher.ignore, vec!["dist"]);
+        assert_eq!(config.worktree.unwrap().directory.as_deref(), Some("../worktrees"));
+        assert!(config.experimental.background_compaction);
+        assert_eq!(config.experimental.subagent_depth, Some(3));
     }
 
     #[test]
