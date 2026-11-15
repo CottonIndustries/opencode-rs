@@ -83,7 +83,7 @@ pub enum AskMode {
     AutoReject,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PromptOptions {
     pub agent: Option<String>,
     pub model: Option<String>,
@@ -563,11 +563,22 @@ impl App {
 
     fn insert(&self, s: Session) -> Arc<Handle> {
         let id = s.id.clone();
+        let mut queue = VecDeque::new();
+        for entry in &s.inbox {
+            let Some(message) = entry.get("message").cloned() else { continue };
+            let Some(options) = entry.get("options").cloned() else { continue };
+            if let (Ok(message), Ok(options)) = (
+                serde_json::from_value::<Message>(message),
+                serde_json::from_value::<PromptOptions>(options),
+            ) {
+                queue.push_back((message, options));
+            }
+        }
         let h = Arc::new(Handle {
             session: Mutex::new(s),
             cancel: Mutex::new(None),
             busy: AtomicBool::new(false),
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(queue),
             pending_move: Mutex::new(None),
             pending_compaction: Mutex::new(None),
             retry: Mutex::new(None),

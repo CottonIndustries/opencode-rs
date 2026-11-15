@@ -224,6 +224,9 @@ pub struct Session {
     pub model: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// Queued prompts that have not been delivered yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbox: Vec<serde_json::Value>,
     /// History-only records (agent/model/location switches, skills, system
     /// updates, idle markers) that are not part of the model conversation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -284,6 +287,7 @@ impl Session {
             agent: None,
             model: None,
             messages: vec![],
+            inbox: vec![],
             records: vec![],
             shells: vec![],
             todos: vec![],

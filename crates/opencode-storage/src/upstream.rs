@@ -666,6 +666,7 @@ fn load_connection(connection: &Connection, id: &str) -> Result<Option<Session>>
         agent: row.16,
         model: model_string(model.as_ref()),
         messages: vec![],
+        inbox: vec![],
         records: vec![],
         shells: vec![],
         todos: vec![],

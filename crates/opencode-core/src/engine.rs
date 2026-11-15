@@ -14,6 +14,35 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+fn enqueue(handle: &Handle, msg: Message, opts: PromptOptions) {
+    handle.with(|session| {
+        session.inbox.push(serde_json::json!({ "message": msg, "options": opts }));
+    });
+    handle.save();
+    handle.queue.lock().unwrap().push_back((msg, opts));
+}
+
+fn restore(handle: &Handle, msg: Message, opts: PromptOptions) {
+    handle.with(|session| {
+        session.inbox.insert(0, serde_json::json!({ "message": msg, "options": opts }));
+    });
+    handle.save();
+    handle.queue.lock().unwrap().push_front((msg, opts));
+}
+
+fn dequeue(handle: &Handle) -> Option<(Message, PromptOptions)> {
+    let next = handle.queue.lock().unwrap().pop_front();
+    if next.is_some() {
+        handle.with(|session| {
+            if !session.inbox.is_empty() {
+                session.inbox.remove(0);
+            }
+        });
+        handle.save();
+    }
+    next
+}
+
 pub const REJECTED: &str = "The user rejected permission to use this tool. Stop and wait for the user's next instruction; do not retry.";
 
 pub const COMPACTION_TEMPLATE: &str = "You MUST use this format for your response (you may omit sections that aren't applicable). Do not include the <template> tags in your response.
@@ -130,7 +159,7 @@ pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts:
         },
     }));
     if handle.busy.swap(true, Ordering::SeqCst) {
-        handle.queue.lock().unwrap().push_back((msg, opts));
+        enqueue(&handle, msg, opts);
         app.emit(AppEvent::Updated { session: session_id.to_string() });
         return Ok(());
     }
@@ -159,17 +188,17 @@ pub async fn prompt(app: Arc<App>, session_id: &str, mut msg: Message, mut opts:
                 app.emit(AppEvent::Error { session: session_id.to_string(), message: e.to_string() });
             }
         }
-        let next = handle.queue.lock().unwrap().pop_front();
+        let next = dequeue(&handle);
         match next {
             Some(n) => pending = Some(n),
             None => {
                 handle.busy.store(false, Ordering::SeqCst);
                 // re-check for a message queued between the pop and the store
-                let late = handle.queue.lock().unwrap().pop_front();
+                let late = dequeue(&handle);
                 match late {
                     Some(n) if !handle.busy.swap(true, Ordering::SeqCst) => pending = Some(n),
                     Some(n) => {
-                        handle.queue.lock().unwrap().push_front(n);
+                        restore(&handle, n.0, n.1);
                         break;
                     }
                     None => break,
