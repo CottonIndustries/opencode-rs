@@ -220,8 +220,9 @@ if yours live elsewhere.
   jobs and terminals, a full-screen diff viewer (file tree, unified or split,
   hunk and file navigation, scrolling, folded files, reviewed marks), a mini
   mode, inline image previews, a legacy-session migration prompt, and a shell-job
-  output viewer
-  with a full-size image dialog, a 36-entry settings dialog and all 233 upstream
+  output viewer, an optional live devtools bar (`debug.devtools`), Console
+  budget labels in the prompt, a full-size image dialog, a 36-entry settings
+  dialog and all 233 upstream
   keybinding definitions, and mouse text selection with copy in the
   transcript. Project skills live in
   `.opencode/skills/<name>/SKILL.md`, matching upstream's default skill set.
