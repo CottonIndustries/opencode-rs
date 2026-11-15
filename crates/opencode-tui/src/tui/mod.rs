@@ -310,6 +310,11 @@ struct Ui {
     plugin_prompt_file: Vec<Value>,
     plugin_app: Vec<Value>,
     plugin_slots_at: Instant,
+    devtools_panel: Option<String>,
+    devtools_hits: Vec<(Rect, String)>,
+    devtools_frames: VecDeque<f32>,
+    devtools_last: Instant,
+    devtools_frame_ms: f32,
 }
 
 /// Hovered tab title: after 600 ms, advance one cell every 80 ms through
@@ -554,6 +559,11 @@ impl Ui {
             plugin_prompt_file: Vec::new(),
             plugin_app: Vec::new(),
             plugin_slots_at: Instant::now(),
+            devtools_panel: None,
+            devtools_hits: Vec::new(),
+            devtools_frames: VecDeque::new(),
+            devtools_last: Instant::now(),
+            devtools_frame_ms: 0.0,
         };
         let name = ui.settings.theme();
         ui.set_theme(&name);
@@ -2504,6 +2514,110 @@ impl Ui {
             .unwrap_or("(no output)")
             .to_string();
         self.show_text(&title, output);
+    }
+
+    fn devtools_visible(&self) -> bool {
+        self.app.config().debug.devtools && !self.mini && self.size.1 > 6
+    }
+
+    fn toggle_devtools_panel(&mut self, panel: &str) {
+        self.devtools_panel = if self.devtools_panel.as_deref() == Some(panel) {
+            None
+        } else {
+            Some(panel.to_string())
+        };
+    }
+
+    fn draw_devtools(&mut self, buf: &mut Buffer, bar: Rect, t: &Theme) {
+        let bg = t.raised;
+        draw::fill(buf, bar, bg);
+        self.devtools_hits.clear();
+        let items = [
+            ("server", format!("{} Server", if self.handle.is_busy() { "?" } else { "V" })),
+            ("ui", "? UI".to_string()),
+            ("theme", "Theme".to_string()),
+            ("tools", "Tools".to_string()),
+        ];
+        let mut x = bar.x + 1;
+        for (id, label) in items {
+            let width = draw::width(&label) as u16;
+            if x + width >= bar.x + bar.width {
+                break;
+            }
+            let active = self.devtools_panel.as_deref() == Some(id);
+            let fg = if active { t.info.base } else { t.muted };
+            let style = draw::st(fg, bg);
+            buf.set_string(x, bar.y, &label, style);
+            self.devtools_hits.push((Rect { x, y: bar.y, width, height: 1 }, id.to_string()));
+            x += width + 2;
+        }
+        let Some(panel) = self.devtools_panel.clone() else { return };
+        let lines = self.devtools_lines(&panel, t);
+        let height = (lines.len() as u16 + 3).min(bar.y.saturating_sub(1));
+        let area = Rect {
+            x: bar.x,
+            y: bar.y.saturating_sub(height),
+            width: 44.min(bar.width),
+            height,
+        };
+        draw::fill(buf, area, t.raised);
+        draw::draw_lines(
+            buf,
+            Rect { x: area.x + 2, y: area.y + 1, width: area.width.saturating_sub(4), height: area.height.saturating_sub(2) },
+            &lines,
+            0,
+        );
+    }
+
+    fn devtools_lines(&self, panel: &str, t: &Theme) -> Vec<Line<'static>> {
+        let bg = t.raised;
+        let title = draw::bold(draw::st(t.text, bg));
+        let row = |label: &str, value: String| {
+            let gap = 42usize.saturating_sub(draw::width(label) + draw::width(&value) + 2);
+            line(
+                vec![
+                    span(label.to_string(), t.muted, bg),
+                    span(" ".repeat(gap.max(1)), t.muted, bg),
+                    span(value, t.text, bg),
+                ],
+                bg,
+            )
+        };
+        let mut out = Vec::new();
+        match panel {
+            "server" => {
+                out.push(line(vec![Span::styled("Server", title)], bg));
+                out.push(row("Status", if self.handle.is_busy() { "busy".into() } else { "idle".into() }));
+                out.push(row("Version", crate::UPSTREAM_VERSION.into()));
+                out.push(row("PID", std::process::id().to_string()));
+                out.push(row("Session", self.sid()));
+            }
+            "ui" => {
+                out.push(line(vec![Span::styled("UI", title)], bg));
+                out.push(row("Frame", format!("{:.1} ms", self.devtools_frame_ms)));
+                let avg = if self.devtools_frames.is_empty() {
+                    0.0
+                } else {
+                    self.devtools_frames.iter().sum::<f32>() / self.devtools_frames.len() as f32
+                };
+                out.push(row("Average", format!("{avg:.1} ms")));
+                out.push(row("Route", match self.route { Route::Home => "home".into(), Route::Session => "session".into() }));
+                out.push(row("Terminal", format!("{}x{}", self.size.0, self.size.1)));
+            }
+            "theme" => {
+                out.push(line(vec![Span::styled("Theme", title)], bg));
+                out.push(row("Name", self.settings.theme()));
+                out.push(row("Mode", format!("{:?}", self.theme.mode).to_lowercase()));
+            }
+            "tools" => {
+                out.push(line(vec![Span::styled("Tools", title)], bg));
+                out.push(row("Tools", crate::tools::descriptors(&self.app.config()).len().to_string()));
+                out.push(row("Agents", self.app.agents().len().to_string()));
+                out.push(row("Plugins", self.app.plugins.list().len().to_string()));
+            }
+            _ => {}
+        }
+        out
     }
 
     fn open_console(&mut self) {
@@ -4566,6 +4680,10 @@ impl Ui {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((_, panel)) = self.devtools_hits.iter().find(|(rect, _)| inside(*rect)).cloned() {
+                    self.toggle_devtools_panel(&panel);
+                    return;
+                }
                 if self.dialog.is_none() {
                     if self.terminal_pane.visible && self.hits.terminal_pane.width > 0 && x + 1 == self.hits.terminal_pane.x {
                         self.terminal_resizing = true;
@@ -4987,6 +5105,14 @@ impl Ui {
         let buf = f.buffer_mut();
         draw::fill(buf, area, t.bg);
         self.hits = Hits::default();
+        let now = Instant::now();
+        self.devtools_frame_ms = now.duration_since(self.devtools_last).as_secs_f32() * 1000.0;
+        self.devtools_last = now;
+        self.devtools_frames.push_back(self.devtools_frame_ms);
+        while self.devtools_frames.len() > 120 {
+            self.devtools_frames.pop_front();
+        }
+        let devtools = self.devtools_visible();
         let mut body = area;
         let vertical = !self.mini && self.tabs_vertical() && self.route == Route::Session && !self.tabs.is_empty();
         if vertical {
@@ -4996,10 +5122,22 @@ impl Ui {
             self.draw_tabs(buf, Rect { height: 1, ..area }, &t);
             body = Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area };
         }
+        if devtools {
+            body.height = body.height.saturating_sub(1);
+        }
         let mut cursor = match self.route {
             Route::Home => self.draw_home(buf, body, &t),
             Route::Session => self.draw_session(buf, body, &t),
         };
+        if devtools {
+            let bar = Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(1),
+                width: area.width,
+                height: 1,
+            };
+            self.draw_devtools(buf, bar, &t);
+        }
         let pending = self.pending_form();
         match &pending {
             Some(form) => self.form.sync(form),

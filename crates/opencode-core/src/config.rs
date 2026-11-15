@@ -43,6 +43,7 @@ pub struct Config {
     pub warming: Option<Value>,
     pub watcher: WatcherConfig,
     pub worktree: Option<WorktreeConfig>,
+    pub debug: DebugConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -93,6 +94,14 @@ pub struct ToolOutputConfig {
 #[serde(default)]
 pub struct WatcherConfig {
     pub ignore: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    pub devtools: bool,
+    pub timing: bool,
+    pub turn_tokens: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
