@@ -998,6 +998,7 @@ impl Ui {
             c("plugins.list", "Plugins", "System", &["plugins"], false),
             c("developer.devtools", "Developer tools", "System", &["devtools"], false),
             c("app.console", "Console", "System", &["console"], false),
+            c("app.debug", "Debug panel", "System", &["debug"], false),
             c("developer.experiments", "Experiments", "System", &["experiments"], false),
             c("diff.open", "Open diff viewer", "VCS", &["diff"], false),
             c("stats.open", "Usage statistics", "System", &["stats"], false),
@@ -1135,6 +1136,7 @@ impl Ui {
             "developer.devtools" => self.open_devtools(),
             "developer.experiments" => self.open_experiments(),
             "app.console" => self.open_console(),
+            "app.debug" => self.show_text("Debug", reports::debug(&self.app)),
             "plugins.list" => self.open_plugins(),
             "diff.open" => self.open_diff(),
             "app.clear" => self.clear_prompt(),
@@ -4767,6 +4769,15 @@ impl Ui {
                     }
                 }
             }
+            AppEvent::PromptInput { action, text } => match action.as_str() {
+                "append" => {
+                    self.editor.insert(&text);
+                    self.update_auto();
+                }
+                "clear" => self.clear_prompt(),
+                "submit" => self.submit(),
+                _ => {}
+            },
             AppEvent::PluginInvalidate => {
                 self.plugin_slots_at = Instant::now() - Duration::from_secs(3);
                 if let Some(Dialog::Plugin { page, .. }) = &self.dialog {

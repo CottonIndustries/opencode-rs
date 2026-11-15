@@ -2285,9 +2285,21 @@ pub async fn client_call(app: &Arc<crate::app::App>, path: &str, args: Vec<Value
             }
             Ok(project)
         }
-        "tui.appendPrompt" | "tui.openHelp" | "tui.openSessions" | "tui.openThemes"
-        | "tui.openModels" | "tui.submitPrompt" | "tui.clearPrompt" | "tui.executeCommand"
-        | "tui.openDialog" | "tui.control" => Ok(Value::Null),
+        "tui.appendPrompt" => {
+            let text = first.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            app.emit(crate::app::AppEvent::PromptInput { action: "append".into(), text });
+            Ok(Value::Null)
+        }
+        "tui.submitPrompt" => {
+            app.emit(crate::app::AppEvent::PromptInput { action: "submit".into(), text: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.clearPrompt" => {
+            app.emit(crate::app::AppEvent::PromptInput { action: "clear".into(), text: String::new() });
+            Ok(Value::Null)
+        }
+        "tui.openHelp" | "tui.openSessions" | "tui.openThemes"
+        | "tui.openModels" | "tui.executeCommand" | "tui.openDialog" | "tui.control" => Ok(Value::Null),
         "app.log" => {
             let message = body
                 .get("message")
