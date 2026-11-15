@@ -175,6 +175,12 @@ enum Cmd {
         /// Server password (or OPENCODE_SERVER_PASSWORD)
         #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
         password: Option<String>,
+        /// Request header as `name: value`
+        #[arg(long = "header")]
+        header: Vec<String>,
+        /// Query parameter as `name=value`
+        #[arg(long = "param")]
+        param: Vec<String>,
     },
     /// Manage the background local server
     Service {
@@ -481,8 +487,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             PluginCmd::Check { target } => cli::plugin_check(target.as_deref()).await,
             PluginCmd::Update { target } => cli::plugin_update(target.as_deref()).await,
         },
-        Some(Cmd::Api { method, path, data, server, password }) => {
-            cli::api_call(&server, &method, &path, data.as_deref(), password.as_deref()).await
+        Some(Cmd::Api { method, path, data, server, password, header, param }) => {
+            cli::api_call(&server, &method, &path, data.as_deref(), password.as_deref(), &header, &param).await
         }
         Some(Cmd::Service { command }) => match command {
             ServiceCmd::Start { port, dir } => cli::service_start(port, dir),

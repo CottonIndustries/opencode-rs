@@ -809,12 +809,24 @@ pub async fn api_call(
     path: &str,
     data: Option<&str>,
     password: Option<&str>,
+    header: &[String],
+    param: &[String],
 ) -> Result<()> {
-    let url = format!(
+    let mut url = format!(
         "{}/{}",
         server.trim_end_matches('/'),
         path.trim_start_matches('/')
     );
+    if !param.is_empty() {
+        let query = param
+            .iter()
+            .filter_map(|item| item.split_once('='))
+            .map(|(key, value)| format!("{}={}", encode_query(key), encode_query(value)))
+            .collect::<Vec<_>>()
+            .join("&");
+        url.push(if url.contains('?') { '&' } else { '?' });
+        url.push_str(&query);
+    }
     let client = crate::http::client();
     let mut request = match method.to_ascii_uppercase().as_str() {
         "GET" => client.get(&url),
@@ -825,6 +837,11 @@ pub async fn api_call(
         other => return Err(anyhow!("unsupported HTTP method: {other}")),
     };
     request = request.header("accept", "application/json");
+    for item in header {
+        if let Some((name, value)) = item.split_once(':') {
+            request = request.header(name.trim(), value.trim());
+        }
+    }
     if let Some(password) = password {
         use base64::Engine;
         let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
@@ -843,3 +860,16 @@ pub async fn api_call(
     println!("{text}");
     Ok(())
 }
+
+fn encode_query(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
