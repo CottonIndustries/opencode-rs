@@ -51,8 +51,9 @@ if yours live elsewhere.
 | `opencode session list\|delete\|export\|import` | Manage sessions (`--sanitize` on export) |
 | `opencode stats [--days N] [--json]` | Token, cost, model and tool statistics |
 | `opencode mcp list` | MCP server status |
-| `opencode service start\|stop\|status` | Run the HTTP server as a detached local service |
-| `opencode api METHOD PATH` | Call a running server |
+| `opencode service start\|stop\|restart\|status\|get\|set\|unset` | Run the HTTP server as a detached local service; `service.json` holds port and password |
+| `opencode api METHOD PATH [--header H] [--param K=V]` | Call a running server |
+| `opencode reload` | Reload a running server's configuration |
 | `opencode workspace list\|create\|remove` | Manage logical workspaces and local environment bindings |
 | `opencode repository cache` | Clone or refresh a remote repository cache |
 | `opencode migrate` | Index legacy session history |
@@ -210,7 +211,7 @@ if yours live elsewhere.
   commands (`/new /clear /sessions /open /models /agents /usage /mcps /variants
   /connect /settings /status /themes /help /exit /rename /timeline /fork
   /compact /undo /redo /copy /export /cd /editor /skills /worktrees /terminal
-  /plugins /diff /stats /btw /reload /debug /pair /restart /highlights /update`
+  /plugins /diff /stats /btw /reload /debug /pair /restart /highlights /update /shells`
   plus config/plugin commands), `@file` attachments, `@skill` mentions, prompt
   history, queued prompts, prompt stash, session goals, message and subagent
   navigation, horizontal or vertical session tabs with drag reorder, hover close,
@@ -218,7 +219,8 @@ if yours live elsewhere.
   persistent terminal pane with multiple tabs, a composer for subagents, shell
   jobs and terminals, a full-screen diff viewer (file tree, unified or split,
   hunk and file navigation, scrolling, folded files, reviewed marks), a mini
-  mode, inline image previews
+  mode, inline image previews, a legacy-session migration prompt, and a shell-job
+  output viewer
   with a full-size image dialog, a 36-entry settings dialog and all 233 upstream
   keybinding definitions, and mouse text selection with copy in the
   transcript. Project skills live in
