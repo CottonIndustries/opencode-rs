@@ -13,6 +13,7 @@ const MODELS_URL: &str = "https://models.dev/api.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     Anthropic,
+    Bedrock,
     OpenAIChat,
     OpenAIResponses,
     Google,
@@ -135,9 +136,10 @@ impl Provider {
         }
         Ok(match npm {
             "@ai-sdk/anthropic" => Protocol::Anthropic,
+            "@ai-sdk/amazon-bedrock" => Protocol::Bedrock,
             "@ai-sdk/openai" => Protocol::OpenAIResponses,
             "@ai-sdk/google" => Protocol::Google,
-            "@ai-sdk/amazon-bedrock" | "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic" | "@ai-sdk/azure"
+            "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic" | "@ai-sdk/azure"
                 if self.base_url(model).is_none() =>
             {
                 return Err(anyhow!(

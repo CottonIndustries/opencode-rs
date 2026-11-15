@@ -1,6 +1,7 @@
 //! Provider-neutral streaming interface over the supported wire protocols.
 
 pub mod anthropic;
+pub mod bedrock;
 pub mod media;
 pub mod google;
 pub mod oauth;
@@ -151,6 +152,7 @@ pub async fn stream(mut req: Request, tx: Tx) -> Result<()> {
     oauth::refresh(&mut req.provider).await;
     match req.provider.protocol_for(&req.model)? {
         Protocol::Anthropic => anthropic::stream(req, tx).await,
+        Protocol::Bedrock => bedrock::stream(req, tx).await,
         Protocol::OpenAIChat => openai_chat::stream(req, tx).await,
         Protocol::OpenAIResponses => openai_responses::stream(req, tx).await,
         Protocol::Google => google::stream(req, tx).await,
