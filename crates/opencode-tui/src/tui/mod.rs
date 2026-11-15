@@ -566,6 +566,30 @@ impl Ui {
             let id = ui.sid();
             ui.visit(&id);
         }
+        if std::env::var_os("OPENCODE_DISABLE_MIGRATION_OVERLAY").is_none()
+            && crate::migration::status().get("status").and_then(Value::as_str) == Some("required")
+        {
+            ui.dialog = Some(Dialog::Select(Select::new(
+                Kind::Migration,
+                "Session history",
+                vec![
+                    dialog::Opt {
+                        title: "Migrate now".into(),
+                        description: "Index legacy session files into the local database".into(),
+                        category: "Migration".into(),
+                        value: "migrate".into(),
+                        ..Default::default()
+                    },
+                    dialog::Opt {
+                        title: "Later".into(),
+                        description: "Keep legacy files untouched".into(),
+                        category: "Migration".into(),
+                        value: "later".into(),
+                        ..Default::default()
+                    },
+                ],
+            )));
+        }
         Ok(ui)
     }
 
@@ -3120,6 +3144,22 @@ impl Ui {
             Kind::ShellJobs => {
                 self.dialog = None;
                 self.show_shell_job(&value);
+            }
+            Kind::Migration => {
+                self.dialog = None;
+                if value == "migrate" {
+                    let app = self.app.clone();
+                    tokio::spawn(async move {
+                        let result = crate::migration::run();
+                        app.emit(AppEvent::Notice {
+                            message: format!(
+                                "Migrated {} sessions ({} failed)",
+                                result.get("migrated").and_then(Value::as_u64).unwrap_or(0),
+                                result.get("failed").and_then(Value::as_u64).unwrap_or(0),
+                            ),
+                        });
+                    });
+                }
             }
             Kind::Plugins => {
                 self.dialog = None;
