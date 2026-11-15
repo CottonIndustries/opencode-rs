@@ -239,7 +239,9 @@ async fn handle(
 ) -> Result<()> {
     let Some(request) = read_request(&mut stream).await? else { return Ok(()) };
     if request.method == "OPTIONS" {
-        write_response(&mut stream, 204, Value::Null).await?;
+        let head = "HTTP/1.1 204 No Content\r\naccess-control-allow-origin: *\r\naccess-control-allow-methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\naccess-control-allow-headers: *\r\naccess-control-max-age: 86400\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        stream.write_all(head.as_bytes()).await?;
+        stream.flush().await?;
         return Ok(());
     }
     let password = password.filter(|password| !password.is_empty());
