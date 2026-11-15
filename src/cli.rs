@@ -363,11 +363,27 @@ pub fn mcp_logout(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn debug_paths() -> Result<()> {
+pub fn debug_paths(name: Option<&str>) -> Result<()> {
     let p = crate::paths::get();
-    for (k, v) in [("home", &p.home), ("data", &p.data), ("cache", &p.cache), ("config", &p.config), ("state", &p.state), ("tmp", &p.tmp), ("log", &p.log)] {
+    let entries = [("home", &p.home), ("data", &p.data), ("cache", &p.cache), ("config", &p.config), ("state", &p.state), ("tmp", &p.tmp), ("log", &p.log)];
+    if let Some(name) = name {
+        let value = entries.iter().find(|(key, _)| *key == name).map(|(_, value)| value);
+        let Some(value) = value else {
+            return Err(anyhow!("unknown path {name}; expected one of home, data, cache, config, state, tmp, log"));
+        };
+        println!("{}", value.display());
+        return Ok(());
+    }
+    for (k, v) in entries {
         println!("{k:<8} {}", v.display());
     }
+    Ok(())
+}
+
+pub async fn debug_heap_dump() -> Result<()> {
+    let app = crate::app::App::init(std::env::current_dir()?).await?;
+    let dump = crate::debug_dump::dump(&app)?;
+    println!("{}", serde_json::to_string_pretty(&dump)?);
     Ok(())
 }
 

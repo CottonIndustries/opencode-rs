@@ -365,8 +365,10 @@ enum PluginCmd {
 
 #[derive(Subcommand)]
 enum DebugCmd {
-    /// Show global paths
-    Paths,
+    /// Show global paths, or one named path
+    Paths { name: Option<String> },
+    /// Write a redacted process and registry dump
+    HeapDump,
     /// Show the resolved configuration
     Config,
     /// List agents
@@ -500,7 +502,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         },
         Some(Cmd::Skills) => cli::debug_skills().await,
         Some(Cmd::Debug { command }) => match command {
-            DebugCmd::Paths => cli::debug_paths(),
+            DebugCmd::Paths { name } => cli::debug_paths(name.as_deref()),
+            DebugCmd::HeapDump => cli::debug_heap_dump().await,
             DebugCmd::Config => cli::debug_config().await,
             DebugCmd::Agents => cli::debug_agents().await,
             DebugCmd::Skills => cli::debug_skills().await,
