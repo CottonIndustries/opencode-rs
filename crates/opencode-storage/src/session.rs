@@ -709,6 +709,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inbox_round_trips() {
+        let mut session = Session::new("project", std::path::Path::new("."), None);
+        session.inbox.push(serde_json::json!({ "message": { "id": "msg_1" } }));
+        let text = serde_json::to_string(&session).unwrap();
+        let restored: Session = serde_json::from_str(&text).unwrap();
+        assert_eq!(restored.inbox.len(), 1);
+        assert_eq!(restored.inbox[0]["message"]["id"], "msg_1");
+    }
+
+    #[test]
     fn upstream_ids() {
         // value captured from the TypeScript client for a non-git directory
         let dir = r"C:\Users\bumbi\AppData\Local\Temp\claude\C--Users-bumbi-Desktop-fun-stuff-opencode\e595122b-7363-48b7-b713-523287ce64a5\scratchpad\live2";
