@@ -197,6 +197,15 @@ enum Cmd {
         #[command(subcommand)]
         command: RepositoryCmd,
     },
+    /// Reload a running server's configuration
+    Reload {
+        /// Server base URL
+        #[arg(long, default_value = "http://127.0.0.1:4096")]
+        server: String,
+        /// Server password (or OPENCODE_SERVER_PASSWORD)
+        #[arg(long, env = "OPENCODE_SERVER_PASSWORD")]
+        password: Option<String>,
+    },
     /// Migrate legacy session history
     Migrate,
     /// List available skills
@@ -314,6 +323,13 @@ enum ServiceCmd {
     },
     /// Stop the detached server
     Stop,
+    /// Restart the detached server
+    Restart {
+        #[arg(short, long, default_value_t = 4096)]
+        port: u16,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Show detached server status
     Status,
 }
@@ -493,6 +509,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Cmd::Service { command }) => match command {
             ServiceCmd::Start { port, dir } => cli::service_start(port, dir),
             ServiceCmd::Stop => cli::service_stop(),
+            ServiceCmd::Restart { port, dir } => cli::service_restart(port, dir),
             ServiceCmd::Status => cli::service_status(),
         },
         Some(Cmd::Workspace { command }) => match command {
@@ -500,6 +517,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             WorkspaceCmd::Create { directory, provider, id } => cli::workspace_create(directory, &provider, id.as_deref()),
             WorkspaceCmd::Remove { id } => cli::workspace_remove(&id),
         },
+        Some(Cmd::Reload { server, password }) => {
+            cli::api_call(&server, "POST", "/api/location/reload", Some("{}"), password.as_deref(), &[], &[]).await
+        }
         Some(Cmd::Migrate) => cli::migrate(),
         Some(Cmd::Repository { command }) => match command {
             RepositoryCmd::Cache { repository, branch, refresh } => {

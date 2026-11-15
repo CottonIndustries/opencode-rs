@@ -746,6 +746,11 @@ pub fn service_start(port: u16, directory: Option<std::path::PathBuf>) -> Result
     Ok(())
 }
 
+pub fn service_restart(port: u16, directory: Option<std::path::PathBuf>) -> Result<()> {
+    let _ = crate::service::stop();
+    service_start(port, directory)
+}
+
 pub fn service_stop() -> Result<()> {
     let info = crate::service::stop()?;
     if info["stopped"].as_bool().unwrap_or(false) {
